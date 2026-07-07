@@ -1,6 +1,18 @@
 # Distillery memory layer: lessons from MemGraphRAG
 
-Status: architecture recommendation
+Status: research/reference and forward architecture recommendation.
+
+Current v0 implementation borrows the MemGraphRAG separation partially:
+
+- evidence spans are authoritative;
+- memory items use `claimType`;
+- memory items include `entities`, `relations`, and `schemas`;
+- schema entries are candidates only;
+- there is no canonical entity/schema promotion workflow yet;
+- there is no graph retrieval or Personalized PageRank yet;
+- conflict detection/resolution is not implemented yet.
+
+Use [STATUS_AND_ROADMAP.md](./STATUS_AND_ROADMAP.md) for current project state. Use this file for design rationale and future memory-layer direction.
 
 Sources reviewed:
 

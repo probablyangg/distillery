@@ -1,402 +1,175 @@
-# v0 Memory Generation implementation with LangChain/LangGraph
+# Memory Generation
 
-Status: proposed
+Status: implemented for v0 text braindumps.
 
-## 1. Recommendation
+Memory Generation turns one user-submitted text braindump into evidence-backed, correctable memory.
 
-Implement Memory Generation as a durable LangGraph workflow containing one bounded LangChain model step. Do not implement it as an open-ended ReAct agent with general-purpose tools.
+It does not create initiatives, PRDs, tasks, priorities, or recommendations.
 
-The workflow is known in advance:
-
-```text
-ingest
-  -> storeEvidence
-  -> generateMemory
-  -> validateMemory
-  -> storeMemory
-  -> publishMemoryReady
-```
-
-The frontend starts the workflow and observes its status. It does not call the model directly.
-
-## 2. Terminology
-
-### Ingest
-
-Convert the user's text braindump into a canonical input envelope:
+## Implemented v0 flow
 
 ```text
-CaptureEnvelope
-  ingestionId
-  tenantId
-  appSessionId
-  submittedByLabel
-  inputType: text
-  content
-  occurredAt
-  idempotencyKey
+POST /api/ingestions
+  -> create ingestion
+  -> store source version
+  -> create evidence spans
+  -> enqueue memory generation
+
+Queue consumer
+  -> load ingestion context
+  -> call OpenRouter
+  -> parse structured JSON
+  -> validate evidence and schema
+  -> commit memory through Supabase RPC
+  -> mark ingestion ready
+
+GET /api/ingestions/{id}
+  -> return status, evidence spans, memory items, error if any
 ```
 
-Ingestion includes normalizing pasted text and identifying source boundaries. It does not extract company memory yet. Voice, URL import, and file upload are deferred beyond v0.
+## User-facing behavior
 
-### Store evidence
+The capture page asks:
 
-Persist exactly what Distillery received before asking an LLM to interpret it.
+> What should Distillery remember or answer?
 
-```text
-source_item
-  -> source_version
-  -> evidence_span[]
+For `Remember`, the page shows committed memory items and correction controls.
+
+For `Ask`, the page returns a cited answer or an explicit evidence gap.
+
+The capture page does not show initiative suggestions or PRD actions.
+
+## Authoritative data
+
+Memory Generation writes:
+
+- `ingestions`;
+- `source_items`;
+- `source_versions`;
+- `evidence_spans`;
+- `extraction_runs`;
+- `memory_items`;
+- `memory_item_evidence`;
+- `memory_entities`;
+- `memory_relations`;
+- `memory_schemas`;
+- `memory_item_events`;
+- `audit_events`;
+- `outbox_events`.
+
+Source versions and evidence spans are immutable. Memory items are correctable through append-only events.
+
+## Memory item contract
+
+Memory items use `claimType`, not `type`.
+
+```ts
+type GeneratedMemoryItem = {
+  temporaryId: string;
+  claimType:
+    | "fact"
+    | "user_signal"
+    | "reported_decision"
+    | "metric"
+    | "risk"
+    | "dependency"
+    | "constraint"
+    | "strategic_statement"
+    | "ownership_statement"
+    | "scope_statement";
+  statement: string;
+  evidenceSpanIds: string[];
+  epistemicStatus:
+    | "observed"
+    | "reported"
+    | "inferred"
+    | "assumption"
+    | "decision_reported";
+  qualifiers: Record<string, unknown>;
+  stableDomainTags: string[];
+  entities: Array<{
+    name: string;
+    entityType: string;
+    canonicalName?: string;
+  }>;
+  relations: Array<{
+    subject: string;
+    predicate: string;
+    object: string;
+    evidenceSpanIds: string[];
+  }>;
+  schemas: Array<{
+    subjectType: string;
+    predicate: string;
+    objectType: string;
+    status: "candidate" | "stable" | "rejected";
+  }>;
+};
 ```
 
-Properties:
+## Validation rules
 
-- immutable source version;
-- content hash;
-- exact span locators;
-- actor, tenant, source time, and ingestion time;
-- private-pilot access policy;
-- idempotent write;
-- independent of model success.
+Validation rejects:
 
-If generation fails, the evidence remains available for retry. This step is deterministic application code, not an agent tool choice.
-
-### Generate memory
-
-Read the stored evidence and convert it into typed memory candidates:
-
-```text
-stored evidence spans
-  -> facts/signals/metrics/risks/dependencies/etc.
-  -> normalized statements
-  -> evidence-span references
-  -> epistemic labels
-```
-
-This is the LLM reasoning step. It does not create initiatives, choose company truth, or write directly to the database.
-
-Because the downstream product is named **Memory Synthesis**, call this internal node `generateMemory` or `materializeMemory`, not `synthesize`, in code and telemetry.
-
-### Validate memory
-
-Deterministically reject or flag:
-
-- evidence IDs not present in the stored source version;
+- malformed model output;
 - unsupported claim types;
 - statements with no evidence;
-- malformed values;
-- evidence outside the configured access scope;
-- duplicate model IDs;
-- claims that exceed configured source-span limits.
+- evidence IDs not present in the source version;
+- duplicate normalized statements in one generation;
+- `reported_decision` items marked as `observed`;
+- relation evidence IDs not present in the source version;
+- relation evidence IDs outside the parent memory item evidence set.
 
-An optional second model can estimate whether a span supports a statement, but that score is a warning signal rather than proof.
+Validation does not decide company truth. It only decides whether the generated interpretation is safe enough to store as unreviewed memory.
 
-### Store memory
+## Model boundary
 
-Commit the validated interpretation:
-
-```text
-extraction_run
-  -> observation[]
-  -> claim candidates
-  -> claim_evidence[]
-  -> audit_event
-```
-
-This is a second deterministic transaction. It stores model output as an interpretation linked to immutable evidence. It does not alter the evidence or silently promote a claim to human-confirmed truth.
-
-### Publish
-
-Emit `memory.ready` through a transactional outbox. The UI receives the exact committed memory items. Memory Synthesis consumes the same event later.
-
-## 3. The two meanings of “store”
-
-There should be two explicit commits:
-
-| Commit | Timing | Purpose |
-|---|---|---|
-| Evidence commit | Before model execution | Preserve the exact input and make retries safe |
-| Memory commit | After generation and validation | Persist the structured interpretation with provenance |
-
-Do not combine them into one transaction spanning an LLM request. Model calls are slow and unreliable; database transactions should be short.
-
-## 4. LangGraph state
-
-Illustrative TypeScript:
-
-```ts
-import { StateGraph, StateSchema, START, END } from "@langchain/langgraph";
-import { z } from "zod/v4";
-
-const MemoryItem = z.object({
-  temporaryId: z.string(),
-  claimType: z.enum([
-    "fact",
-    "user_signal",
-    "reported_decision",
-    "metric",
-    "risk",
-    "dependency",
-    "constraint",
-    "strategic_statement",
-    "ownership_statement",
-    "scope_statement",
-  ]),
-  statement: z.string().min(1),
-  evidenceSpanIds: z.array(z.string()).min(1),
-  epistemicType: z.enum(["source_assertion", "inference"]),
-  qualifiers: z.record(z.string(), z.unknown()).default({}),
-  entities: z.array(z.object({
-    name: z.string(),
-    entityType: z.string(),
-    canonicalName: z.string().optional(),
-  })).default([]),
-  relations: z.array(z.object({
-    subject: z.string(),
-    predicate: z.string(),
-    object: z.string(),
-    evidenceSpanIds: z.array(z.string()).min(1),
-  })).default([]),
-  schemas: z.array(z.object({
-    subjectType: z.string(),
-    predicate: z.string(),
-    objectType: z.string(),
-    status: z.enum(["candidate", "stable", "rejected"]).default("candidate"),
-  })).default([]),
-});
-
-const GeneratedMemory = z.object({
-  items: z.array(MemoryItem),
-});
-
-const IngestionState = new StateSchema({
-  ingestionId: z.string(),
-  tenantId: z.string(),
-  actorId: z.string(),
-  inputType: z.literal("text"),
-  inputReference: z.string(),
-  sourceVersionId: z.string().optional(),
-  evidenceSpanIds: z.array(z.string()).default([]),
-  generatedMemory: GeneratedMemory.optional(),
-  committedMemoryIds: z.array(z.string()).default([]),
-  status: z.enum([
-    "received",
-    "evidence_stored",
-    "generating",
-    "validating",
-    "memory_stored",
-    "ready",
-    "failed",
-  ]),
-  errors: z.array(z.string()).default([]),
-});
-```
-
-Keep large source text out of graph state. State should hold durable database/object references.
-
-## 5. Structured generation
-
-Use a LangChain model with structured output rather than a tool-calling loop:
-
-For v0, configure this model through OpenRouter:
+Provider:
 
 ```text
-OPENROUTER_MODEL=moonshotai/kimi-k2.7-code
-OPENROUTER_FALLBACK_MODELS=~moonshotai/kimi-latest,moonshotai/kimi-k2.6
-OPENROUTER_TIMEOUT_MS=30000
-OPENROUTER_FALLBACK_TIMEOUT_MS=45000
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OpenRouter
 ```
 
-OpenRouter lists `moonshotai/kimi-k2.7-code` as MoonshotAI: Kimi K2.7 Code, released June 12, 2026, with a 262K-token context window and structured output support. v0 uses it as the primary extraction model.
-
-```ts
-const memoryModel = model.withStructuredOutput(GeneratedMemory, {
-  includeRaw: true,
-});
-
-async function generateMemory(state: typeof IngestionState.Type) {
-  const spans = await evidenceRepository.getAllowedSpans({
-    tenantId: state.tenantId,
-    sourceVersionId: state.sourceVersionId!,
-  });
-
-  const allowedIds = spans.map((span) => span.id);
-
-  const result = await memoryModel.invoke([
-    {
-      role: "system",
-      content: MEMORY_GENERATION_PROMPT,
-    },
-    {
-      role: "user",
-      content: renderNumberedEvidence(spans),
-    },
-  ]);
-
-  await modelRunRepository.record({
-    ingestionId: state.ingestionId,
-    promptVersion: MEMORY_PROMPT_VERSION,
-    schemaVersion: MEMORY_SCHEMA_VERSION,
-    rawResponse: result.raw,
-  });
-
-  return {
-    generatedMemory: result.parsed,
-    status: "validating" as const,
-  };
-}
-```
-
-The model may reference only supplied evidence-span IDs. It cannot mint source IDs, call persistence tools, or decide which database records to modify.
-
-## 6. Graph construction
-
-```ts
-const memoryGenerationGraph = new StateGraph(IngestionState)
-  .addNode("ingest", ingest)
-  .addNode("storeEvidence", storeEvidence)
-  .addNode("generateMemory", generateMemory)
-  .addNode("validateMemory", validateMemory)
-  .addNode("storeMemory", storeMemory)
-  .addNode("publishMemoryReady", publishMemoryReady)
-  .addEdge(START, "ingest")
-  .addEdge("ingest", "storeEvidence")
-  .addEdge("storeEvidence", "generateMemory")
-  .addEdge("generateMemory", "validateMemory")
-  .addEdge("validateMemory", "storeMemory")
-  .addEdge("storeMemory", "publishMemoryReady")
-  .addEdge("publishMemoryReady", END)
-  .compile({ checkpointer: productionCheckpointer });
-```
-
-Use `ingestionId` as the LangGraph `thread_id`. A persistent checkpointer allows failed workflows to resume from the last completed node.
-
-The checkpointer stores workflow execution state. It is not the Distillery memory database. Domain memory remains in the evidence/observation/claim tables.
-
-## 7. Frontend/API interaction
-
-### Start
-
-```http
-POST /api/ingestions
-Idempotency-Key: <uuid>
-
-{
-  "type": "text",
-  "content": "..."
-}
-```
-
-Respond immediately:
-
-```json
-{
-  "ingestionId": "ing_123",
-  "status": "received"
-}
-```
-
-The API creates the ingestion record, queues the graph invocation, and returns. Do not hold the request open for model generation.
-
-### Observe
-
-Use server-sent events or polling:
-
-```http
-GET /api/ingestions/ing_123/events
-```
-
-Expose product states, not internal prompts or chain-of-thought:
+Model chain:
 
 ```text
-received
-storing evidence
-generating memory
-validating
-ready
-failed — retry available
+moonshotai/kimi-k2.7-code
+  -> ~moonshotai/kimi-latest
+  -> moonshotai/kimi-k2.6
 ```
 
-LangGraph can stream node updates, but the backend should translate them into this stable product event contract so the frontend is not coupled to graph node names.
+The model must return structured JSON matching the contract. It receives evidence spans and may only cite supplied evidence IDs.
 
-### Result
+## Correction model
 
-```http
-GET /api/ingestions/ing_123
-```
+Memory correction is append-only:
 
-```json
-{
-  "ingestionId": "ing_123",
-  "status": "ready",
-  "sourceVersionId": "srcv_456",
-  "memoryItems": [
-    {
-      "id": "mem_789",
-      "claimType": "user_signal",
-      "statement": "Admins cannot understand failed exports.",
-      "reviewState": "unverified",
-      "evidence": [
-        {
-          "spanId": "span_12",
-          "exactText": "...",
-          "locator": { "start": 180, "end": 228 }
-        }
-      ]
-    }
-  ]
-}
-```
+- `confirm` marks a memory item as reviewed;
+- `remove` makes it inactive;
+- `edit` creates a replacement memory item and supersedes the original.
 
-This response is exactly what the Memory Generation screen displays under “Going into Memory Synthesis.”
+Original evidence, original extraction output, and history remain inspectable.
 
-## 8. Idempotency and retry rules
+## Recall
 
-- `POST /ingestions` requires an idempotency key.
-- Evidence uniqueness: `(tenant_id, content_hash, source_identity, source_version)`.
-- Generation uniqueness: `(source_version_id, pipeline_version)`.
-- Memory commit uniqueness: `(extraction_run_id, temporary_item_id)`.
-- Every node can run more than once without duplicating domain records.
-- Evidence remains stored if later nodes fail.
-- A retry creates a new extraction run when the prompt, model, or schema version changes.
-- Never keep a database transaction open across a model call.
-- Publish `memory.ready` with a transactional outbox so the commit and event cannot diverge.
+v0 recall is deterministic lexical retrieval over active memory and evidence spans.
 
-## 9. What belongs in LangChain/LangGraph
+If memory supports an answer, Distillery returns:
 
-Use LangChain for:
+- answer;
+- evidence span IDs;
+- citations;
+- matched memory.
 
-- model-provider abstraction;
-- structured output;
-- prompt composition;
-- embeddings later;
-- test doubles and model-call tracing.
+If memory does not support an answer, Distillery returns an explicit gap instead of inventing an answer.
 
-Use LangGraph for:
+## Future work
 
-- step orchestration;
-- checkpoints and recovery;
-- retries and conditional failure paths;
-- progress streaming;
-- future human interruption if required.
-
-Do not use LangGraph's store or checkpointer as the authoritative company memory. Do not give the generation model generic database-write tools.
-
-## 10. Boundary with Memory Synthesis
-
-Memory Generation ends when `memory.ready` is committed and emitted.
-
-```text
-memory.ready
-  ingestionId
-  sourceVersionId
-  memoryItemIds[]
-  tenantId
-  pipelineVersion
-  createdAt
-```
-
-Memory Synthesis consumes those versioned memory records, compares them with existing memory, and produces higher-order structures such as related-signal groups and initiative evidence. It never receives raw, unvalidated model output.
-
-The downstream workflow is specified in [MEMORY_SYNTHESIS.md](./MEMORY_SYNTHESIS.md).
+- embedding generation;
+- hybrid lexical/vector recall;
+- duplicate detection;
+- contradiction detection;
+- memory quality evals by `claimType`;
+- source connectors beyond text;
+- canonical entity/schema promotion;
+- graph retrieval projection.
