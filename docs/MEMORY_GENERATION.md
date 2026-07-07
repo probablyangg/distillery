@@ -82,7 +82,7 @@ Because the downstream product is named **Memory Synthesis**, call this internal
 Deterministically reject or flag:
 
 - evidence IDs not present in the stored source version;
-- unsupported memory types;
+- unsupported claim types;
 - statements with no evidence;
 - malformed values;
 - evidence outside the configured access scope;
@@ -130,7 +130,7 @@ import { z } from "zod/v4";
 
 const MemoryItem = z.object({
   temporaryId: z.string(),
-  type: z.enum([
+  claimType: z.enum([
     "fact",
     "user_signal",
     "reported_decision",
@@ -146,6 +146,23 @@ const MemoryItem = z.object({
   evidenceSpanIds: z.array(z.string()).min(1),
   epistemicType: z.enum(["source_assertion", "inference"]),
   qualifiers: z.record(z.string(), z.unknown()).default({}),
+  entities: z.array(z.object({
+    name: z.string(),
+    entityType: z.string(),
+    canonicalName: z.string().optional(),
+  })).default([]),
+  relations: z.array(z.object({
+    subject: z.string(),
+    predicate: z.string(),
+    object: z.string(),
+    evidenceSpanIds: z.array(z.string()).min(1),
+  })).default([]),
+  schemas: z.array(z.object({
+    subjectType: z.string(),
+    predicate: z.string(),
+    objectType: z.string(),
+    status: z.enum(["candidate", "stable", "rejected"]).default("candidate"),
+  })).default([]),
 });
 
 const GeneratedMemory = z.object({
@@ -317,7 +334,7 @@ GET /api/ingestions/ing_123
   "memoryItems": [
     {
       "id": "mem_789",
-      "type": "user_signal",
+      "claimType": "user_signal",
       "statement": "Admins cannot understand failed exports.",
       "reviewState": "unverified",
       "evidence": [

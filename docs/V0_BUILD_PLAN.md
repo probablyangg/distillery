@@ -204,7 +204,7 @@ Use Zod schemas as runtime validation and generate JSON Schema where external co
 - `InitiativeBriefVersion`;
 - `ApprovalRecord`.
 
-Contract tests must reject unknown evidence IDs, invalid states, unsupported memory types, and incomplete approval bindings before prompts are written.
+Contract tests must reject unknown evidence IDs, invalid states, unsupported claim types, and incomplete approval bindings before prompts are written.
 
 ## 6.1 Labeled fixtures
 
@@ -217,7 +217,7 @@ Each fixture is one realistic input plus the expected structured output:
 - raw text braindump;
 - expected evidence spans with exact character offsets or source locators;
 - expected memory items;
-- expected memory type for each item;
+- expected claim type for each item;
 - expected support span IDs;
 - expected epistemic status: `observed`, `reported`, `inferred`, `assumption`, or `decision_reported`;
 - expected conflicts or duplicate relationships, when relevant;
@@ -620,7 +620,7 @@ With a 4–6 person team:
 
 ### Evaluation tests
 
-- extraction precision/recall by memory type;
+- extraction precision/recall by claim type;
 - evidence locator validity;
 - citation precision;
 - correct abstention;

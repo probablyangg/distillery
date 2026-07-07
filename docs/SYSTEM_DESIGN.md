@@ -314,7 +314,7 @@ For captured material, the result displays the exact structured items that will 
 - people, teams, products, and customers;
 - risks, dependencies, and metrics.
 
-Every item shows its type, normalized statement, exact source, and epistemic status. The user can correct or remove it inline. Extracted decisions remain `reported` or `proposed` until an authorized person confirms them.
+Every item shows its claim type, normalized statement, exact source, and epistemic status. The user can correct or remove it inline. Extracted decisions remain `reported` or `proposed` until an authorized person confirms them.
 
 For a question, the answer contains atomic citations. Selecting one reveals the exact source passage without leaving the screen. When support is missing or conflicting, the answer says so instead of completing the story.
 
