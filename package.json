@@ -1,0 +1,29 @@
+{
+  "name": "distillery",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Evidence-backed company memory and initiative synthesis.",
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "build": "pnpm typecheck && pnpm test && pnpm fixtures:validate",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "fixtures:validate": "tsx evals/runners/validate-memory-fixtures.ts",
+    "dev": "wrangler dev --config apps/web/wrangler.toml",
+    "deploy": "wrangler deploy --config apps/web/wrangler.toml"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260706.1",
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9",
+    "wrangler": "^4.107.0"
+  }
+}

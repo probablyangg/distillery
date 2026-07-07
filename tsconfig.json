@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "types": ["@cloudflare/workers-types"],
+    "baseUrl": ".",
+    "paths": {
+      "@distillery/contracts": ["packages/contracts/src/index.ts"],
+      "@distillery/evidence": ["packages/evidence/src/index.ts"],
+      "@distillery/validation": ["packages/validation/src/index.ts"],
+      "@distillery/model-gateway": ["packages/model-gateway/src/index.ts"],
+      "@distillery/db": ["packages/db/src/index.ts"],
+      "@distillery/memory-generation": ["packages/memory-generation/src/index.ts"]
+    }
+  },
+  "include": ["apps/**/*.ts", "packages/**/*.ts", "evals/**/*.ts", "vitest.config.ts"]
+}
+
