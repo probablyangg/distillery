@@ -1,0 +1,56 @@
+flowchart TB
+
+%% DISTILLERY V0 CURRENT SYSTEM
+%% Status: implemented private pilot.
+
+subgraph USER["Human user"]
+  A["/ capture + recall<br/>one text input"]
+  B["/synthesis<br/>reviewer surface"]
+end
+
+subgraph WORKER["Cloudflare Worker"]
+  C["Shared-password session"]
+  D["Ingestion API"]
+  E["Recall API"]
+  F["Synthesis / brief APIs"]
+  G["Queue consumer"]
+end
+
+subgraph MODEL["OpenRouter"]
+  H["Memory generation model"]
+  I["Brief draft model"]
+end
+
+subgraph DB["Supabase PostgreSQL"]
+  J["Source versions + evidence spans"]
+  K["Memory items<br/>claimType, entities, relations, schemas"]
+  L["Memory item events<br/>confirm, edit, remove"]
+  M["Initiative briefs"]
+  N["Brief evidence bindings"]
+  O["Brief decisions<br/>approve / reject"]
+end
+
+A --> C
+B --> C
+C --> D
+C --> E
+C --> F
+
+D --> J
+D --> G
+G --> H
+H --> G
+G --> K
+
+E --> K
+E --> J
+
+F --> K
+F --> J
+F --> I
+I --> F
+F --> M
+F --> N
+F --> O
+
+K --> L

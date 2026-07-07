@@ -33,6 +33,9 @@ Current seeded data:
 - 3 starter initiative briefs;
 - all active memory returns `claimType`, `entities`, `relations`, and `schemas`.
 
+Current system diagram: [v0-current.mermaid](./v0-current.mermaid).
+North-star system diagram: [system.mermaid](./system.mermaid).
+
 ## Implemented
 
 ### Product

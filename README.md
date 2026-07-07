@@ -107,6 +107,7 @@ Subsystem docs:
 - [Memory Generation](./docs/MEMORY_GENERATION.md)
 - [Memory Synthesis](./docs/MEMORY_SYNTHESIS.md)
 - [System design](./docs/SYSTEM_DESIGN.md)
+- [v0 current system diagram](./docs/v0-current.mermaid)
 - [Memory architecture and MemGraphRAG notes](./docs/MEMORY_ARCHITECTURE.md)
 - [Stable labeled fixtures](./evals/fixtures/memory-generation/README.md)
 
