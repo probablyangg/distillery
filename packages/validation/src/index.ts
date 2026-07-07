@@ -47,6 +47,8 @@ export function validateGeneratedMemory(args: {
     }
     normalizedStatements.add(normalizedStatement);
 
+    const itemEvidenceIds = new Set(item.evidenceSpanIds);
+
     for (const evidenceSpanId of item.evidenceSpanIds) {
       if (!allowedIds.has(evidenceSpanId)) {
         issues.push({
@@ -57,7 +59,27 @@ export function validateGeneratedMemory(args: {
       }
     }
 
-    if (item.epistemicStatus === "observed" && item.type === "reported_decision") {
+    for (const [relationIndex, relation] of item.relations.entries()) {
+      for (const evidenceSpanId of relation.evidenceSpanIds) {
+        if (!allowedIds.has(evidenceSpanId)) {
+          issues.push({
+            code: "unknown_relation_evidence_span",
+            message: `Memory relation references unknown evidence span: ${evidenceSpanId}`,
+            path: [`items.${index}.relations.${relationIndex}.evidenceSpanIds`],
+          });
+        }
+
+        if (!itemEvidenceIds.has(evidenceSpanId)) {
+          issues.push({
+            code: "relation_evidence_outside_claim",
+            message: `Memory relation evidence must be included in the parent memory item's evidenceSpanIds: ${evidenceSpanId}`,
+            path: [`items.${index}.relations.${relationIndex}.evidenceSpanIds`],
+          });
+        }
+      }
+    }
+
+    if (item.epistemicStatus === "observed" && item.claimType === "reported_decision") {
       issues.push({
         code: "decision_status_invalid",
         message: "Reported decisions must use decision_reported or reported epistemic status.",
