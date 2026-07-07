@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const MEMORY_TYPES = [
+export const CLAIM_TYPES = [
   "fact",
   "user_signal",
   "reported_decision",
@@ -11,6 +11,12 @@ export const MEMORY_TYPES = [
   "strategic_statement",
   "ownership_statement",
   "scope_statement",
+] as const;
+
+export const MEMORY_SCHEMA_STATUSES = [
+  "candidate",
+  "stable",
+  "rejected",
 ] as const;
 
 export const EPISTEMIC_STATUSES = [
@@ -58,8 +64,34 @@ export const INITIATIVE_BRIEF_DECISIONS = [
 export const CaptureModeSchema = z.enum(["remember", "ask"]);
 export type CaptureMode = z.infer<typeof CaptureModeSchema>;
 
-export const MemoryTypeSchema = z.enum(MEMORY_TYPES);
-export type MemoryType = z.infer<typeof MemoryTypeSchema>;
+export const ClaimTypeSchema = z.enum(CLAIM_TYPES);
+export type ClaimType = z.infer<typeof ClaimTypeSchema>;
+
+export const MemoryEntitySchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  entityType: z.string().trim().min(1).max(80),
+  canonicalName: z.string().trim().min(1).max(200).optional(),
+});
+export type MemoryEntity = z.infer<typeof MemoryEntitySchema>;
+
+export const MemoryRelationSchema = z.object({
+  subject: z.string().trim().min(1).max(200),
+  predicate: z.string().trim().min(1).max(120),
+  object: z.string().trim().min(1).max(300),
+  evidenceSpanIds: z.array(z.string().min(1)).min(1).max(12),
+});
+export type MemoryRelation = z.infer<typeof MemoryRelationSchema>;
+
+export const MemorySchemaStatusSchema = z.enum(MEMORY_SCHEMA_STATUSES);
+export type MemorySchemaStatus = z.infer<typeof MemorySchemaStatusSchema>;
+
+export const MemorySchemaCandidateSchema = z.object({
+  subjectType: z.string().trim().min(1).max(80),
+  predicate: z.string().trim().min(1).max(120),
+  objectType: z.string().trim().min(1).max(80),
+  status: MemorySchemaStatusSchema.default("candidate"),
+});
+export type MemorySchemaCandidate = z.infer<typeof MemorySchemaCandidateSchema>;
 
 export const EpistemicStatusSchema = z.enum(EPISTEMIC_STATUSES);
 export type EpistemicStatus = z.infer<typeof EpistemicStatusSchema>;
@@ -108,12 +140,15 @@ export type EvidenceSpan = z.infer<typeof EvidenceSpanSchema>;
 
 export const GeneratedMemoryItemSchema = z.object({
   temporaryId: z.string().min(1).max(80),
-  type: MemoryTypeSchema,
+  claimType: ClaimTypeSchema,
   statement: z.string().trim().min(1).max(2_000),
   evidenceSpanIds: z.array(z.string().min(1)).min(1).max(12),
   epistemicStatus: EpistemicStatusSchema,
   qualifiers: z.record(z.string(), z.unknown()).default({}),
   stableDomainTags: z.array(StableDomainTagSchema).default([]),
+  entities: z.array(MemoryEntitySchema).default([]),
+  relations: z.array(MemoryRelationSchema).default([]),
+  schemas: z.array(MemorySchemaCandidateSchema).default([]),
 });
 export type GeneratedMemoryItem = z.infer<typeof GeneratedMemoryItemSchema>;
 
