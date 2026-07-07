@@ -428,7 +428,7 @@ function uniqueEvidenceSpans<T extends { id: string }>(spans: T[]): T[] {
 function buildDeterministicInitiativeBriefDraft(args: {
   memoryItems: Array<{
     id: string;
-    type: string;
+    claimType: string;
     statement: string;
     evidenceSpanIds: string[];
     epistemicStatus: string;
@@ -714,7 +714,7 @@ function renderAppShell(): string {
         card.style.borderRadius = "12px";
         card.style.padding = "12px";
         card.style.marginTop = "12px";
-        card.innerHTML = "<strong>" + escapeHtml(item.type) + "</strong><p>" + escapeHtml(item.statement) + "</p><small>" + escapeHtml(item.reviewState || "unreviewed") + " · evidence: " + escapeHtml(item.evidenceSpanIds.join(", ")) + "</small>";
+        card.innerHTML = "<strong>" + escapeHtml(item.claimType) + "</strong><p>" + escapeHtml(item.statement) + "</p><small>" + escapeHtml(item.reviewState || "unreviewed") + " · evidence: " + escapeHtml(item.evidenceSpanIds.join(", ")) + "</small>" + traceDetailsHtml(item);
         const row = document.createElement("div");
         row.className = "row";
         row.append(
@@ -726,12 +726,15 @@ function renderAppShell(): string {
               action: "edit",
               reviewerLabel: reviewerLabel(),
               replacement: {
-                type: item.type,
+                claimType: item.claimType,
                 statement,
                 evidenceSpanIds: item.evidenceSpanIds,
                 epistemicStatus: item.epistemicStatus,
                 qualifiers: item.qualifiers || {},
-                stableDomainTags: item.stableDomainTags || []
+                stableDomainTags: item.stableDomainTags || [],
+                entities: item.entities || [],
+                relations: item.relations || [],
+                schemas: item.schemas || []
               }
             });
           }),
@@ -853,6 +856,19 @@ function renderAppShell(): string {
         '"': "&quot;",
         "'": "&#039;"
       })[char]);
+    }
+
+    function traceDetailsHtml(memory, evidenceText) {
+      const entities = JSON.stringify(memory.entities || [], null, 2);
+      const relations = JSON.stringify(memory.relations || [], null, 2);
+      const schemas = JSON.stringify(memory.schemas || [], null, 2);
+      const evidence = typeof evidenceText === "string" ? evidenceText : "";
+      return '<details><summary>Trace details</summary>'
+        + '<small>Entities</small><pre>' + escapeHtml(entities) + '</pre>'
+        + '<small>Relations</small><pre>' + escapeHtml(relations) + '</pre>'
+        + '<small>Schema candidates</small><pre>' + escapeHtml(schemas) + '</pre>'
+        + (evidence ? '<small>Evidence</small><pre>' + escapeHtml(evidence) + '</pre>' : '')
+        + '</details>';
     }
   </script>
 </body>
@@ -1072,7 +1088,7 @@ function renderSynthesisShell(): string {
         const evidence = (record.evidenceSpans || []).map((span) => "[" + span.id + "] " + span.text).join("\\n");
         const div = document.createElement("div");
         div.className = "memory";
-        div.innerHTML = '<label><input type="checkbox" name="memory" value="' + escapeHtml(memory.id) + '" /><span><strong>' + escapeHtml(memory.type) + '</strong><br />' + escapeHtml(memory.statement) + '<br /><small>' + escapeHtml(memory.reviewState || "unreviewed") + ' · evidence: ' + escapeHtml(memory.evidenceSpanIds.join(", ")) + '</small><pre>' + escapeHtml(evidence) + '</pre></span></label>';
+        div.innerHTML = '<label><input type="checkbox" name="memory" value="' + escapeHtml(memory.id) + '" /><span><strong>' + escapeHtml(memory.claimType) + '</strong><br />' + escapeHtml(memory.statement) + '<br /><small>' + escapeHtml(memory.reviewState || "unreviewed") + ' · evidence: ' + escapeHtml(memory.evidenceSpanIds.join(", ")) + '</small></span></label>' + traceDetailsHtml(memory, evidence);
         memoryList.append(div);
       }
       statusEl.textContent = response.ok ? "Memory loaded" : "Failed";
@@ -1209,6 +1225,19 @@ function renderSynthesisShell(): string {
         '"': "&quot;",
         "'": "&#039;"
       })[char]);
+    }
+
+    function traceDetailsHtml(memory, evidenceText) {
+      const entities = JSON.stringify(memory.entities || [], null, 2);
+      const relations = JSON.stringify(memory.relations || [], null, 2);
+      const schemas = JSON.stringify(memory.schemas || [], null, 2);
+      const evidence = typeof evidenceText === "string" ? evidenceText : "";
+      return '<details><summary>Trace details</summary>'
+        + '<small>Entities</small><pre>' + escapeHtml(entities) + '</pre>'
+        + '<small>Relations</small><pre>' + escapeHtml(relations) + '</pre>'
+        + '<small>Schema candidates</small><pre>' + escapeHtml(schemas) + '</pre>'
+        + (evidence ? '<small>Evidence</small><pre>' + escapeHtml(evidence) + '</pre>' : '')
+        + '</details>';
     }
   </script>
 </body>
