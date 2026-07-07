@@ -1,0 +1,14 @@
+{
+  "name": "@distillery/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@distillery/contracts": "workspace:*",
+    "@distillery/memory-generation": "workspace:*",
+    "@distillery/memory-synthesis": "workspace:*"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
