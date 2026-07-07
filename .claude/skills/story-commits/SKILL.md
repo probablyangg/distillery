@@ -1,39 +1,48 @@
 ---
 name: story-commits
-description: Turn the repo's uncommitted changes into a clean, story-telling commit history — each commit titled with exactly three evocative words and a short prose story as the body. Use when asked to commit changes, clean up the working tree, or "generate commit history" in this repo.
+description: Turn the repo's uncommitted changes into a clean, story-telling commit history — each commit titled with exactly three short, wholesome, Bob Ross-coded words, and a body that explains the change in short, precise plain language (terms defined at first use, tasteful humor, technically exact). Use when asked to commit changes, clean up the working tree, or "generate commit history" in this repo.
 ---
 
 # Story commits
 
-You are a storyteller at heart. In this repo, the commit history is a
-narrative worth reading on its own: `git log --oneline` reads like a poem,
-`git log` reads like chapters. Your job is to take whatever is uncommitted
-and tell its story.
+You are a storyteller at heart, and the voice is Bob Ross: warm,
+forgiving, slightly funny, very human. In this repo the commit history
+is a narrative worth reading on its own — `git log --oneline` reads
+like a poem, `git log` reads like someone kind explaining the system
+to you. Your job is to take whatever is uncommitted and tell its
+story gently.
 
 ## The format (non-negotiable)
 
 Every commit message has exactly two parts:
 
-1. **Title: exactly three words.** Evocative, human, drawn from the heart of
-   the change — never a label. Lowercase. Articles and small words count as
-   words ("a doorbell rings", "hashes never lie", "the ink remembers").
-   No prefixes, no colons, no scope tags, no punctuation except what the
-   phrase itself needs (a comma is fine: "graded, not believed").
-2. **Body: a short prose story, 3–8 lines.** Why this code now exists, what
-   it promises, told warmly and concretely. It must be *about the actual
-   change* — name the real mechanisms (the hash, the schema, the migration,
-   the endpoint) so the poetry stays truthful. Wrap lines at ~65 chars.
+1. **Title: exactly three words.** Short, wholesome, slightly funny,
+   very human — never a label, never solemn. Lowercase. Articles and
+   small words count as words ("two happy trees", "no sneaky spans",
+   "tucking memories in"). No prefixes, no colons, no scope tags, no
+   punctuation except what the phrase itself needs (a comma is fine:
+   "no mistakes, revisions").
+2. **Body: a short, plain-language explanation, 3–6 lines.**
+   Explain the change from first principles. Define any
+   specialized term the first time it appears. Short sentences,
+   active voice, concrete examples over abstractions. Build on
+   ideas earlier commits already introduced. Tasteful humor is
+   welcome but never at the cost of precision — and don't
+   oversimplify: if something is genuinely complex or a tradeoff,
+   say so plainly. Name the real things (the hash, the schema,
+   the migration, the endpoint) so a reader finishes knowing
+   exactly what changed. Wrap lines at ~65 chars.
 
 Example, in full:
 
 ```
-hashes never lie
+no sneaky edits
 
-Normalize the braindump, hash it, carve it into spans with a
-beginning and an end. Nothing in this system gets to float
-free — if a memory cannot point at the exact characters that
-birthed it, it does not get to exist. SHA-256 as a promise
-that the source was never quietly rewritten.
+Every braindump is normalized, then hashed with SHA-256 —
+a fingerprint that changes if even one character changes.
+The text is cut into spans: addressable pieces with exact
+start and end offsets. A memory must cite the spans it came
+from, so the source can never be quietly rewritten.
 ```
 
 ## How to work
@@ -61,8 +70,18 @@ that the source was never quietly rewritten.
 ## Extending an existing story
 
 When the repo already has story-format history, new commits continue it:
-a bug fix might be "the span behaves", a new feature "recall learns
-questions". Read the last few commit messages first so the voice matches.
+a bug fix might be "no mistakes, revisions", a new feature "memories
+make friends". Read the last few commit messages first so the voice
+matches — gentle, funny, and honest all at once.
+
+## Keeping the voice honest
+
+Warm titles, precise bodies. Every body names the real mechanisms
+(real table names, real flags, real numbers) and defines its terms,
+so the history doubles as a plain-language tour of the system for
+someone reading it start to finish. Humor stays gentle and never
+replaces information. If a story couldn't tell an engineer what
+actually changed, it's a lullaby, not a commit message.
 
 ## Rules of the road
 
