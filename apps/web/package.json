@@ -1,0 +1,12 @@
+{
+  "name": "@distillery/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@distillery/contracts": "workspace:*",
+    "@distillery/db": "workspace:*",
+    "@distillery/model-gateway": "workspace:*",
+    "@distillery/memory-generation": "workspace:*"
+  }
+}
