@@ -1,0 +1,13 @@
+{
+  "name": "@distillery/model-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@distillery/contracts": "workspace:*",
+    "jsonrepair": "^3.15.0"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
