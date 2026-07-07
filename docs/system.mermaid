@@ -1,0 +1,235 @@
+flowchart TB
+
+%% =====================================================
+%% DISTILLERY SYSTEM DIAGRAM
+%% Purpose: continuously understand company context,
+%% discover mature initiatives, and generate PRDs only
+%% when candidates are current, approved, and ready.
+%% =====================================================
+
+
+%% =========================
+%% 1. DATA INGESTION
+%% =========================
+
+subgraph INGEST["1. Data ingestion"]
+  direction TB
+
+  A["Ingested data<br/>Docs, Slack, meetings, tickets, metrics, roadmaps,<br/>past PRDs, engineering docs, customer calls, external news"]
+end
+
+
+%% =========================
+%% 2. CONTINUOUS UNDERSTANDING
+%% =========================
+
+subgraph UNDERSTAND["2. Continuous understanding"]
+  direction LR
+
+  B1["Entity extraction"]
+  B2["Relation extraction"]
+  B3["Deduplication"]
+  B4["Contradiction checks"]
+  B5["External signal extraction"]
+  B6["Temporal / version checks"]
+end
+
+A --> B1
+A --> B2
+A --> B3
+A --> B4
+A --> B5
+A --> B6
+
+
+%% =========================
+%% 3. COMPANY BRAIN
+%% =========================
+
+subgraph BRAIN["3. Company brain"]
+  direction TB
+
+  C["Shared global memory<br/>Current facts, claims, entities, relationships,<br/>evidence, decisions, confidence, provenance"]
+
+  C1["Evidence store<br/>Source passages, docs, transcripts, tickets, metrics"]
+  C2["Decision log<br/>Approved, rejected, deferred, superseded decisions"]
+  C3["Ownership map<br/>Teams, systems, services, dependencies"]
+
+  C1 --> C
+  C2 --> C
+  C3 --> C
+end
+
+B1 --> C
+B2 --> C
+B3 --> C
+B4 --> C
+B5 --> C
+B6 --> C
+
+
+%% =========================
+%% 4. BACKGROUND SYNTHESIS
+%% =========================
+
+subgraph SYNTHESIS["4. Background synthesis"]
+  direction TB
+
+  D["Initiative discovery<br/>Looks for converging product signals"]
+
+  E["Initiative candidate store<br/>Problem hypothesis, affected users, evidence,<br/>dependencies, risks, open questions, status"]
+
+  F{"Is candidate current?<br/>Compared against latest memory"}
+
+  G["Refresh / re-evaluate candidate<br/>Update evidence, scope, status, or assumptions"]
+
+  H["Archive / kill candidate<br/>Resolved, obsolete, duplicate, or strategically invalid"]
+
+  I["Scoring + maturity ranking<br/>Evidence density, strategic fit, urgency,<br/>business impact, feasibility, PRD readiness"]
+
+  J["Candidate brief queue<br/>Signals and opportunity briefs shown to humans"]
+end
+
+C --> D
+D --> E
+E --> F
+
+C -. "Latest facts, decisions, evidence" .-> F
+
+F -->|"Yes"| I
+F -->|"No, refreshable"| G
+F -->|"No, obsolete"| H
+
+G --> E
+H --> E
+H --> C2
+
+I --> J
+
+
+%% =========================
+%% 5. HUMAN CANDIDATE REVIEW
+%% =========================
+
+subgraph REVIEW["5. Human candidate review"]
+  direction TB
+
+  K["Human views signal / candidate brief<br/>Can inspect evidence, risks, dependencies, and open questions"]
+
+  L{"Human decision"}
+
+  M["Feedback / no<br/>Reject, correct, merge, defer, change priority"]
+
+  N["Approve candidate brief<br/>Candidate is ready for PRD drafting"]
+end
+
+J --> K
+K --> L
+
+L -->|"Feedback / no"| M
+L -->|"Approve candidate brief"| N
+
+M --> E
+M --> C
+M --> C2
+
+
+%% =========================
+%% 6. BACKGROUND PRD GENERATION
+%% =========================
+
+subgraph PRDGEN["6. Background PRD generation"]
+  direction TB
+
+  O["Queue PRD draft generation"]
+
+  P{"Is candidate current?<br/>Pre-generation freshness check"}
+
+  Q["Generate PRD draft<br/>Uses candidate brief, evidence, memory, and company PRD format"]
+
+  R{"Is draft current?<br/>Pre-review / pre-delivery freshness check"}
+
+  S["Output gate<br/>Evidence check, contradiction check, dependency check,<br/>success metric check, engineering-readiness check"]
+
+  T{"Human approves PRD?"}
+
+  U["Revise PRD<br/>Apply edits, regenerate sections, or refresh evidence"]
+
+  V["Reject / kill PRD<br/>Archive reason and update candidate state"]
+
+  W["Deliver to engineering"]
+end
+
+N --> O
+O --> P
+
+C -. "Latest memory" .-> P
+
+P -->|"Yes"| Q
+P -->|"No"| E
+
+Q --> R
+
+C -. "Latest memory" .-> R
+
+R -->|"Yes"| S
+R -->|"No"| E
+
+S --> T
+
+T -->|"Needs edits"| U
+T -->|"Reject / kill"| V
+T -->|"Approved"| W
+
+U --> Q
+U --> E
+U --> C
+
+V --> E
+V --> C2
+
+
+%% =========================
+%% 7. DELIVERY + WRITEBACK
+%% =========================
+
+subgraph WRITEBACK["7. Delivery + writeback"]
+  direction TB
+
+  X["Approved PRD<br/>Final product requirements artifact"]
+
+  Y["Memory update<br/>Scope, requirements, non-goals, owners,<br/>dependencies, metrics, launch assumptions"]
+
+  Z["Decision log update<br/>Who approved, when, why, what was rejected or superseded"]
+end
+
+W --> X
+X --> Y
+X --> Z
+
+Y --> C
+Z --> C2
+Z --> C
+
+
+%% =========================
+%% STYLING
+%% =========================
+
+classDef ingest fill:#D7ECFF,stroke:#3B82F6,stroke-width:1px,color:#000;
+classDef processor fill:#E8F3FF,stroke:#60A5FA,stroke-width:1px,color:#000;
+classDef brain fill:#DCFCE7,stroke:#16A34A,stroke-width:2px,color:#000;
+classDef synth fill:#FEF3C7,stroke:#D97706,stroke-width:1px,color:#000;
+classDef human fill:#FFE4D6,stroke:#EA580C,stroke-width:1px,color:#000;
+classDef prd fill:#F3E8FF,stroke:#9333EA,stroke-width:1px,color:#000;
+classDef decision fill:#FFFFFF,stroke:#111827,stroke-width:1.5px,color:#000;
+classDef terminal fill:#FEE2E2,stroke:#DC2626,stroke-width:1px,color:#000;
+
+class A ingest;
+class B1,B2,B3,B4,B5,B6 processor;
+class C,C1,C2,C3 brain;
+class D,E,G,I,J synth;
+class K,M,N human;
+class O,Q,S,U,W,X,Y,Z prd;
+class F,L,P,R,T decision;
+class H,V terminal;

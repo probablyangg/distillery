@@ -184,9 +184,14 @@ Use a LangChain model with structured output rather than a tool-calling loop:
 For v0, configure this model through OpenRouter:
 
 ```text
-OPENROUTER_MODEL=tencent/hy3
+OPENROUTER_MODEL=moonshotai/kimi-k2.7-code
+OPENROUTER_FALLBACK_MODELS=~moonshotai/kimi-latest,moonshotai/kimi-k2.6
+OPENROUTER_TIMEOUT_MS=30000
+OPENROUTER_FALLBACK_TIMEOUT_MS=45000
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 ```
+
+OpenRouter lists `moonshotai/kimi-k2.7-code` as MoonshotAI: Kimi K2.7 Code, released June 12, 2026, with a 262K-token context window and structured output support. v0 uses it as the primary extraction model.
 
 ```ts
 const memoryModel = model.withStructuredOutput(GeneratedMemory, {

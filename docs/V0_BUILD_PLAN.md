@@ -1,6 +1,6 @@
 # Distillery v0 build plan
 
-Status: ready for implementation
+Status: implementation in progress
 
 ## 1. v0 outcome
 
@@ -98,8 +98,10 @@ Hyperdrive is not required for v0. It becomes useful later if Workers need direc
 ### Model provider
 
 - Provider: OpenRouter.
-- Generation model: `tencent/hy3`.
-- Environment variable: `OPENROUTER_MODEL=tencent/hy3`.
+- Primary generation model: `moonshotai/kimi-k2.7-code`.
+- Fallback generation models: `~moonshotai/kimi-latest`, then `moonshotai/kimi-k2.6`.
+- Environment variable: `OPENROUTER_MODEL=moonshotai/kimi-k2.7-code`.
+- Fallback environment variable: `OPENROUTER_FALLBACK_MODELS=~moonshotai/kimi-latest,moonshotai/kimi-k2.6`.
 - Use the OpenRouter OpenAI-compatible Chat Completions API from the model gateway.
 
 ### Embedding provider
@@ -133,9 +135,14 @@ Verified:
 - `SUPABASE_URL` is present in `.env.local`;
 - `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, and `SUPABASE_JWKS_URL` are present in `.env.local`;
 - Supabase publishable and secret key prefixes are valid;
-- OpenRouter generation model selected: `tencent/hy3`;
+- OpenRouter generation model selected: `moonshotai/kimi-k2.7-code` with tested Moonshot fallback chain;
 - OpenRouter embedding model selected and probed: `qwen/qwen3-embedding-8b` with `1536` dimensions;
 - 20 Stable-specific labeled text-braindump fixtures are approved;
+- Slice 1 text ingestion/evidence/memory workflow is implemented and smoke-tested with Supabase RPC;
+- Slice 2 confirm/edit/remove correction flow is implemented and smoke-tested with Supabase RPC;
+- Slice 3 deterministic lexical cited recall is implemented and smoke-tested with Supabase RPC;
+- Slice 4 manual Memory Synthesis to approved initiative brief is implemented and smoke-tested with Supabase RPC;
+- full live v0 smoke passed: text capture -> live OpenRouter memory generation -> memory storage -> traceable initiative brief -> approval -> cleanup;
 - deployment target selected: Cloudflare Workers;
 - Supabase session connection works on port `5432`;
 - Supabase transaction pooler works on port `6543`;
@@ -221,7 +228,7 @@ Purpose:
 - catch prompt/model regressions before they reach users;
 - prove evidence-span citations work;
 - force unsupported claims to fail closed;
-- evaluate whether `tencent/hy3` is good enough for the extraction job.
+- evaluate whether the configured Moonshot model remains good enough for the extraction job.
 
 Recommended initial mix:
 
@@ -387,7 +394,7 @@ User outcome:
 
 Build:
 
-- lexical retrieval over claims and evidence;
+- lexical retrieval over active memory and evidence;
 - migrate 1536-dimensional vector columns for `qwen/qwen3-embedding-8b`;
 - asynchronous embeddings and hybrid retrieval;
 - tenant/private-pilot filters before model context construction;
@@ -401,6 +408,13 @@ Exit criteria:
 - unsupported questions abstain;
 - superseded and conflicting claims remain visible;
 - evidence outside the private pilot scope cannot influence an answer.
+
+Current implementation status:
+
+- deterministic lexical recall implemented;
+- exact evidence-span citations returned;
+- unsupported questions return an explicit gap;
+- embedding tables are migrated, but asynchronous embedding generation and hybrid retrieval are still pending.
 
 ### Slice 4 — manual synthesis to approved brief
 
@@ -428,6 +442,16 @@ Exit criteria:
 - every consequential assertion is evidenced, decided, or explicitly inferred/assumed;
 - approval binds artifact and bundle hashes;
 - invalid or stale briefs cannot be approved.
+
+Current implementation status:
+
+- `/synthesis` reviewer surface implemented separately from the Memory Generation screen;
+- active-memory selection implemented through `distillery_list_active_memory`;
+- human-authored initiative brief creation implemented through `distillery_create_initiative_brief`;
+- brief records bind selected memory item IDs and exact evidence span IDs;
+- approve/reject decision writeback implemented through `distillery_record_initiative_brief_decision`;
+- approval is blocked if supporting memory has been removed or superseded;
+- Markdown export, artifact hashing, automated evidence grouping, and LangGraph interrupt workflow remain post-v0 hardening.
 
 ### Slice 5 — automatic evidence grouping
 

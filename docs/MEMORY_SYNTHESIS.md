@@ -1,6 +1,38 @@
 # v0 Memory Synthesis implementation
 
-Status: proposed
+Status: v0 manual synthesis implemented; automated grouping workflow proposed for later.
+
+## 0. Implemented v0 path
+
+v0 Memory Synthesis is intentionally manual and deterministic:
+
+```text
+active memory
+  -> human selects memory items
+  -> human writes initiative brief
+  -> Distillery binds the brief to memory + exact evidence spans
+  -> human approves or rejects
+  -> decision is written to the audit trail
+```
+
+Implemented surface:
+
+- `GET /synthesis` — separate password-gated reviewer surface;
+- `GET /api/memory-items` — active memory with exact evidence spans;
+- `POST /api/initiative-briefs` — create a human-authored traceable brief;
+- `GET /api/initiative-briefs` and `GET /api/initiative-briefs/{id}` — inspect briefs, memory, evidence, and decisions;
+- `POST /api/initiative-briefs/{id}/decisions` — record approve/reject.
+
+Implemented invariants:
+
+- a new brief must select at least one active memory item;
+- selected memory must belong to the Stable tenant;
+- selected memory cannot be removed or superseded when the brief is created;
+- the brief derives its evidence span set from selected memory;
+- approval is blocked if supporting memory has become inactive;
+- old briefs remain readable even if supporting memory is later corrected or removed.
+
+The rest of this document describes the intended post-v0 automated grouping and generated-brief workflow.
 
 ## 1. Purpose
 

@@ -415,7 +415,7 @@ Exit: the system catches material changed context before humans approve or execu
 - **Database:** Supabase PostgreSQL accessed from Workers through Supabase HTTP APIs and Postgres RPC functions; use `pgvector` with 1536-dimensional recall embeddings.
 - **Blob store:** Cloudflare R2 for immutable original content and normalized snapshots when inputs exceed practical PostgreSQL row storage.
 - **Workers/queue:** Cloudflare Queues and background Workers for parsing, extraction, embedding, freshness evaluation, and generation jobs.
-- **Model gateway:** OpenRouter integration with `tencent/hy3`, prompt/version registry, provider abstraction, structured-output validation, redaction, budget limits, and complete run logs.
+- **Model gateway:** OpenRouter integration with `moonshotai/kimi-k2.7-code` as primary plus configured Moonshot fallbacks, prompt/version registry, provider abstraction, structured-output validation, redaction, budget limits, and complete run logs.
 - **Policy engine:** shared-password gate, state transition guards, reviewer metadata, and output gates.
 - **Renderer:** deterministic PRD/TDD projections from artifact JSON.
 - **Observability:** trace each ingestion and generation run by correlation ID; record model, prompt, bundle, policy, latency, tokens, cost, and failures.
