@@ -1,9 +1,10 @@
 import type { EvidenceSpan, GeneratedMemoryBatch, InitiativeBriefDraft, MemoryItem } from "@distillery/contracts";
 import {
+  CLAIM_TYPES,
   GeneratedMemoryBatchSchema,
   InitiativeBriefDraftSchema,
-  MEMORY_TYPES,
   EPISTEMIC_STATUSES,
+  MEMORY_SCHEMA_STATUSES,
 } from "@distillery/contracts";
 import { jsonrepair } from "jsonrepair";
 
@@ -63,16 +64,19 @@ const MEMORY_GENERATION_SCHEMA = {
         additionalProperties: false,
         required: [
           "temporaryId",
-          "type",
+          "claimType",
           "statement",
           "evidenceSpanIds",
           "epistemicStatus",
           "qualifiers",
           "stableDomainTags",
+          "entities",
+          "relations",
+          "schemas",
         ],
         properties: {
           temporaryId: { type: "string" },
-          type: { type: "string", enum: MEMORY_TYPES },
+          claimType: { type: "string", enum: CLAIM_TYPES },
           statement: { type: "string" },
           evidenceSpanIds: {
             type: "array",
@@ -84,6 +88,51 @@ const MEMORY_GENERATION_SCHEMA = {
           stableDomainTags: {
             type: "array",
             items: { type: "string" },
+          },
+          entities: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["name", "entityType"],
+              properties: {
+                name: { type: "string" },
+                entityType: { type: "string" },
+                canonicalName: { type: "string" },
+              },
+            },
+          },
+          relations: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["subject", "predicate", "object", "evidenceSpanIds"],
+              properties: {
+                subject: { type: "string" },
+                predicate: { type: "string" },
+                object: { type: "string" },
+                evidenceSpanIds: {
+                  type: "array",
+                  minItems: 1,
+                  items: { type: "string" },
+                },
+              },
+            },
+          },
+          schemas: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["subjectType", "predicate", "objectType", "status"],
+              properties: {
+                subjectType: { type: "string" },
+                predicate: { type: "string" },
+                objectType: { type: "string" },
+                status: { type: "string", enum: MEMORY_SCHEMA_STATUSES },
+              },
+            },
           },
         },
       },
@@ -171,7 +220,7 @@ export class OpenRouterMemoryGenerationModel implements MemoryGenerationModel {
           body: JSON.stringify({
             model,
             temperature: 0,
-            max_tokens: 1800,
+            max_tokens: 2400,
             messages: [
               {
                 role: "system",
@@ -338,8 +387,11 @@ export function memoryGenerationSystemPrompt(): string {
     "Do not hide uncertainty. If a statement is a decision report, use decision_reported.",
     "If evidence is weak, use inferred or assumption only when the inference is clearly labeled and supported by supplied span IDs.",
     "Every item must cite one or more supplied evidenceSpanIds exactly.",
-    `Allowed memory types: ${MEMORY_TYPES.join(", ")}.`,
+    `Allowed claim types: ${CLAIM_TYPES.join(", ")}.`,
     `Allowed epistemic statuses: ${EPISTEMIC_STATUSES.join(", ")}.`,
+    "For each item, include entities, relations, and schema candidates as interpretation metadata only; they are not standalone evidence.",
+    "Every relation must cite one or more evidenceSpanIds already cited by its parent memory item.",
+    "Generated schemas must be abstract patterns with status candidate unless an existing reviewed schema is explicitly supplied.",
     "Output must be a single minified JSON object.",
     "Do not include markdown, comments, trailing commas, or unescaped line breaks inside strings.",
     "Return valid JSON matching the requested schema.",
@@ -379,10 +431,13 @@ export function renderInitiativeBriefDraftInputForModel(request: InitiativeBrief
   const memory = request.memoryItems
     .map((item) =>
       [
-        `<memory id="${item.id}" type="${item.type}" epistemicStatus="${item.epistemicStatus}" evidenceSpanIds="${
+        `<memory id="${item.id}" claimType="${item.claimType}" epistemicStatus="${item.epistemicStatus}" evidenceSpanIds="${
           item.evidenceSpanIds.join(",")
         }">`,
         item.statement,
+        `<entities>${JSON.stringify(item.entities)}</entities>`,
+        `<relations>${JSON.stringify(item.relations)}</relations>`,
+        `<schemas>${JSON.stringify(item.schemas)}</schemas>`,
         "</memory>",
       ].join("\n"),
     )

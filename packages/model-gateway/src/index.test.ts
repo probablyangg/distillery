@@ -10,8 +10,17 @@ describe("OpenRouterMemoryGenerationModel", () => {
       model: "moonshotai/kimi-k2.7-code",
       fallbackModels: ["~moonshotai/kimi-latest"],
       fetchImpl: async (_url, init) => {
-        const body = JSON.parse(String(init?.body)) as { model: string };
+        const body = JSON.parse(String(init?.body)) as {
+          model: string;
+          response_format?: { json_schema?: { schema?: { properties?: { items?: { items?: { required?: string[]; properties?: Record<string, unknown> } } } } } };
+        };
         requestedModels.push(body.model);
+        const itemSchema = body.response_format?.json_schema?.schema?.properties?.items?.items;
+        expect(itemSchema?.required).toContain("claimType");
+        expect(itemSchema?.required).not.toContain("type");
+        expect(itemSchema?.properties).toHaveProperty("entities");
+        expect(itemSchema?.properties).toHaveProperty("relations");
+        expect(itemSchema?.properties).toHaveProperty("schemas");
 
         if (body.model === "moonshotai/kimi-k2.7-code") {
           return new Response("upstream timeout", { status: 504 });
@@ -63,12 +72,15 @@ describe("OpenRouterMemoryGenerationModel", () => {
                 content: `{
                   items: [{
                     temporaryId: "m1",
-                    type: "dependency",
+                    claimType: "dependency",
                     statement: "Stable checkout depends on relayer review.",
                     evidenceSpanIds: ["ev_1"],
                     epistemicStatus: "reported",
                     qualifiers: {},
                     stableDomainTags: ["checkout"],
+                  entities: [],
+                  relations: [],
+                  schemas: [],
                   }]
                 }`,
               },
@@ -140,12 +152,15 @@ describe("OpenRouterInitiativeBriefDraftModel", () => {
           id: "mem_1",
           ingestionId: "ing_1",
           sourceVersionId: "srcv_1",
-          type: "dependency",
+          claimType: "dependency",
           statement: "Stable checkout depends on relayer reliability before public launch.",
           evidenceSpanIds: ["ev_1"],
           epistemicStatus: "reported",
           qualifiers: {},
           stableDomainTags: ["checkout"],
+          entities: [],
+          relations: [],
+          schemas: [],
           reviewState: "confirmed",
         },
       ],
