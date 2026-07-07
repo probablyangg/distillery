@@ -1,0 +1,969 @@
+{
+  "version": "v0.2-stable-review",
+  "system": "memory-generation",
+  "company": "Stable",
+  "companyContext": "Synthetic fixtures for Stable leadership using Distillery v0 to capture text-only braindumps about StableChain, USD₮ payments, Stable Pay, gasless UX, ecosystem partners, protocol dependencies, compliance, GTM, and developer experience.",
+  "inputModality": "text_braindump_only",
+  "locatorConvention": "Line ranges are inclusive over inputLines. Character offsets can be added later by the ingestion pipeline.",
+  "epistemicStatuses": ["observed", "reported", "inferred", "assumption", "decision_reported"],
+  "memoryTypes": [
+    "fact",
+    "user_signal",
+    "reported_decision",
+    "metric",
+    "risk",
+    "dependency",
+    "constraint",
+    "strategic_statement",
+    "ownership_statement",
+    "scope_statement"
+  ],
+  "fixtures": [
+    {
+      "id": "stable-mg-001",
+      "category": "executive_braindump",
+      "title": "Mainnet reliability before payments campaign",
+      "mode": "remember",
+      "stableDomainTags": ["payments", "protocol", "gtm"],
+      "inputLines": [
+        "Braindump after exec sync.",
+        "Do not scale the merchant payments campaign until we have a daily dashboard for p95 confirmation time, failed transfers, and RPC error rate.",
+        "The public message is instant USDt payments, but internally I only trust that claim once the reliability view is boring for two straight weeks.",
+        "Protocol owns the confirmation-time metric; DevRel owns RPC error reporting."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [2, 2] },
+        { "id": "s2", "lines": [3, 3] },
+        { "id": "s3", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "constraint",
+          "statement": "The merchant payments campaign should not be scaled until Stable has a daily dashboard for p95 confirmation time, failed transfers, and RPC error rate.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "risk",
+          "statement": "Stable's public instant USDt payments message depends on reliability metrics being consistently stable for two straight weeks.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "ownership_statement",
+          "statement": "Protocol owns the confirmation-time metric and DevRel owns RPC error reporting.",
+          "support": ["s3"],
+          "epistemicStatus": "reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not infer that the merchant payments campaign is approved to scale.",
+        "Do not invent actual p95, failed-transfer, or RPC error-rate values."
+      ]
+    },
+    {
+      "id": "stable-mg-002",
+      "category": "executive_braindump",
+      "title": "Gas waiver pilot boundary",
+      "mode": "remember",
+      "stableDomainTags": ["gasless_ux", "payments", "governance"],
+      "inputLines": [
+        "Need to remember this from the product debate.",
+        "Gas waiver is the clearest UX unlock for first-time users who arrive with only USDT.",
+        "For v1, only sponsor merchant checkout and wallet activation flows; do not sponsor arbitrary DeFi interactions.",
+        "Governance approval for waiver addresses is a dependency before we promise this publicly."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [2, 2] },
+        { "id": "s2", "lines": [3, 3] },
+        { "id": "s3", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "strategic_statement",
+          "statement": "Gas waiver is viewed as a key UX unlock for first-time Stable users who arrive with only USDT.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "scope_statement",
+          "statement": "The initial gas waiver scope is merchant checkout and wallet activation flows, not arbitrary DeFi interactions.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "dependency",
+          "statement": "Publicly promising gas waiver depends on governance approval for waiver addresses.",
+          "support": ["s3"],
+          "epistemicStatus": "reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not infer that gas waiver governance approval has already happened.",
+        "Do not expand the scope to all on-chain interactions."
+      ]
+    },
+    {
+      "id": "stable-mg-003",
+      "category": "executive_braindump",
+      "title": "Stable Pay onboarding confusion",
+      "mode": "remember",
+      "stableDomainTags": ["stable_pay", "wallets", "consumer_ux"],
+      "inputLines": [
+        "Stable Pay notes from support review.",
+        "New users understand sending dollars, but they do not understand why the wallet asks them to choose a network.",
+        "Support wants copy that says Stable is the USDT payments network, not another trading app.",
+        "No decision yet on whether network selection should be hidden by default."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [2, 2] },
+        { "id": "s2", "lines": [3, 3] },
+        { "id": "s3", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "user_signal",
+          "statement": "New Stable Pay users understand sending dollars but are confused by wallet network selection.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "scope_statement",
+          "statement": "Support wants copy that frames Stable as the USDT payments network rather than another trading app.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "reported_decision",
+          "statement": "No decision has been made on whether Stable Pay should hide network selection by default.",
+          "support": ["s3"],
+          "epistemicStatus": "decision_reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not infer that network selection will be hidden.",
+        "Do not invent support ticket counts."
+      ]
+    },
+    {
+      "id": "stable-mg-004",
+      "category": "executive_braindump",
+      "title": "Agentic payments narrative needs proof",
+      "mode": "remember",
+      "stableDomainTags": ["agentic_payments", "gtm", "developer_experience"],
+      "inputLines": [
+        "Agent payments narrative is promising, but we need proof before making it a flagship launch pillar.",
+        "The strongest wedge is agents paying for APIs in USDT without managing a volatile gas token.",
+        "Do not put this into Q3 commitments unless we have one design partner running an end-to-end demo.",
+        "DevRel should collect the demo requirements from infra partners."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [1, 1] },
+        { "id": "s2", "lines": [2, 2] },
+        { "id": "s3", "lines": [3, 3] },
+        { "id": "s4", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "risk",
+          "statement": "The agentic payments narrative needs proof before becoming a flagship launch pillar.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "strategic_statement",
+          "statement": "The proposed agentic payments wedge is agents paying for APIs in USDT without managing a volatile gas token.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "constraint",
+          "statement": "Agentic payments should not enter Q3 commitments without one design partner running an end-to-end demo.",
+          "support": ["s3"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m4",
+          "type": "ownership_statement",
+          "statement": "DevRel should collect agentic payments demo requirements from infrastructure partners.",
+          "support": ["s4"],
+          "epistemicStatus": "reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not infer that agentic payments are a Q3 commitment.",
+        "Do not claim a design partner exists."
+      ]
+    },
+    {
+      "id": "stable-mg-005",
+      "category": "partner_signal",
+      "title": "Wallet partner asks for stable routing defaults",
+      "mode": "remember",
+      "stableDomainTags": ["wallets", "ecosystem", "developer_experience"],
+      "inputLines": [
+        "Wallet partner braindump.",
+        "Partner can add Stable USDT support, but they want a default routing recommendation for users moving USDT from exchange balance to Stable wallet.",
+        "They also asked for a simple 'why Stable' explanation that avoids chain jargon.",
+        "BD says partner will not commit to homepage placement until routing and messaging are settled."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [2, 2] },
+        { "id": "s2", "lines": [3, 3] },
+        { "id": "s3", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "dependency",
+          "statement": "A wallet partner's Stable USDT support depends on a default routing recommendation for users moving USDT from exchange balance to Stable wallet.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "scope_statement",
+          "statement": "The wallet partner requested a simple 'why Stable' explanation that avoids chain jargon.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "risk",
+          "statement": "The wallet partner will not commit to homepage placement until routing and messaging are settled.",
+          "support": ["s3"],
+          "epistemicStatus": "reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not infer homepage placement has been secured.",
+        "Do not invent a specific wallet partner name."
+      ]
+    },
+    {
+      "id": "stable-mg-006",
+      "category": "partner_signal",
+      "title": "Custody partner compliance export requirement",
+      "mode": "remember",
+      "stableDomainTags": ["custody", "compliance", "institutional"],
+      "inputLines": [
+        "Institutional custody partner feedback.",
+        "They like predictable USDT settlement, but onboarding is blocked until they can export address activity by client sub-account.",
+        "Compliance asked whether Stable can provide finality timestamp, transaction hash, counterparty address, and fee paid in USDT.",
+        "No one has committed engineering capacity for this export."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [2, 2] },
+        { "id": "s2", "lines": [3, 3] },
+        { "id": "s3", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "user_signal",
+          "statement": "An institutional custody partner likes predictable USDT settlement but is blocked until they can export address activity by client sub-account.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "scope_statement",
+          "statement": "The custody partner's compliance export needs finality timestamp, transaction hash, counterparty address, and fee paid in USDT.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "risk",
+          "statement": "No engineering capacity has been committed for the custody compliance export.",
+          "support": ["s3"],
+          "epistemicStatus": "reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not infer the export is approved.",
+        "Do not add KYC or sanctions requirements that are not stated."
+      ]
+    },
+    {
+      "id": "stable-mg-007",
+      "category": "partner_signal",
+      "title": "Merchant processor wants quote stability",
+      "mode": "remember",
+      "stableDomainTags": ["merchant_payments", "fees", "api"],
+      "inputLines": [
+        "Merchant processor call.",
+        "They care less about DeFi compatibility and more about knowing the exact USDT cost of a payment before checkout confirmation.",
+        "They asked for a quote API or SDK helper that estimates fee and settlement status before the user confirms.",
+        "If we cannot provide that, they will keep Stable in research mode."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [2, 2] },
+        { "id": "s2", "lines": [3, 3] },
+        { "id": "s3", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "user_signal",
+          "statement": "A merchant processor prioritizes knowing the exact USDT cost of a payment before checkout confirmation over DeFi compatibility.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "scope_statement",
+          "statement": "The merchant processor requested a quote API or SDK helper that estimates fee and settlement status before user confirmation.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "risk",
+          "statement": "Without quote support, the merchant processor will keep Stable in research mode.",
+          "support": ["s3"],
+          "epistemicStatus": "reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not infer the merchant processor has committed to launch.",
+        "Do not invent API fields beyond fee and settlement status."
+      ]
+    },
+    {
+      "id": "stable-mg-008",
+      "category": "partner_signal",
+      "title": "Payout partner cash-out concern",
+      "mode": "remember",
+      "stableDomainTags": ["payouts", "ramps", "gtm"],
+      "inputLines": [
+        "Global payouts partner notes.",
+        "They like sending USDT on Stable, but their customers judge the product by local cash-out reliability.",
+        "The partner asked for a launch-country matrix that pairs Stable transfer support with off-ramp availability.",
+        "Do not market this as global payroll until we can explain where cash-out is actually supported."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [2, 2] },
+        { "id": "s2", "lines": [3, 3] },
+        { "id": "s3", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "user_signal",
+          "statement": "A global payouts partner says customers judge Stable payouts by local cash-out reliability, not only USDT transfer success.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "scope_statement",
+          "statement": "The payouts partner requested a launch-country matrix pairing Stable transfer support with off-ramp availability.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "constraint",
+          "statement": "Stable should not market a global payroll use case until cash-out support by geography can be explained.",
+          "support": ["s3"],
+          "epistemicStatus": "reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not infer global payroll is approved for launch.",
+        "Do not invent a country list."
+      ]
+    },
+    {
+      "id": "stable-mg-009",
+      "category": "developer_experience",
+      "title": "Chain setup docs friction",
+      "mode": "remember",
+      "stableDomainTags": ["developer_experience", "docs", "wallets"],
+      "inputLines": [
+        "DevRel braindump from onboarding sessions.",
+        "Developers keep asking for chain ID, RPC URL, explorer link, faucet, and a minimal transfer example in one place.",
+        "Current docs have the pieces, but the first app path feels scattered.",
+        "Docs owner should ship a single 'send your first USDT payment on Stable' guide before the next ecosystem push."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [2, 2] },
+        { "id": "s2", "lines": [3, 3] },
+        { "id": "s3", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "user_signal",
+          "statement": "Developers ask for Stable chain ID, RPC URL, explorer link, faucet, and a minimal transfer example in one place.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "risk",
+          "statement": "Stable's first-app documentation path feels scattered even though the pieces exist.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "ownership_statement",
+          "statement": "Docs owner should ship a single 'send your first USDT payment on Stable' guide before the next ecosystem push.",
+          "support": ["s3"],
+          "epistemicStatus": "reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not infer the guide has shipped.",
+        "Do not invent the actual chain ID or RPC URL unless present in the source."
+      ]
+    },
+    {
+      "id": "stable-mg-010",
+      "category": "developer_experience",
+      "title": "Indexer latency blocks dashboards",
+      "mode": "remember",
+      "stableDomainTags": ["indexers", "protocol", "developer_experience"],
+      "inputLines": [
+        "Ecosystem dashboard issue.",
+        "Teams building merchant analytics cannot show real-time payment status if indexer lag is more than 30 seconds.",
+        "Protocol says finality is not the blocker; indexer freshness and webhook reliability are.",
+        "Need owner for the webhook SLA before we invite more analytics partners."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [2, 2] },
+        { "id": "s2", "lines": [3, 3] },
+        { "id": "s3", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "constraint",
+          "statement": "Merchant analytics teams cannot show real-time payment status if Stable indexer lag exceeds 30 seconds.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "dependency",
+          "statement": "Merchant analytics readiness depends on indexer freshness and webhook reliability rather than finality alone.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "risk",
+          "statement": "Stable needs an owner for the webhook SLA before inviting more analytics partners.",
+          "support": ["s3"],
+          "epistemicStatus": "reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not infer the webhook SLA owner.",
+        "Do not claim finality is a problem."
+      ]
+    },
+    {
+      "id": "stable-mg-011",
+      "category": "protocol_dependency",
+      "title": "Bridge liquidity before cross-chain claims",
+      "mode": "remember",
+      "stableDomainTags": ["bridges", "liquidity", "gtm"],
+      "inputLines": [
+        "Liquidity note.",
+        "Cross-chain USDT movement is part of the story, but the launch page should not imply every route is deep enough for institutional payments.",
+        "Before we pitch treasury teams, we need route-level limits, expected settlement time, and failure handling for bridge transfers.",
+        "Ecosystem owns partner inventory; Protocol owns failure-mode documentation."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [2, 2] },
+        { "id": "s2", "lines": [3, 3] },
+        { "id": "s3", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "constraint",
+          "statement": "Stable's launch page should not imply every cross-chain USDT route is deep enough for institutional payments.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "dependency",
+          "statement": "Pitching treasury teams depends on route-level limits, expected settlement time, and failure handling for bridge transfers.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "ownership_statement",
+          "statement": "Ecosystem owns bridge partner inventory and Protocol owns bridge failure-mode documentation.",
+          "support": ["s3"],
+          "epistemicStatus": "reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not infer institutional bridge readiness.",
+        "Do not invent route limits."
+      ]
+    },
+    {
+      "id": "stable-mg-012",
+      "category": "protocol_dependency",
+      "title": "Session keys need risk limits",
+      "mode": "remember",
+      "stableDomainTags": ["gasless_ux", "session_keys", "security"],
+      "inputLines": [
+        "Security review thought.",
+        "EIP-7702 session keys are useful for removing repeated signatures, but payment apps need strict spend limits and expiration windows.",
+        "Security does not want the first demo to allow open-ended delegated transfers.",
+        "Product can demo session keys only if the permissions screen clearly shows amount, merchant, and duration."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [2, 2] },
+        { "id": "s2", "lines": [3, 3] },
+        { "id": "s3", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "constraint",
+          "statement": "Payment apps using EIP-7702 session keys need strict spend limits and expiration windows.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "risk",
+          "statement": "Security does not want the first session-key demo to allow open-ended delegated transfers.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "constraint",
+          "statement": "A product demo of session keys requires a permissions screen that clearly shows amount, merchant, and duration.",
+          "support": ["s3"],
+          "epistemicStatus": "reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not infer session keys are approved for production.",
+        "Do not remove the security constraints from the memory."
+      ]
+    },
+    {
+      "id": "stable-mg-013",
+      "category": "metric",
+      "title": "Developer activation funnel",
+      "mode": "remember",
+      "stableDomainTags": ["developer_experience", "metrics", "ecosystem"],
+      "inputLines": [
+        "Dev funnel snapshot from last week's cohort.",
+        "112 developers created a test wallet.",
+        "47 submitted at least one Stable transaction.",
+        "Only 19 completed the sample merchant checkout flow.",
+        "Biggest drop-off was after faucet funding, when users had to choose the right RPC endpoint."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [2, 2] },
+        { "id": "s2", "lines": [3, 3] },
+        { "id": "s3", "lines": [4, 4] },
+        { "id": "s4", "lines": [5, 5] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "metric",
+          "statement": "In last week's developer cohort, 112 developers created a test wallet.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "metric",
+          "statement": "In last week's developer cohort, 47 developers submitted at least one Stable transaction.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "metric",
+          "statement": "In last week's developer cohort, 19 developers completed the sample merchant checkout flow.",
+          "support": ["s3"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m4",
+          "type": "user_signal",
+          "statement": "The largest developer activation drop-off occurred after faucet funding, when users had to choose the right RPC endpoint.",
+          "support": ["s4"],
+          "epistemicStatus": "reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not infer this is a long-term trend.",
+        "Do not calculate percentages unless the evaluator explicitly allows derived metrics."
+      ]
+    },
+    {
+      "id": "stable-mg-014",
+      "category": "metric",
+      "title": "Merchant pilot support burden",
+      "mode": "remember",
+      "stableDomainTags": ["merchant_payments", "support", "metrics"],
+      "inputLines": [
+        "Merchant pilot weekly readout.",
+        "Six pilot merchants processed live USDT payments on Stable this week.",
+        "Four merchants opened support threads about reconciliation exports.",
+        "Two merchants asked whether fees can be presented as a fixed USDT line item before checkout.",
+        "No merchant reported failed settlement in the pilot channel."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [2, 2] },
+        { "id": "s2", "lines": [3, 3] },
+        { "id": "s3", "lines": [4, 4] },
+        { "id": "s4", "lines": [5, 5] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "metric",
+          "statement": "Six pilot merchants processed live USDT payments on Stable this week.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "user_signal",
+          "statement": "Four pilot merchants opened support threads about reconciliation exports.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "user_signal",
+          "statement": "Two pilot merchants asked whether fees can be shown as a fixed USDT line item before checkout.",
+          "support": ["s3"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m4",
+          "type": "metric",
+          "statement": "No merchant reported failed settlement in the pilot channel this week.",
+          "support": ["s4"],
+          "epistemicStatus": "reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not infer all settlements succeeded outside the pilot channel.",
+        "Do not infer merchant pilots are ready for general availability."
+      ]
+    },
+    {
+      "id": "stable-mg-015",
+      "category": "contradiction",
+      "title": "Stable Pay launch scope tension",
+      "mode": "remember",
+      "stableDomainTags": ["stable_pay", "launch", "scope"],
+      "inputLines": [
+        "Old launch note from May: Stable Pay launch should include consumer wallet, merchant QR checkout, and rewards.",
+        "New July exec note: remove rewards from the first launch because rewards distract from the USDT payments story.",
+        "No final approval was made in the July note.",
+        "Marketing already drafted copy mentioning rewards."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [1, 1] },
+        { "id": "s2", "lines": [2, 2] },
+        { "id": "s3", "lines": [3, 3] },
+        { "id": "s4", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "scope_statement",
+          "statement": "A May launch note said Stable Pay launch should include consumer wallet, merchant QR checkout, and rewards.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "scope_statement",
+          "statement": "A July exec note proposed removing rewards from the first Stable Pay launch because rewards distract from the USDT payments story.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "reported_decision",
+          "statement": "No final approval was made in the July note about removing rewards from the Stable Pay launch.",
+          "support": ["s3"],
+          "epistemicStatus": "decision_reported"
+        },
+        {
+          "id": "m4",
+          "type": "risk",
+          "statement": "Marketing copy already mentions Stable Pay rewards despite unresolved launch scope.",
+          "support": ["s4"],
+          "epistemicStatus": "reported"
+        }
+      ],
+      "expectedConflicts": [
+        {
+          "type": "scope_tension",
+          "description": "May scope includes rewards while July exec note proposes removing rewards, but no final approval exists.",
+          "support": ["s1", "s2", "s3", "s4"]
+        }
+      ],
+      "negativeExpectations": [
+        "Do not mark rewards as removed from launch.",
+        "Do not ignore the marketing-copy risk."
+      ]
+    },
+    {
+      "id": "stable-mg-016",
+      "category": "contradiction",
+      "title": "Gasless messaging versus compliance limits",
+      "mode": "remember",
+      "stableDomainTags": ["gasless_ux", "compliance", "marketing"],
+      "inputLines": [
+        "Marketing wants to say every Stable transaction can feel gasless.",
+        "Compliance note says sponsored transactions should initially exclude high-risk corridors and unknown merchant categories.",
+        "Product note says merchant checkout is the first gasless flow.",
+        "Leadership has not decided the external wording."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [1, 1] },
+        { "id": "s2", "lines": [2, 2] },
+        { "id": "s3", "lines": [3, 3] },
+        { "id": "s4", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "scope_statement",
+          "statement": "Marketing wants to say every Stable transaction can feel gasless.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "constraint",
+          "statement": "Compliance says sponsored transactions should initially exclude high-risk corridors and unknown merchant categories.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "scope_statement",
+          "statement": "Product says merchant checkout is the first gasless flow.",
+          "support": ["s3"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m4",
+          "type": "reported_decision",
+          "statement": "Leadership has not decided the external wording for Stable's gasless messaging.",
+          "support": ["s4"],
+          "epistemicStatus": "decision_reported"
+        }
+      ],
+      "expectedConflicts": [
+        {
+          "type": "messaging_scope_conflict",
+          "description": "Broad gasless marketing language conflicts with compliance and product limits.",
+          "support": ["s1", "s2", "s3", "s4"]
+        }
+      ],
+      "negativeExpectations": [
+        "Do not approve the 'every transaction' messaging.",
+        "Do not drop the compliance exclusions."
+      ]
+    },
+    {
+      "id": "stable-mg-017",
+      "category": "compliance",
+      "title": "Country launch matrix needed",
+      "mode": "remember",
+      "stableDomainTags": ["compliance", "payouts", "gtm"],
+      "inputLines": [
+        "Regulatory/commercial braindump.",
+        "Before any country-specific payout campaign, legal wants a matrix covering local cash-out partners, restricted merchant categories, and whether sponsored gas is allowed.",
+        "BD wants the matrix by corridor, not by continent, because partner readiness varies too much.",
+        "No country should be labeled launch-ready until legal and BD both sign off."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [2, 2] },
+        { "id": "s2", "lines": [3, 3] },
+        { "id": "s3", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "constraint",
+          "statement": "Country-specific payout campaigns require a legal matrix covering local cash-out partners, restricted merchant categories, and whether sponsored gas is allowed.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "scope_statement",
+          "statement": "BD wants payout readiness tracked by corridor rather than continent because partner readiness varies too much.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "reported_decision",
+          "statement": "No country should be labeled launch-ready until legal and BD both sign off.",
+          "support": ["s3"],
+          "epistemicStatus": "decision_reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not infer any country is launch-ready.",
+        "Do not invent legal requirements beyond the stated matrix fields."
+      ]
+    },
+    {
+      "id": "stable-mg-018",
+      "category": "ecosystem_gtm",
+      "title": "Prioritize payments ecosystem over generic DeFi",
+      "mode": "remember",
+      "stableDomainTags": ["ecosystem", "gtm", "payments"],
+      "inputLines": [
+        "Ecosystem strategy note.",
+        "For the next partner sprint, prioritize wallets, ramps, custody, merchant processors, and payment analytics.",
+        "Do not spend BD bandwidth on generic yield farms unless they directly improve USDT payment utility.",
+        "The reason is positioning: Stable should be remembered as payment infrastructure, not another DeFi chain."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [2, 2] },
+        { "id": "s2", "lines": [3, 3] },
+        { "id": "s3", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "strategic_statement",
+          "statement": "The next Stable ecosystem partner sprint should prioritize wallets, ramps, custody, merchant processors, and payment analytics.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m2",
+          "type": "constraint",
+          "statement": "BD should not spend bandwidth on generic yield farms unless they directly improve USDT payment utility.",
+          "support": ["s2"],
+          "epistemicStatus": "reported"
+        },
+        {
+          "id": "m3",
+          "type": "strategic_statement",
+          "statement": "Stable's desired positioning is payment infrastructure rather than another DeFi chain.",
+          "support": ["s3"],
+          "epistemicStatus": "reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not infer DeFi integrations are permanently rejected.",
+        "Do not create an initiative automatically."
+      ]
+    },
+    {
+      "id": "stable-mg-019",
+      "category": "noisy_braindump",
+      "title": "Vague executive slogan",
+      "mode": "remember",
+      "stableDomainTags": ["gtm"],
+      "inputLines": [
+        "Random thought: Stable should feel like Stripe for global USDT.",
+        "Maybe the website needs more trust and less crypto energy.",
+        "No customer quotes, no decision, no owner yet.",
+        "Just parking the thought."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [1, 1] },
+        { "id": "s2", "lines": [2, 2] },
+        { "id": "s3", "lines": [3, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "strategic_statement",
+          "statement": "There is an unvalidated positioning thought that Stable should feel more like global USDT payment infrastructure than a crypto-native product.",
+          "support": ["s1", "s2", "s3"],
+          "epistemicStatus": "inferred"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not store this as a decision.",
+        "Do not create website requirements.",
+        "Do not infer customer demand."
+      ]
+    },
+    {
+      "id": "stable-mg-020",
+      "category": "noisy_braindump",
+      "title": "Unsupported launch copy",
+      "mode": "remember",
+      "stableDomainTags": ["marketing", "risk"],
+      "inputLines": [
+        "Draft launch copy idea.",
+        "Stable is the safest and fastest payment chain for every institution on earth.",
+        "Users will never worry about fees again.",
+        "Need proof before we say any of this; this is not approved copy."
+      ],
+      "expectedSpans": [
+        { "id": "s1", "lines": [4, 4] }
+      ],
+      "expectedMemoryItems": [
+        {
+          "id": "m1",
+          "type": "risk",
+          "statement": "Draft Stable launch claims about being the safest and fastest payment chain and users never worrying about fees need proof and are not approved copy.",
+          "support": ["s1"],
+          "epistemicStatus": "reported"
+        }
+      ],
+      "expectedConflicts": [],
+      "negativeExpectations": [
+        "Do not store 'safest and fastest payment chain' as a fact.",
+        "Do not store 'users will never worry about fees again' as a proven user outcome.",
+        "Do not treat the copy as approved."
+      ]
+    }
+  ]
+}
