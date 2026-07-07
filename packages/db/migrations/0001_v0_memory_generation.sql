@@ -91,7 +91,7 @@ create table if not exists memory_items (
   ingestion_id text not null references ingestions(id),
   source_version_id text not null references source_versions(id),
   extraction_run_id text not null references extraction_runs(id),
-  memory_type text not null,
+  claim_type text not null,
   statement text not null,
   epistemic_status text not null,
   qualifiers jsonb not null default '{}'::jsonb,
@@ -106,6 +106,38 @@ create table if not exists memory_item_evidence (
   tenant_id text not null references tenants(id),
   created_at timestamptz not null default now(),
   primary key (memory_item_id, evidence_span_id)
+);
+
+create table if not exists memory_entities (
+  id text primary key,
+  memory_item_id text not null references memory_items(id) on delete cascade,
+  tenant_id text not null references tenants(id),
+  name text not null,
+  entity_type text not null,
+  canonical_name text,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists memory_relations (
+  id text primary key,
+  memory_item_id text not null references memory_items(id) on delete cascade,
+  tenant_id text not null references tenants(id),
+  subject text not null,
+  predicate text not null,
+  object text not null,
+  evidence_span_ids jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists memory_schemas (
+  id text primary key,
+  memory_item_id text not null references memory_items(id) on delete cascade,
+  tenant_id text not null references tenants(id),
+  subject_type text not null,
+  predicate text not null,
+  object_type text not null,
+  status text not null default 'candidate' check (status in ('candidate', 'stable', 'rejected')),
+  created_at timestamptz not null default now()
 );
 
 create table if not exists outbox_events (
@@ -141,6 +173,9 @@ create table if not exists workflow_runs (
 
 create index if not exists evidence_spans_source_version_idx on evidence_spans(source_version_id);
 create index if not exists memory_items_ingestion_idx on memory_items(ingestion_id);
+create index if not exists memory_entities_memory_item_idx on memory_entities(memory_item_id);
+create index if not exists memory_relations_memory_item_idx on memory_relations(memory_item_id);
+create index if not exists memory_schemas_memory_item_idx on memory_schemas(memory_item_id);
 create index if not exists outbox_events_unpublished_idx on outbox_events(created_at) where published_at is null;
 
 create or replace function distillery_get_ingestion_result(p_ingestion_id text)
@@ -173,7 +208,7 @@ begin
         'id', mi.id,
         'ingestionId', mi.ingestion_id,
         'sourceVersionId', mi.source_version_id,
-        'type', mi.memory_type,
+        'claimType', mi.claim_type,
         'statement', mi.statement,
         'evidenceSpanIds', coalesce((
           select jsonb_agg(mie.evidence_span_id order by mie.evidence_span_id)
@@ -444,7 +479,7 @@ begin
       ingestion_id,
       source_version_id,
       extraction_run_id,
-      memory_type,
+      claim_type,
       statement,
       epistemic_status,
       qualifiers,
@@ -457,7 +492,7 @@ begin
       p_ingestion_id,
       p_source_version_id,
       p_extraction_run_id,
-      item->>'type',
+      item->>'claimType',
       item->>'statement',
       item->>'epistemicStatus',
       coalesce(item->'qualifiers', '{}'::jsonb),

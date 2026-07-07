@@ -50,7 +50,7 @@ begin
         'id', mi.id,
         'ingestionId', mi.ingestion_id,
         'sourceVersionId', mi.source_version_id,
-        'type', mi.memory_type,
+        'claimType', mi.claim_type,
         'statement', mi.statement,
         'evidenceSpanIds', coalesce((
           select jsonb_agg(mie.evidence_span_id order by mie.evidence_span_id)
@@ -145,7 +145,7 @@ begin
       ingestion_id,
       source_version_id,
       extraction_run_id,
-      memory_type,
+      claim_type,
       statement,
       epistemic_status,
       qualifiers,
@@ -159,7 +159,7 @@ begin
       original.ingestion_id,
       original.source_version_id,
       original.extraction_run_id,
-      p_replacement->>'type',
+      p_replacement->>'claimType',
       p_replacement->>'statement',
       p_replacement->>'epistemicStatus',
       coalesce(p_replacement->'qualifiers', '{}'::jsonb),
@@ -236,7 +236,7 @@ begin
       'id', original.id,
       'ingestionId', original.ingestion_id,
       'sourceVersionId', original.source_version_id,
-      'type', original.memory_type,
+      'claimType', original.claim_type,
       'statement', original.statement,
       'evidenceSpanIds', coalesce((
         select jsonb_agg(mie.evidence_span_id order by mie.evidence_span_id)
@@ -284,7 +284,7 @@ begin
         'id', replacement.id,
         'ingestionId', replacement.ingestion_id,
         'sourceVersionId', replacement.source_version_id,
-        'type', replacement.memory_type,
+        'claimType', replacement.claim_type,
         'statement', replacement.statement,
         'evidenceSpanIds', coalesce((
           select jsonb_agg(mie.evidence_span_id order by mie.evidence_span_id)

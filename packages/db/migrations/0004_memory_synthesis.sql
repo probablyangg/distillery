@@ -60,7 +60,7 @@ begin
     'id', mi.id,
     'ingestionId', mi.ingestion_id,
     'sourceVersionId', mi.source_version_id,
-    'type', mi.memory_type,
+    'claimType', mi.claim_type,
     'statement', mi.statement,
     'evidenceSpanIds', coalesce((
       select jsonb_agg(mie.evidence_span_id order by mie.evidence_span_id)
