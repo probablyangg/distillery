@@ -1,71 +1,142 @@
 # Distillery
 
-Distillery turns scattered company context into trustworthy memory and human-approved initiative briefs.
+Distillery is an internal company-intelligence system for turning scattered context into trustworthy memory and human-approved initiative briefs.
 
-## v0
+The core product rule is:
+
+> A brief is only useful if a human can verify why every important claim says what it says.
+
+v0 is intentionally narrow. It handles text braindumps, creates evidence-backed memory, supports cited recall, and lets a human generate, edit, save, and approve an initiative brief from selected memory.
+
+## Current v0 status
+
+Implemented and deployed:
+
+- one-screen password-gated capture/recall app at `/`;
+- separate password-gated synthesis surface at `/synthesis`;
+- 30-day shared-password session cookie with logout;
+- text-only ingestion;
+- immutable source versions and evidence spans;
+- OpenRouter memory generation;
+- `claimType` memory contract;
+- MemGraphRAG-aligned semantic metadata on memory items:
+  - `entities`;
+  - `relations`;
+  - `schemas`;
+- confirm/edit/remove memory actions with append-only history;
+- deterministic cited recall with evidence-gap responses;
+- initiative brief draft generation from 1-8 selected memory items;
+- human-editable initiative brief creation;
+- approve/reject decision writeback;
+- Stable starter seed data: 32 confirmed memory items and 3 starter briefs;
+- Cloudflare Worker deployment;
+- Supabase PostgreSQL/RPC persistence with `pgvector` enabled.
+
+Live app:
+
+```text
+https://distillery-v0.angela-f4b.workers.dev
+```
+
+## How v0 works
 
 ```text
 Memory Generation
-  text braindump -> immutable evidence -> structured memory -> cited recall
+  text braindump
+  -> immutable evidence spans
+  -> generated memory items
+  -> validation
+  -> committed memory
+  -> correction/history
+  -> cited recall
 
 Memory Synthesis
-  committed memory -> evidence groups -> human-created initiative
-  -> traceable brief -> human approval
+  active committed memory
+  -> human selects memory
+  -> optional brief draft generation
+  -> human edits/saves brief
+  -> evidence binding
+  -> approve/reject decision
 ```
 
-The Memory Generation screen asks only:
+Important boundaries:
 
-> What should Distillery remember or answer?
+- Memory Generation does not create initiatives, PRDs, tasks, or priorities.
+- Memory Synthesis v0 is human-directed; automated initiative discovery is not implemented yet.
+- `entities`, `relations`, and `schemas` are interpretation metadata, not standalone proof.
+- Exact evidence spans remain authoritative.
+- Shared password access is acceptable only for a private v0 pilot.
 
-For `Remember`, it displays only the committed memory items being passed to Memory Synthesis. Initiative grouping and review happen on a separate password-gated reviewer surface.
+## Quick start
 
-v0 uses a single shared webapp password, configured server-side as `DISTILLERY_APP_PASSWORD`. It does not implement formal authentication, accounts, SSO, or RBAC yet.
+```bash
+pnpm install
+pnpm build
+```
 
-## Documentation
-
-- [v0 build plan](./docs/V0_BUILD_PLAN.md)
-- [Memory Generation implementation](./docs/MEMORY_GENERATION.md)
-- [Memory Synthesis implementation](./docs/MEMORY_SYNTHESIS.md)
-- [memory architecture and MemGraphRAG analysis](./docs/MEMORY_ARCHITECTURE.md)
-- [system design](./docs/SYSTEM_DESIGN.md)
-- [v0 runbook](./docs/V0_RUNBOOK.md)
-- [Memory Generation labeled fixtures](./evals/fixtures/memory-generation/labeled-fixtures.v0.json)
-
-## Current status
-
-- Product and system architecture defined.
-- Slice 1 implementation scaffold added: Cloudflare Worker UI/API, Supabase RPC repository, evidence storage, memory validation, model gateway, and tests.
-- Slice 2 correction/history foundation added: confirm, edit, remove, and memory-item history via append-only events.
-- Slice 3 cited recall foundation added: deterministic lexical recall with exact evidence citations and explicit evidence-gap responses.
-- Slice 4 Memory Synthesis foundation added: separate reviewer surface, active-memory selection, traceable initiative brief creation, and approve/reject decision writeback.
-- Supabase PostgreSQL session and transaction-pooler connections verified.
-- Supabase v0 Memory Generation migration applied.
-- Supabase v0 correction/history migration applied.
-- Supabase v0 cited recall migration applied.
-- Supabase v0 Memory Synthesis migration applied and smoke-tested.
-- `pgvector` enabled.
-- OpenRouter primary model selected: `moonshotai/kimi-k2.7-code`.
-- OpenRouter fallback models configured: `~moonshotai/kimi-latest`, then `moonshotai/kimi-k2.6`.
-- Embedding model selected: `qwen/qwen3-embedding-8b` at 1536 dimensions.
-- v0 deployment target selected: Cloudflare Workers.
-- Live end-to-end smoke passed through the fallback chain: text capture, live memory generation, memory storage, traceable brief creation, approval, and cleanup.
-
-## Local prerequisites
-
-- Node.js 22 or later
-- pnpm 11
-- Supabase PostgreSQL project
-- Supabase project URL and API keys for the Cloudflare Worker runtime
-- OpenRouter API key
-- shared v0 webapp password
-
-## Setup
+Run locally:
 
 ```bash
 cp .env.example .env.local
-pnpm install
+cp apps/web/.dev.vars.example apps/web/.dev.vars
+PATH=/opt/homebrew/bin:$PATH pnpm dev
 ```
 
-Populate `.env.local` with server-side credentials and model config, including `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `SUPABASE_JWKS_URL`, `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, `OPENROUTER_MODEL`, `OPENROUTER_FALLBACK_MODELS`, `OPENROUTER_TIMEOUT_MS`, `OPENROUTER_FALLBACK_TIMEOUT_MS`, `EMBEDDING_PROVIDER`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_ENCODING_FORMAT`, and `DISTILLERY_APP_PASSWORD`. Never commit that file or expose database/model credentials through `NEXT_PUBLIC_` variables.
+Deploy:
 
-Implementation begins with Slice 1 in the [v0 build plan](./docs/V0_BUILD_PLAN.md): pasted text to immutable evidence to validated, committed memory.
+```bash
+PATH=/opt/homebrew/bin:$PATH pnpm deploy:cloudflare
+```
+
+Seed Stable starter data:
+
+```bash
+PATH=/opt/homebrew/bin:$PATH pnpm seed:stable
+```
+
+## Documentation map
+
+Start here:
+
+- [Status and roadmap](./docs/STATUS_AND_ROADMAP.md) — what is done, what is left, and where the system goes next.
+- [v0 runbook](./docs/V0_RUNBOOK.md) — local setup, migrations, seed data, deployment, smoke testing.
+- [v0 build plan](./docs/V0_BUILD_PLAN.md) — implemented slices and remaining backlog.
+
+Subsystem docs:
+
+- [Memory Generation](./docs/MEMORY_GENERATION.md)
+- [Memory Synthesis](./docs/MEMORY_SYNTHESIS.md)
+- [System design](./docs/SYSTEM_DESIGN.md)
+- [Memory architecture and MemGraphRAG notes](./docs/MEMORY_ARCHITECTURE.md)
+- [Stable labeled fixtures](./evals/fixtures/memory-generation/README.md)
+
+## Useful commands
+
+```bash
+pnpm typecheck
+pnpm test
+pnpm fixtures:validate
+pnpm build
+pnpm smoke:live
+pnpm seed:stable
+pnpm deploy:cloudflare
+```
+
+## Environment
+
+Copy `.env.example` to `.env.local` and populate:
+
+- Supabase:
+  - `DATABASE_DIRECT_URL`;
+  - `DATABASE_URL`;
+  - `SUPABASE_URL`;
+  - `SUPABASE_SECRET_KEY`;
+- OpenRouter:
+  - `OPENROUTER_API_KEY`;
+  - `OPENROUTER_BASE_URL`;
+  - `OPENROUTER_MODEL`;
+  - `OPENROUTER_FALLBACK_MODELS`;
+- app access:
+  - `DISTILLERY_APP_PASSWORD`.
+
+Never commit `.env.local`, `.dev.vars`, database URLs, API keys, or Worker secrets.
