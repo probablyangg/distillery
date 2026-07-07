@@ -5,18 +5,12 @@
   "companyContext": "Synthetic fixtures for Stable leadership using Distillery v0 to capture text-only braindumps about StableChain, USD₮ payments, Stable Pay, gasless UX, ecosystem partners, protocol dependencies, compliance, GTM, and developer experience.",
   "inputModality": "text_braindump_only",
   "locatorConvention": "Line ranges are inclusive over inputLines. Character offsets can be added later by the ingestion pipeline.",
-  "epistemicStatuses": ["observed", "reported", "inferred", "assumption", "decision_reported"],
-  "memoryTypes": [
-    "fact",
-    "user_signal",
-    "reported_decision",
-    "metric",
-    "risk",
-    "dependency",
-    "constraint",
-    "strategic_statement",
-    "ownership_statement",
-    "scope_statement"
+  "epistemicStatuses": [
+    "observed",
+    "reported",
+    "inferred",
+    "assumption",
+    "decision_reported"
   ],
   "fixtures": [
     {
@@ -24,7 +18,11 @@
       "category": "executive_braindump",
       "title": "Mainnet reliability before payments campaign",
       "mode": "remember",
-      "stableDomainTags": ["payments", "protocol", "gtm"],
+      "stableDomainTags": [
+        "payments",
+        "protocol",
+        "gtm"
+      ],
       "inputLines": [
         "Braindump after exec sync.",
         "Do not scale the merchant payments campaign until we have a daily dashboard for p95 confirmation time, failed transfers, and RPC error rate.",
@@ -32,31 +30,175 @@
         "Protocol owns the confirmation-time metric; DevRel owns RPC error reporting."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [2, 2] },
-        { "id": "s2", "lines": [3, 3] },
-        { "id": "s3", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "constraint",
+          "claimType": "constraint",
           "statement": "The merchant payments campaign should not be scaled until Stable has a daily dashboard for p95 confirmation time, failed transfers, and RPC error rate.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "payments",
+              "entityType": "concept",
+              "canonicalName": "payments"
+            },
+            {
+              "name": "protocol",
+              "entityType": "team",
+              "canonicalName": "protocol"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "payments",
+              "predicate": "constrains",
+              "object": "protocol",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "constrains",
+              "objectType": "team",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "risk",
+          "claimType": "risk",
           "statement": "Stable's public instant USDt payments message depends on reliability metrics being consistently stable for two straight weeks.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "payments",
+              "entityType": "concept",
+              "canonicalName": "payments"
+            },
+            {
+              "name": "protocol",
+              "entityType": "team",
+              "canonicalName": "protocol"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "payments",
+              "predicate": "risks",
+              "object": "protocol",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "risks",
+              "objectType": "team",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "ownership_statement",
+          "claimType": "ownership_statement",
           "statement": "Protocol owns the confirmation-time metric and DevRel owns RPC error reporting.",
-          "support": ["s3"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "payments",
+              "entityType": "concept",
+              "canonicalName": "payments"
+            },
+            {
+              "name": "protocol",
+              "entityType": "team",
+              "canonicalName": "protocol"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "Protocol",
+              "entityType": "team",
+              "canonicalName": "Protocol"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "payments",
+              "predicate": "owns",
+              "object": "protocol",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "owns",
+              "objectType": "team",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -70,7 +212,11 @@
       "category": "executive_braindump",
       "title": "Gas waiver pilot boundary",
       "mode": "remember",
-      "stableDomainTags": ["gasless_ux", "payments", "governance"],
+      "stableDomainTags": [
+        "gasless_ux",
+        "payments",
+        "governance"
+      ],
       "inputLines": [
         "Need to remember this from the product debate.",
         "Gas waiver is the clearest UX unlock for first-time users who arrive with only USDT.",
@@ -78,31 +224,175 @@
         "Governance approval for waiver addresses is a dependency before we promise this publicly."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [2, 2] },
-        { "id": "s2", "lines": [3, 3] },
-        { "id": "s3", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "strategic_statement",
+          "claimType": "strategic_statement",
           "statement": "Gas waiver is viewed as a key UX unlock for first-time Stable users who arrive with only USDT.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "gasless ux",
+              "entityType": "concept",
+              "canonicalName": "gasless ux"
+            },
+            {
+              "name": "payments",
+              "entityType": "concept",
+              "canonicalName": "payments"
+            },
+            {
+              "name": "governance",
+              "entityType": "governance_process",
+              "canonicalName": "governance"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "gasless ux",
+              "predicate": "prioritizes",
+              "object": "payments",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "prioritizes",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "scope_statement",
+          "claimType": "scope_statement",
           "statement": "The initial gas waiver scope is merchant checkout and wallet activation flows, not arbitrary DeFi interactions.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "gasless ux",
+              "entityType": "concept",
+              "canonicalName": "gasless ux"
+            },
+            {
+              "name": "payments",
+              "entityType": "concept",
+              "canonicalName": "payments"
+            },
+            {
+              "name": "governance",
+              "entityType": "governance_process",
+              "canonicalName": "governance"
+            },
+            {
+              "name": "DeFi",
+              "entityType": "concept",
+              "canonicalName": "DeFi"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "gasless ux",
+              "predicate": "scopes",
+              "object": "payments",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "scopes",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "dependency",
+          "claimType": "dependency",
           "statement": "Publicly promising gas waiver depends on governance approval for waiver addresses.",
-          "support": ["s3"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "gasless ux",
+              "entityType": "concept",
+              "canonicalName": "gasless ux"
+            },
+            {
+              "name": "payments",
+              "entityType": "concept",
+              "canonicalName": "payments"
+            },
+            {
+              "name": "governance",
+              "entityType": "governance_process",
+              "canonicalName": "governance"
+            },
+            {
+              "name": "Publicly",
+              "entityType": "concept",
+              "canonicalName": "Publicly"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "gasless ux",
+              "predicate": "depends_on",
+              "object": "payments",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "depends_on",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -116,7 +406,11 @@
       "category": "executive_braindump",
       "title": "Stable Pay onboarding confusion",
       "mode": "remember",
-      "stableDomainTags": ["stable_pay", "wallets", "consumer_ux"],
+      "stableDomainTags": [
+        "stable_pay",
+        "wallets",
+        "consumer_ux"
+      ],
       "inputLines": [
         "Stable Pay notes from support review.",
         "New users understand sending dollars, but they do not understand why the wallet asks them to choose a network.",
@@ -124,31 +418,175 @@
         "No decision yet on whether network selection should be hidden by default."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [2, 2] },
-        { "id": "s2", "lines": [3, 3] },
-        { "id": "s3", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "user_signal",
+          "claimType": "user_signal",
           "statement": "New Stable Pay users understand sending dollars but are confused by wallet network selection.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "stable pay",
+              "entityType": "product",
+              "canonicalName": "stable pay"
+            },
+            {
+              "name": "wallets",
+              "entityType": "concept",
+              "canonicalName": "wallets"
+            },
+            {
+              "name": "consumer ux",
+              "entityType": "concept",
+              "canonicalName": "consumer ux"
+            },
+            {
+              "name": "Stable Pay",
+              "entityType": "product",
+              "canonicalName": "Stable Pay"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "stable pay",
+              "predicate": "signals",
+              "object": "wallets",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "product",
+              "predicate": "signals",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "scope_statement",
+          "claimType": "scope_statement",
           "statement": "Support wants copy that frames Stable as the USDT payments network rather than another trading app.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "stable pay",
+              "entityType": "product",
+              "canonicalName": "stable pay"
+            },
+            {
+              "name": "wallets",
+              "entityType": "concept",
+              "canonicalName": "wallets"
+            },
+            {
+              "name": "consumer ux",
+              "entityType": "concept",
+              "canonicalName": "consumer ux"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "stable pay",
+              "predicate": "scopes",
+              "object": "wallets",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "product",
+              "predicate": "scopes",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "reported_decision",
+          "claimType": "reported_decision",
           "statement": "No decision has been made on whether Stable Pay should hide network selection by default.",
-          "support": ["s3"],
-          "epistemicStatus": "decision_reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "decision_reported",
+          "entities": [
+            {
+              "name": "stable pay",
+              "entityType": "product",
+              "canonicalName": "stable pay"
+            },
+            {
+              "name": "wallets",
+              "entityType": "concept",
+              "canonicalName": "wallets"
+            },
+            {
+              "name": "consumer ux",
+              "entityType": "concept",
+              "canonicalName": "consumer ux"
+            },
+            {
+              "name": "Stable Pay",
+              "entityType": "product",
+              "canonicalName": "Stable Pay"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "stable pay",
+              "predicate": "reports_decision",
+              "object": "wallets",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "product",
+              "predicate": "reports_decision",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -162,7 +600,11 @@
       "category": "executive_braindump",
       "title": "Agentic payments narrative needs proof",
       "mode": "remember",
-      "stableDomainTags": ["agentic_payments", "gtm", "developer_experience"],
+      "stableDomainTags": [
+        "agentic_payments",
+        "gtm",
+        "developer_experience"
+      ],
       "inputLines": [
         "Agent payments narrative is promising, but we need proof before making it a flagship launch pillar.",
         "The strongest wedge is agents paying for APIs in USDT without managing a volatile gas token.",
@@ -170,39 +612,231 @@
         "DevRel should collect the demo requirements from infra partners."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [1, 1] },
-        { "id": "s2", "lines": [2, 2] },
-        { "id": "s3", "lines": [3, 3] },
-        { "id": "s4", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            1,
+            1
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s4",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "risk",
+          "claimType": "risk",
           "statement": "The agentic payments narrative needs proof before becoming a flagship launch pillar.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "agentic payments",
+              "entityType": "concept",
+              "canonicalName": "agentic payments"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "The",
+              "entityType": "concept",
+              "canonicalName": "The"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "agentic payments",
+              "predicate": "risks",
+              "object": "gtm",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "risks",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "strategic_statement",
+          "claimType": "strategic_statement",
           "statement": "The proposed agentic payments wedge is agents paying for APIs in USDT without managing a volatile gas token.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "agentic payments",
+              "entityType": "concept",
+              "canonicalName": "agentic payments"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "USDT",
+              "entityType": "concept",
+              "canonicalName": "USDT"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "agentic payments",
+              "predicate": "prioritizes",
+              "object": "gtm",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "prioritizes",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "constraint",
+          "claimType": "constraint",
           "statement": "Agentic payments should not enter Q3 commitments without one design partner running an end-to-end demo.",
-          "support": ["s3"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "agentic payments",
+              "entityType": "concept",
+              "canonicalName": "agentic payments"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "Agentic",
+              "entityType": "concept",
+              "canonicalName": "Agentic"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "agentic payments",
+              "predicate": "constrains",
+              "object": "gtm",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "constrains",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m4",
-          "type": "ownership_statement",
+          "claimType": "ownership_statement",
           "statement": "DevRel should collect agentic payments demo requirements from infrastructure partners.",
-          "support": ["s4"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s4"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "agentic payments",
+              "entityType": "concept",
+              "canonicalName": "agentic payments"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "DevRel",
+              "entityType": "team",
+              "canonicalName": "DevRel"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "agentic payments",
+              "predicate": "owns",
+              "object": "gtm",
+              "evidenceSpanIds": [
+                "s4"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "owns",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -216,7 +850,11 @@
       "category": "partner_signal",
       "title": "Wallet partner asks for stable routing defaults",
       "mode": "remember",
-      "stableDomainTags": ["wallets", "ecosystem", "developer_experience"],
+      "stableDomainTags": [
+        "wallets",
+        "ecosystem",
+        "developer_experience"
+      ],
       "inputLines": [
         "Wallet partner braindump.",
         "Partner can add Stable USDT support, but they want a default routing recommendation for users moving USDT from exchange balance to Stable wallet.",
@@ -224,31 +862,175 @@
         "BD says partner will not commit to homepage placement until routing and messaging are settled."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [2, 2] },
-        { "id": "s2", "lines": [3, 3] },
-        { "id": "s3", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "dependency",
+          "claimType": "dependency",
           "statement": "A wallet partner's Stable USDT support depends on a default routing recommendation for users moving USDT from exchange balance to Stable wallet.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "wallets",
+              "entityType": "concept",
+              "canonicalName": "wallets"
+            },
+            {
+              "name": "ecosystem",
+              "entityType": "concept",
+              "canonicalName": "ecosystem"
+            },
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "wallets",
+              "predicate": "depends_on",
+              "object": "ecosystem",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "depends_on",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "scope_statement",
+          "claimType": "scope_statement",
           "statement": "The wallet partner requested a simple 'why Stable' explanation that avoids chain jargon.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "wallets",
+              "entityType": "concept",
+              "canonicalName": "wallets"
+            },
+            {
+              "name": "ecosystem",
+              "entityType": "concept",
+              "canonicalName": "ecosystem"
+            },
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "wallets",
+              "predicate": "scopes",
+              "object": "ecosystem",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "scopes",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "risk",
+          "claimType": "risk",
           "statement": "The wallet partner will not commit to homepage placement until routing and messaging are settled.",
-          "support": ["s3"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "wallets",
+              "entityType": "concept",
+              "canonicalName": "wallets"
+            },
+            {
+              "name": "ecosystem",
+              "entityType": "concept",
+              "canonicalName": "ecosystem"
+            },
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "The",
+              "entityType": "concept",
+              "canonicalName": "The"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "wallets",
+              "predicate": "risks",
+              "object": "ecosystem",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "risks",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -262,7 +1044,11 @@
       "category": "partner_signal",
       "title": "Custody partner compliance export requirement",
       "mode": "remember",
-      "stableDomainTags": ["custody", "compliance", "institutional"],
+      "stableDomainTags": [
+        "custody",
+        "compliance",
+        "institutional"
+      ],
       "inputLines": [
         "Institutional custody partner feedback.",
         "They like predictable USDT settlement, but onboarding is blocked until they can export address activity by client sub-account.",
@@ -270,31 +1056,175 @@
         "No one has committed engineering capacity for this export."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [2, 2] },
-        { "id": "s2", "lines": [3, 3] },
-        { "id": "s3", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "user_signal",
+          "claimType": "user_signal",
           "statement": "An institutional custody partner likes predictable USDT settlement but is blocked until they can export address activity by client sub-account.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "custody",
+              "entityType": "concept",
+              "canonicalName": "custody"
+            },
+            {
+              "name": "compliance",
+              "entityType": "concept",
+              "canonicalName": "compliance"
+            },
+            {
+              "name": "institutional",
+              "entityType": "concept",
+              "canonicalName": "institutional"
+            },
+            {
+              "name": "USDT",
+              "entityType": "concept",
+              "canonicalName": "USDT"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "custody",
+              "predicate": "signals",
+              "object": "compliance",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "signals",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "scope_statement",
+          "claimType": "scope_statement",
           "statement": "The custody partner's compliance export needs finality timestamp, transaction hash, counterparty address, and fee paid in USDT.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "custody",
+              "entityType": "concept",
+              "canonicalName": "custody"
+            },
+            {
+              "name": "compliance",
+              "entityType": "concept",
+              "canonicalName": "compliance"
+            },
+            {
+              "name": "institutional",
+              "entityType": "concept",
+              "canonicalName": "institutional"
+            },
+            {
+              "name": "USDT",
+              "entityType": "concept",
+              "canonicalName": "USDT"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "custody",
+              "predicate": "scopes",
+              "object": "compliance",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "scopes",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "risk",
+          "claimType": "risk",
           "statement": "No engineering capacity has been committed for the custody compliance export.",
-          "support": ["s3"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "custody",
+              "entityType": "concept",
+              "canonicalName": "custody"
+            },
+            {
+              "name": "compliance",
+              "entityType": "concept",
+              "canonicalName": "compliance"
+            },
+            {
+              "name": "institutional",
+              "entityType": "concept",
+              "canonicalName": "institutional"
+            },
+            {
+              "name": "No",
+              "entityType": "concept",
+              "canonicalName": "No"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "custody",
+              "predicate": "risks",
+              "object": "compliance",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "risks",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -308,7 +1238,11 @@
       "category": "partner_signal",
       "title": "Merchant processor wants quote stability",
       "mode": "remember",
-      "stableDomainTags": ["merchant_payments", "fees", "api"],
+      "stableDomainTags": [
+        "merchant_payments",
+        "fees",
+        "api"
+      ],
       "inputLines": [
         "Merchant processor call.",
         "They care less about DeFi compatibility and more about knowing the exact USDT cost of a payment before checkout confirmation.",
@@ -316,31 +1250,175 @@
         "If we cannot provide that, they will keep Stable in research mode."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [2, 2] },
-        { "id": "s2", "lines": [3, 3] },
-        { "id": "s3", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "user_signal",
+          "claimType": "user_signal",
           "statement": "A merchant processor prioritizes knowing the exact USDT cost of a payment before checkout confirmation over DeFi compatibility.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "merchant payments",
+              "entityType": "customer_segment",
+              "canonicalName": "merchant payments"
+            },
+            {
+              "name": "fees",
+              "entityType": "concept",
+              "canonicalName": "fees"
+            },
+            {
+              "name": "api",
+              "entityType": "concept",
+              "canonicalName": "api"
+            },
+            {
+              "name": "USDT",
+              "entityType": "concept",
+              "canonicalName": "USDT"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "merchant payments",
+              "predicate": "signals",
+              "object": "fees",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "customer_segment",
+              "predicate": "signals",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "scope_statement",
+          "claimType": "scope_statement",
           "statement": "The merchant processor requested a quote API or SDK helper that estimates fee and settlement status before user confirmation.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "merchant payments",
+              "entityType": "customer_segment",
+              "canonicalName": "merchant payments"
+            },
+            {
+              "name": "fees",
+              "entityType": "concept",
+              "canonicalName": "fees"
+            },
+            {
+              "name": "api",
+              "entityType": "concept",
+              "canonicalName": "api"
+            },
+            {
+              "name": "The",
+              "entityType": "concept",
+              "canonicalName": "The"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "merchant payments",
+              "predicate": "scopes",
+              "object": "fees",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "customer_segment",
+              "predicate": "scopes",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "risk",
+          "claimType": "risk",
           "statement": "Without quote support, the merchant processor will keep Stable in research mode.",
-          "support": ["s3"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "merchant payments",
+              "entityType": "customer_segment",
+              "canonicalName": "merchant payments"
+            },
+            {
+              "name": "fees",
+              "entityType": "concept",
+              "canonicalName": "fees"
+            },
+            {
+              "name": "api",
+              "entityType": "concept",
+              "canonicalName": "api"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "merchant payments",
+              "predicate": "risks",
+              "object": "fees",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "customer_segment",
+              "predicate": "risks",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -354,7 +1432,11 @@
       "category": "partner_signal",
       "title": "Payout partner cash-out concern",
       "mode": "remember",
-      "stableDomainTags": ["payouts", "ramps", "gtm"],
+      "stableDomainTags": [
+        "payouts",
+        "ramps",
+        "gtm"
+      ],
       "inputLines": [
         "Global payouts partner notes.",
         "They like sending USDT on Stable, but their customers judge the product by local cash-out reliability.",
@@ -362,31 +1444,175 @@
         "Do not market this as global payroll until we can explain where cash-out is actually supported."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [2, 2] },
-        { "id": "s2", "lines": [3, 3] },
-        { "id": "s3", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "user_signal",
+          "claimType": "user_signal",
           "statement": "A global payouts partner says customers judge Stable payouts by local cash-out reliability, not only USDT transfer success.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "payouts",
+              "entityType": "concept",
+              "canonicalName": "payouts"
+            },
+            {
+              "name": "ramps",
+              "entityType": "concept",
+              "canonicalName": "ramps"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "payouts",
+              "predicate": "signals",
+              "object": "ramps",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "signals",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "scope_statement",
+          "claimType": "scope_statement",
           "statement": "The payouts partner requested a launch-country matrix pairing Stable transfer support with off-ramp availability.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "payouts",
+              "entityType": "concept",
+              "canonicalName": "payouts"
+            },
+            {
+              "name": "ramps",
+              "entityType": "concept",
+              "canonicalName": "ramps"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "payouts",
+              "predicate": "scopes",
+              "object": "ramps",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "scopes",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "constraint",
+          "claimType": "constraint",
           "statement": "Stable should not market a global payroll use case until cash-out support by geography can be explained.",
-          "support": ["s3"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "payouts",
+              "entityType": "concept",
+              "canonicalName": "payouts"
+            },
+            {
+              "name": "ramps",
+              "entityType": "concept",
+              "canonicalName": "ramps"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "payouts",
+              "predicate": "constrains",
+              "object": "ramps",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "constrains",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -400,7 +1626,11 @@
       "category": "developer_experience",
       "title": "Chain setup docs friction",
       "mode": "remember",
-      "stableDomainTags": ["developer_experience", "docs", "wallets"],
+      "stableDomainTags": [
+        "developer_experience",
+        "docs",
+        "wallets"
+      ],
       "inputLines": [
         "DevRel braindump from onboarding sessions.",
         "Developers keep asking for chain ID, RPC URL, explorer link, faucet, and a minimal transfer example in one place.",
@@ -408,31 +1638,175 @@
         "Docs owner should ship a single 'send your first USDT payment on Stable' guide before the next ecosystem push."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [2, 2] },
-        { "id": "s2", "lines": [3, 3] },
-        { "id": "s3", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "user_signal",
+          "claimType": "user_signal",
           "statement": "Developers ask for Stable chain ID, RPC URL, explorer link, faucet, and a minimal transfer example in one place.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "docs",
+              "entityType": "concept",
+              "canonicalName": "docs"
+            },
+            {
+              "name": "wallets",
+              "entityType": "concept",
+              "canonicalName": "wallets"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "developer experience",
+              "predicate": "signals",
+              "object": "docs",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "signals",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "risk",
+          "claimType": "risk",
           "statement": "Stable's first-app documentation path feels scattered even though the pieces exist.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "docs",
+              "entityType": "concept",
+              "canonicalName": "docs"
+            },
+            {
+              "name": "wallets",
+              "entityType": "concept",
+              "canonicalName": "wallets"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "developer experience",
+              "predicate": "risks",
+              "object": "docs",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "risks",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "ownership_statement",
+          "claimType": "ownership_statement",
           "statement": "Docs owner should ship a single 'send your first USDT payment on Stable' guide before the next ecosystem push.",
-          "support": ["s3"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "docs",
+              "entityType": "concept",
+              "canonicalName": "docs"
+            },
+            {
+              "name": "wallets",
+              "entityType": "concept",
+              "canonicalName": "wallets"
+            },
+            {
+              "name": "USDT",
+              "entityType": "concept",
+              "canonicalName": "USDT"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "developer experience",
+              "predicate": "owns",
+              "object": "docs",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "owns",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -446,7 +1820,11 @@
       "category": "developer_experience",
       "title": "Indexer latency blocks dashboards",
       "mode": "remember",
-      "stableDomainTags": ["indexers", "protocol", "developer_experience"],
+      "stableDomainTags": [
+        "indexers",
+        "protocol",
+        "developer_experience"
+      ],
       "inputLines": [
         "Ecosystem dashboard issue.",
         "Teams building merchant analytics cannot show real-time payment status if indexer lag is more than 30 seconds.",
@@ -454,31 +1832,175 @@
         "Need owner for the webhook SLA before we invite more analytics partners."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [2, 2] },
-        { "id": "s2", "lines": [3, 3] },
-        { "id": "s3", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "constraint",
+          "claimType": "constraint",
           "statement": "Merchant analytics teams cannot show real-time payment status if Stable indexer lag exceeds 30 seconds.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "indexers",
+              "entityType": "concept",
+              "canonicalName": "indexers"
+            },
+            {
+              "name": "protocol",
+              "entityType": "team",
+              "canonicalName": "protocol"
+            },
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "indexers",
+              "predicate": "constrains",
+              "object": "protocol",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "constrains",
+              "objectType": "team",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "dependency",
+          "claimType": "dependency",
           "statement": "Merchant analytics readiness depends on indexer freshness and webhook reliability rather than finality alone.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "indexers",
+              "entityType": "concept",
+              "canonicalName": "indexers"
+            },
+            {
+              "name": "protocol",
+              "entityType": "team",
+              "canonicalName": "protocol"
+            },
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "Merchant",
+              "entityType": "customer_segment",
+              "canonicalName": "Merchant"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "indexers",
+              "predicate": "depends_on",
+              "object": "protocol",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "depends_on",
+              "objectType": "team",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "risk",
+          "claimType": "risk",
           "statement": "Stable needs an owner for the webhook SLA before inviting more analytics partners.",
-          "support": ["s3"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "indexers",
+              "entityType": "concept",
+              "canonicalName": "indexers"
+            },
+            {
+              "name": "protocol",
+              "entityType": "team",
+              "canonicalName": "protocol"
+            },
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "indexers",
+              "predicate": "risks",
+              "object": "protocol",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "risks",
+              "objectType": "team",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -492,7 +2014,11 @@
       "category": "protocol_dependency",
       "title": "Bridge liquidity before cross-chain claims",
       "mode": "remember",
-      "stableDomainTags": ["bridges", "liquidity", "gtm"],
+      "stableDomainTags": [
+        "bridges",
+        "liquidity",
+        "gtm"
+      ],
       "inputLines": [
         "Liquidity note.",
         "Cross-chain USDT movement is part of the story, but the launch page should not imply every route is deep enough for institutional payments.",
@@ -500,31 +2026,175 @@
         "Ecosystem owns partner inventory; Protocol owns failure-mode documentation."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [2, 2] },
-        { "id": "s2", "lines": [3, 3] },
-        { "id": "s3", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "constraint",
+          "claimType": "constraint",
           "statement": "Stable's launch page should not imply every cross-chain USDT route is deep enough for institutional payments.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "bridges",
+              "entityType": "concept",
+              "canonicalName": "bridges"
+            },
+            {
+              "name": "liquidity",
+              "entityType": "concept",
+              "canonicalName": "liquidity"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "bridges",
+              "predicate": "constrains",
+              "object": "liquidity",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "constrains",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "dependency",
+          "claimType": "dependency",
           "statement": "Pitching treasury teams depends on route-level limits, expected settlement time, and failure handling for bridge transfers.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "bridges",
+              "entityType": "concept",
+              "canonicalName": "bridges"
+            },
+            {
+              "name": "liquidity",
+              "entityType": "concept",
+              "canonicalName": "liquidity"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "Pitching",
+              "entityType": "concept",
+              "canonicalName": "Pitching"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "bridges",
+              "predicate": "depends_on",
+              "object": "liquidity",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "depends_on",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "ownership_statement",
+          "claimType": "ownership_statement",
           "statement": "Ecosystem owns bridge partner inventory and Protocol owns bridge failure-mode documentation.",
-          "support": ["s3"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "bridges",
+              "entityType": "concept",
+              "canonicalName": "bridges"
+            },
+            {
+              "name": "liquidity",
+              "entityType": "concept",
+              "canonicalName": "liquidity"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "Protocol",
+              "entityType": "team",
+              "canonicalName": "Protocol"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "bridges",
+              "predicate": "owns",
+              "object": "liquidity",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "owns",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -538,7 +2208,11 @@
       "category": "protocol_dependency",
       "title": "Session keys need risk limits",
       "mode": "remember",
-      "stableDomainTags": ["gasless_ux", "session_keys", "security"],
+      "stableDomainTags": [
+        "gasless_ux",
+        "session_keys",
+        "security"
+      ],
       "inputLines": [
         "Security review thought.",
         "EIP-7702 session keys are useful for removing repeated signatures, but payment apps need strict spend limits and expiration windows.",
@@ -546,31 +2220,175 @@
         "Product can demo session keys only if the permissions screen clearly shows amount, merchant, and duration."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [2, 2] },
-        { "id": "s2", "lines": [3, 3] },
-        { "id": "s3", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "constraint",
+          "claimType": "constraint",
           "statement": "Payment apps using EIP-7702 session keys need strict spend limits and expiration windows.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "gasless ux",
+              "entityType": "concept",
+              "canonicalName": "gasless ux"
+            },
+            {
+              "name": "session keys",
+              "entityType": "concept",
+              "canonicalName": "session keys"
+            },
+            {
+              "name": "security",
+              "entityType": "concept",
+              "canonicalName": "security"
+            },
+            {
+              "name": "Payment",
+              "entityType": "concept",
+              "canonicalName": "Payment"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "gasless ux",
+              "predicate": "constrains",
+              "object": "session keys",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "constrains",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "risk",
+          "claimType": "risk",
           "statement": "Security does not want the first session-key demo to allow open-ended delegated transfers.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "gasless ux",
+              "entityType": "concept",
+              "canonicalName": "gasless ux"
+            },
+            {
+              "name": "session keys",
+              "entityType": "concept",
+              "canonicalName": "session keys"
+            },
+            {
+              "name": "security",
+              "entityType": "concept",
+              "canonicalName": "security"
+            },
+            {
+              "name": "Security",
+              "entityType": "concept",
+              "canonicalName": "Security"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "gasless ux",
+              "predicate": "risks",
+              "object": "session keys",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "risks",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "constraint",
+          "claimType": "constraint",
           "statement": "A product demo of session keys requires a permissions screen that clearly shows amount, merchant, and duration.",
-          "support": ["s3"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "gasless ux",
+              "entityType": "concept",
+              "canonicalName": "gasless ux"
+            },
+            {
+              "name": "session keys",
+              "entityType": "concept",
+              "canonicalName": "session keys"
+            },
+            {
+              "name": "security",
+              "entityType": "concept",
+              "canonicalName": "security"
+            },
+            {
+              "name": "A",
+              "entityType": "concept",
+              "canonicalName": "A"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "gasless ux",
+              "predicate": "constrains",
+              "object": "session keys",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "constrains",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -584,7 +2402,11 @@
       "category": "metric",
       "title": "Developer activation funnel",
       "mode": "remember",
-      "stableDomainTags": ["developer_experience", "metrics", "ecosystem"],
+      "stableDomainTags": [
+        "developer_experience",
+        "metrics",
+        "ecosystem"
+      ],
       "inputLines": [
         "Dev funnel snapshot from last week's cohort.",
         "112 developers created a test wallet.",
@@ -593,39 +2415,231 @@
         "Biggest drop-off was after faucet funding, when users had to choose the right RPC endpoint."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [2, 2] },
-        { "id": "s2", "lines": [3, 3] },
-        { "id": "s3", "lines": [4, 4] },
-        { "id": "s4", "lines": [5, 5] }
+        {
+          "id": "s1",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            4,
+            4
+          ]
+        },
+        {
+          "id": "s4",
+          "lines": [
+            5,
+            5
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "metric",
+          "claimType": "metric",
           "statement": "In last week's developer cohort, 112 developers created a test wallet.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "metrics",
+              "entityType": "metric",
+              "canonicalName": "metrics"
+            },
+            {
+              "name": "ecosystem",
+              "entityType": "concept",
+              "canonicalName": "ecosystem"
+            },
+            {
+              "name": "In",
+              "entityType": "concept",
+              "canonicalName": "In"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "developer experience",
+              "predicate": "measures",
+              "object": "metrics",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "measures",
+              "objectType": "metric",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "metric",
+          "claimType": "metric",
           "statement": "In last week's developer cohort, 47 developers submitted at least one Stable transaction.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "metrics",
+              "entityType": "metric",
+              "canonicalName": "metrics"
+            },
+            {
+              "name": "ecosystem",
+              "entityType": "concept",
+              "canonicalName": "ecosystem"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "developer experience",
+              "predicate": "measures",
+              "object": "metrics",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "measures",
+              "objectType": "metric",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "metric",
+          "claimType": "metric",
           "statement": "In last week's developer cohort, 19 developers completed the sample merchant checkout flow.",
-          "support": ["s3"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "metrics",
+              "entityType": "metric",
+              "canonicalName": "metrics"
+            },
+            {
+              "name": "ecosystem",
+              "entityType": "concept",
+              "canonicalName": "ecosystem"
+            },
+            {
+              "name": "In",
+              "entityType": "concept",
+              "canonicalName": "In"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "developer experience",
+              "predicate": "measures",
+              "object": "metrics",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "measures",
+              "objectType": "metric",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m4",
-          "type": "user_signal",
+          "claimType": "user_signal",
           "statement": "The largest developer activation drop-off occurred after faucet funding, when users had to choose the right RPC endpoint.",
-          "support": ["s4"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s4"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "developer experience",
+              "entityType": "concept",
+              "canonicalName": "developer experience"
+            },
+            {
+              "name": "metrics",
+              "entityType": "metric",
+              "canonicalName": "metrics"
+            },
+            {
+              "name": "ecosystem",
+              "entityType": "concept",
+              "canonicalName": "ecosystem"
+            },
+            {
+              "name": "RPC",
+              "entityType": "concept",
+              "canonicalName": "RPC"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "developer experience",
+              "predicate": "signals",
+              "object": "metrics",
+              "evidenceSpanIds": [
+                "s4"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "signals",
+              "objectType": "metric",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -639,7 +2653,11 @@
       "category": "metric",
       "title": "Merchant pilot support burden",
       "mode": "remember",
-      "stableDomainTags": ["merchant_payments", "support", "metrics"],
+      "stableDomainTags": [
+        "merchant_payments",
+        "support",
+        "metrics"
+      ],
       "inputLines": [
         "Merchant pilot weekly readout.",
         "Six pilot merchants processed live USDT payments on Stable this week.",
@@ -648,39 +2666,231 @@
         "No merchant reported failed settlement in the pilot channel."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [2, 2] },
-        { "id": "s2", "lines": [3, 3] },
-        { "id": "s3", "lines": [4, 4] },
-        { "id": "s4", "lines": [5, 5] }
+        {
+          "id": "s1",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            4,
+            4
+          ]
+        },
+        {
+          "id": "s4",
+          "lines": [
+            5,
+            5
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "metric",
+          "claimType": "metric",
           "statement": "Six pilot merchants processed live USDT payments on Stable this week.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "merchant payments",
+              "entityType": "customer_segment",
+              "canonicalName": "merchant payments"
+            },
+            {
+              "name": "support",
+              "entityType": "concept",
+              "canonicalName": "support"
+            },
+            {
+              "name": "metrics",
+              "entityType": "metric",
+              "canonicalName": "metrics"
+            },
+            {
+              "name": "USDT",
+              "entityType": "concept",
+              "canonicalName": "USDT"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "merchant payments",
+              "predicate": "measures",
+              "object": "support",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "customer_segment",
+              "predicate": "measures",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "user_signal",
+          "claimType": "user_signal",
           "statement": "Four pilot merchants opened support threads about reconciliation exports.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "merchant payments",
+              "entityType": "customer_segment",
+              "canonicalName": "merchant payments"
+            },
+            {
+              "name": "support",
+              "entityType": "concept",
+              "canonicalName": "support"
+            },
+            {
+              "name": "metrics",
+              "entityType": "metric",
+              "canonicalName": "metrics"
+            },
+            {
+              "name": "Four",
+              "entityType": "concept",
+              "canonicalName": "Four"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "merchant payments",
+              "predicate": "signals",
+              "object": "support",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "customer_segment",
+              "predicate": "signals",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "user_signal",
+          "claimType": "user_signal",
           "statement": "Two pilot merchants asked whether fees can be shown as a fixed USDT line item before checkout.",
-          "support": ["s3"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "merchant payments",
+              "entityType": "customer_segment",
+              "canonicalName": "merchant payments"
+            },
+            {
+              "name": "support",
+              "entityType": "concept",
+              "canonicalName": "support"
+            },
+            {
+              "name": "metrics",
+              "entityType": "metric",
+              "canonicalName": "metrics"
+            },
+            {
+              "name": "USDT",
+              "entityType": "concept",
+              "canonicalName": "USDT"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "merchant payments",
+              "predicate": "signals",
+              "object": "support",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "customer_segment",
+              "predicate": "signals",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m4",
-          "type": "metric",
+          "claimType": "metric",
           "statement": "No merchant reported failed settlement in the pilot channel this week.",
-          "support": ["s4"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s4"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "merchant payments",
+              "entityType": "customer_segment",
+              "canonicalName": "merchant payments"
+            },
+            {
+              "name": "support",
+              "entityType": "concept",
+              "canonicalName": "support"
+            },
+            {
+              "name": "metrics",
+              "entityType": "metric",
+              "canonicalName": "metrics"
+            },
+            {
+              "name": "No",
+              "entityType": "concept",
+              "canonicalName": "No"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "merchant payments",
+              "predicate": "measures",
+              "object": "support",
+              "evidenceSpanIds": [
+                "s4"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "customer_segment",
+              "predicate": "measures",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -694,7 +2904,11 @@
       "category": "contradiction",
       "title": "Stable Pay launch scope tension",
       "mode": "remember",
-      "stableDomainTags": ["stable_pay", "launch", "scope"],
+      "stableDomainTags": [
+        "stable_pay",
+        "launch",
+        "scope"
+      ],
       "inputLines": [
         "Old launch note from May: Stable Pay launch should include consumer wallet, merchant QR checkout, and rewards.",
         "New July exec note: remove rewards from the first launch because rewards distract from the USDT payments story.",
@@ -702,46 +2916,243 @@
         "Marketing already drafted copy mentioning rewards."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [1, 1] },
-        { "id": "s2", "lines": [2, 2] },
-        { "id": "s3", "lines": [3, 3] },
-        { "id": "s4", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            1,
+            1
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s4",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "scope_statement",
+          "claimType": "scope_statement",
           "statement": "A May launch note said Stable Pay launch should include consumer wallet, merchant QR checkout, and rewards.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "stable pay",
+              "entityType": "product",
+              "canonicalName": "stable pay"
+            },
+            {
+              "name": "launch",
+              "entityType": "concept",
+              "canonicalName": "launch"
+            },
+            {
+              "name": "scope",
+              "entityType": "concept",
+              "canonicalName": "scope"
+            },
+            {
+              "name": "Stable Pay",
+              "entityType": "product",
+              "canonicalName": "Stable Pay"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "stable pay",
+              "predicate": "scopes",
+              "object": "launch",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "product",
+              "predicate": "scopes",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "scope_statement",
+          "claimType": "scope_statement",
           "statement": "A July exec note proposed removing rewards from the first Stable Pay launch because rewards distract from the USDT payments story.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "stable pay",
+              "entityType": "product",
+              "canonicalName": "stable pay"
+            },
+            {
+              "name": "launch",
+              "entityType": "concept",
+              "canonicalName": "launch"
+            },
+            {
+              "name": "scope",
+              "entityType": "concept",
+              "canonicalName": "scope"
+            },
+            {
+              "name": "Stable Pay",
+              "entityType": "product",
+              "canonicalName": "Stable Pay"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "stable pay",
+              "predicate": "scopes",
+              "object": "launch",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "product",
+              "predicate": "scopes",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "reported_decision",
+          "claimType": "reported_decision",
           "statement": "No final approval was made in the July note about removing rewards from the Stable Pay launch.",
-          "support": ["s3"],
-          "epistemicStatus": "decision_reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "decision_reported",
+          "entities": [
+            {
+              "name": "stable pay",
+              "entityType": "product",
+              "canonicalName": "stable pay"
+            },
+            {
+              "name": "launch",
+              "entityType": "concept",
+              "canonicalName": "launch"
+            },
+            {
+              "name": "scope",
+              "entityType": "concept",
+              "canonicalName": "scope"
+            },
+            {
+              "name": "Stable Pay",
+              "entityType": "product",
+              "canonicalName": "Stable Pay"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "stable pay",
+              "predicate": "reports_decision",
+              "object": "launch",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "product",
+              "predicate": "reports_decision",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m4",
-          "type": "risk",
+          "claimType": "risk",
           "statement": "Marketing copy already mentions Stable Pay rewards despite unresolved launch scope.",
-          "support": ["s4"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s4"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "stable pay",
+              "entityType": "product",
+              "canonicalName": "stable pay"
+            },
+            {
+              "name": "launch",
+              "entityType": "concept",
+              "canonicalName": "launch"
+            },
+            {
+              "name": "scope",
+              "entityType": "concept",
+              "canonicalName": "scope"
+            },
+            {
+              "name": "Stable Pay",
+              "entityType": "product",
+              "canonicalName": "Stable Pay"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "stable pay",
+              "predicate": "risks",
+              "object": "launch",
+              "evidenceSpanIds": [
+                "s4"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "product",
+              "predicate": "risks",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [
         {
           "type": "scope_tension",
           "description": "May scope includes rewards while July exec note proposes removing rewards, but no final approval exists.",
-          "support": ["s1", "s2", "s3", "s4"]
+          "support": [
+            "s1",
+            "s2",
+            "s3",
+            "s4"
+          ]
         }
       ],
       "negativeExpectations": [
@@ -754,7 +3165,11 @@
       "category": "contradiction",
       "title": "Gasless messaging versus compliance limits",
       "mode": "remember",
-      "stableDomainTags": ["gasless_ux", "compliance", "marketing"],
+      "stableDomainTags": [
+        "gasless_ux",
+        "compliance",
+        "marketing"
+      ],
       "inputLines": [
         "Marketing wants to say every Stable transaction can feel gasless.",
         "Compliance note says sponsored transactions should initially exclude high-risk corridors and unknown merchant categories.",
@@ -762,46 +3177,243 @@
         "Leadership has not decided the external wording."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [1, 1] },
-        { "id": "s2", "lines": [2, 2] },
-        { "id": "s3", "lines": [3, 3] },
-        { "id": "s4", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            1,
+            1
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s4",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "scope_statement",
+          "claimType": "scope_statement",
           "statement": "Marketing wants to say every Stable transaction can feel gasless.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "gasless ux",
+              "entityType": "concept",
+              "canonicalName": "gasless ux"
+            },
+            {
+              "name": "compliance",
+              "entityType": "concept",
+              "canonicalName": "compliance"
+            },
+            {
+              "name": "marketing",
+              "entityType": "concept",
+              "canonicalName": "marketing"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "gasless ux",
+              "predicate": "scopes",
+              "object": "compliance",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "scopes",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "constraint",
+          "claimType": "constraint",
           "statement": "Compliance says sponsored transactions should initially exclude high-risk corridors and unknown merchant categories.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "gasless ux",
+              "entityType": "concept",
+              "canonicalName": "gasless ux"
+            },
+            {
+              "name": "compliance",
+              "entityType": "concept",
+              "canonicalName": "compliance"
+            },
+            {
+              "name": "marketing",
+              "entityType": "concept",
+              "canonicalName": "marketing"
+            },
+            {
+              "name": "Compliance",
+              "entityType": "concept",
+              "canonicalName": "Compliance"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "gasless ux",
+              "predicate": "constrains",
+              "object": "compliance",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "constrains",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "scope_statement",
+          "claimType": "scope_statement",
           "statement": "Product says merchant checkout is the first gasless flow.",
-          "support": ["s3"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "gasless ux",
+              "entityType": "concept",
+              "canonicalName": "gasless ux"
+            },
+            {
+              "name": "compliance",
+              "entityType": "concept",
+              "canonicalName": "compliance"
+            },
+            {
+              "name": "marketing",
+              "entityType": "concept",
+              "canonicalName": "marketing"
+            },
+            {
+              "name": "Product",
+              "entityType": "concept",
+              "canonicalName": "Product"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "gasless ux",
+              "predicate": "scopes",
+              "object": "compliance",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "scopes",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m4",
-          "type": "reported_decision",
+          "claimType": "reported_decision",
           "statement": "Leadership has not decided the external wording for Stable's gasless messaging.",
-          "support": ["s4"],
-          "epistemicStatus": "decision_reported"
+          "support": [
+            "s4"
+          ],
+          "epistemicStatus": "decision_reported",
+          "entities": [
+            {
+              "name": "gasless ux",
+              "entityType": "concept",
+              "canonicalName": "gasless ux"
+            },
+            {
+              "name": "compliance",
+              "entityType": "concept",
+              "canonicalName": "compliance"
+            },
+            {
+              "name": "marketing",
+              "entityType": "concept",
+              "canonicalName": "marketing"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "gasless ux",
+              "predicate": "reports_decision",
+              "object": "compliance",
+              "evidenceSpanIds": [
+                "s4"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "reports_decision",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [
         {
           "type": "messaging_scope_conflict",
           "description": "Broad gasless marketing language conflicts with compliance and product limits.",
-          "support": ["s1", "s2", "s3", "s4"]
+          "support": [
+            "s1",
+            "s2",
+            "s3",
+            "s4"
+          ]
         }
       ],
       "negativeExpectations": [
@@ -814,7 +3426,11 @@
       "category": "compliance",
       "title": "Country launch matrix needed",
       "mode": "remember",
-      "stableDomainTags": ["compliance", "payouts", "gtm"],
+      "stableDomainTags": [
+        "compliance",
+        "payouts",
+        "gtm"
+      ],
       "inputLines": [
         "Regulatory/commercial braindump.",
         "Before any country-specific payout campaign, legal wants a matrix covering local cash-out partners, restricted merchant categories, and whether sponsored gas is allowed.",
@@ -822,31 +3438,175 @@
         "No country should be labeled launch-ready until legal and BD both sign off."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [2, 2] },
-        { "id": "s2", "lines": [3, 3] },
-        { "id": "s3", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "constraint",
+          "claimType": "constraint",
           "statement": "Country-specific payout campaigns require a legal matrix covering local cash-out partners, restricted merchant categories, and whether sponsored gas is allowed.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "compliance",
+              "entityType": "concept",
+              "canonicalName": "compliance"
+            },
+            {
+              "name": "payouts",
+              "entityType": "concept",
+              "canonicalName": "payouts"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "Country",
+              "entityType": "concept",
+              "canonicalName": "Country"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "compliance",
+              "predicate": "constrains",
+              "object": "payouts",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "constrains",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "scope_statement",
+          "claimType": "scope_statement",
           "statement": "BD wants payout readiness tracked by corridor rather than continent because partner readiness varies too much.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "compliance",
+              "entityType": "concept",
+              "canonicalName": "compliance"
+            },
+            {
+              "name": "payouts",
+              "entityType": "concept",
+              "canonicalName": "payouts"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "BD",
+              "entityType": "concept",
+              "canonicalName": "BD"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "compliance",
+              "predicate": "scopes",
+              "object": "payouts",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "scopes",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "reported_decision",
+          "claimType": "reported_decision",
           "statement": "No country should be labeled launch-ready until legal and BD both sign off.",
-          "support": ["s3"],
-          "epistemicStatus": "decision_reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "decision_reported",
+          "entities": [
+            {
+              "name": "compliance",
+              "entityType": "concept",
+              "canonicalName": "compliance"
+            },
+            {
+              "name": "payouts",
+              "entityType": "concept",
+              "canonicalName": "payouts"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "No",
+              "entityType": "concept",
+              "canonicalName": "No"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "compliance",
+              "predicate": "reports_decision",
+              "object": "payouts",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "reports_decision",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -860,7 +3620,11 @@
       "category": "ecosystem_gtm",
       "title": "Prioritize payments ecosystem over generic DeFi",
       "mode": "remember",
-      "stableDomainTags": ["ecosystem", "gtm", "payments"],
+      "stableDomainTags": [
+        "ecosystem",
+        "gtm",
+        "payments"
+      ],
       "inputLines": [
         "Ecosystem strategy note.",
         "For the next partner sprint, prioritize wallets, ramps, custody, merchant processors, and payment analytics.",
@@ -868,31 +3632,175 @@
         "The reason is positioning: Stable should be remembered as payment infrastructure, not another DeFi chain."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [2, 2] },
-        { "id": "s2", "lines": [3, 3] },
-        { "id": "s3", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "strategic_statement",
+          "claimType": "strategic_statement",
           "statement": "The next Stable ecosystem partner sprint should prioritize wallets, ramps, custody, merchant processors, and payment analytics.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "ecosystem",
+              "entityType": "concept",
+              "canonicalName": "ecosystem"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "payments",
+              "entityType": "concept",
+              "canonicalName": "payments"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "ecosystem",
+              "predicate": "prioritizes",
+              "object": "gtm",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "prioritizes",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m2",
-          "type": "constraint",
+          "claimType": "constraint",
           "statement": "BD should not spend bandwidth on generic yield farms unless they directly improve USDT payment utility.",
-          "support": ["s2"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s2"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "ecosystem",
+              "entityType": "concept",
+              "canonicalName": "ecosystem"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "payments",
+              "entityType": "concept",
+              "canonicalName": "payments"
+            },
+            {
+              "name": "USDT",
+              "entityType": "concept",
+              "canonicalName": "USDT"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "ecosystem",
+              "predicate": "constrains",
+              "object": "gtm",
+              "evidenceSpanIds": [
+                "s2"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "constrains",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         },
         {
           "id": "m3",
-          "type": "strategic_statement",
+          "claimType": "strategic_statement",
           "statement": "Stable's desired positioning is payment infrastructure rather than another DeFi chain.",
-          "support": ["s3"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s3"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "ecosystem",
+              "entityType": "concept",
+              "canonicalName": "ecosystem"
+            },
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "payments",
+              "entityType": "concept",
+              "canonicalName": "payments"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "ecosystem",
+              "predicate": "prioritizes",
+              "object": "gtm",
+              "evidenceSpanIds": [
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "prioritizes",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -906,7 +3814,9 @@
       "category": "noisy_braindump",
       "title": "Vague executive slogan",
       "mode": "remember",
-      "stableDomainTags": ["gtm"],
+      "stableDomainTags": [
+        "gtm"
+      ],
       "inputLines": [
         "Random thought: Stable should feel like Stripe for global USDT.",
         "Maybe the website needs more trust and less crypto energy.",
@@ -914,17 +3824,81 @@
         "Just parking the thought."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [1, 1] },
-        { "id": "s2", "lines": [2, 2] },
-        { "id": "s3", "lines": [3, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            1,
+            1
+          ]
+        },
+        {
+          "id": "s2",
+          "lines": [
+            2,
+            2
+          ]
+        },
+        {
+          "id": "s3",
+          "lines": [
+            3,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "strategic_statement",
+          "claimType": "strategic_statement",
           "statement": "There is an unvalidated positioning thought that Stable should feel more like global USDT payment infrastructure than a crypto-native product.",
-          "support": ["s1", "s2", "s3"],
-          "epistemicStatus": "inferred"
+          "support": [
+            "s1",
+            "s2",
+            "s3"
+          ],
+          "epistemicStatus": "inferred",
+          "entities": [
+            {
+              "name": "gtm",
+              "entityType": "concept",
+              "canonicalName": "gtm"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            },
+            {
+              "name": "USDT",
+              "entityType": "concept",
+              "canonicalName": "USDT"
+            },
+            {
+              "name": "There",
+              "entityType": "concept",
+              "canonicalName": "There"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "gtm",
+              "predicate": "prioritizes",
+              "object": "Stable",
+              "evidenceSpanIds": [
+                "s1",
+                "s2",
+                "s3"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "prioritizes",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -939,7 +3913,10 @@
       "category": "noisy_braindump",
       "title": "Unsupported launch copy",
       "mode": "remember",
-      "stableDomainTags": ["marketing", "risk"],
+      "stableDomainTags": [
+        "marketing",
+        "risk"
+      ],
       "inputLines": [
         "Draft launch copy idea.",
         "Stable is the safest and fastest payment chain for every institution on earth.",
@@ -947,15 +3924,63 @@
         "Need proof before we say any of this; this is not approved copy."
       ],
       "expectedSpans": [
-        { "id": "s1", "lines": [4, 4] }
+        {
+          "id": "s1",
+          "lines": [
+            4,
+            4
+          ]
+        }
       ],
       "expectedMemoryItems": [
         {
           "id": "m1",
-          "type": "risk",
+          "claimType": "risk",
           "statement": "Draft Stable launch claims about being the safest and fastest payment chain and users never worrying about fees need proof and are not approved copy.",
-          "support": ["s1"],
-          "epistemicStatus": "reported"
+          "support": [
+            "s1"
+          ],
+          "epistemicStatus": "reported",
+          "entities": [
+            {
+              "name": "marketing",
+              "entityType": "concept",
+              "canonicalName": "marketing"
+            },
+            {
+              "name": "risk",
+              "entityType": "concept",
+              "canonicalName": "risk"
+            },
+            {
+              "name": "Stable",
+              "entityType": "concept",
+              "canonicalName": "Stable"
+            },
+            {
+              "name": "Draft Stable",
+              "entityType": "concept",
+              "canonicalName": "Draft Stable"
+            }
+          ],
+          "relations": [
+            {
+              "subject": "marketing",
+              "predicate": "risks",
+              "object": "risk",
+              "evidenceSpanIds": [
+                "s1"
+              ]
+            }
+          ],
+          "schemas": [
+            {
+              "subjectType": "concept",
+              "predicate": "risks",
+              "objectType": "concept",
+              "status": "candidate"
+            }
+          ]
         }
       ],
       "expectedConflicts": [],
@@ -965,5 +3990,17 @@
         "Do not treat the copy as approved."
       ]
     }
+  ],
+  "claimTypes": [
+    "fact",
+    "user_signal",
+    "reported_decision",
+    "metric",
+    "risk",
+    "dependency",
+    "constraint",
+    "strategic_statement",
+    "ownership_statement",
+    "scope_statement"
   ]
 }

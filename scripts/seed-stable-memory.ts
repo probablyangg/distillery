@@ -1,8 +1,11 @@
 import fs from "node:fs";
 import { z } from "zod";
 import {
+  ClaimTypeSchema,
   EpistemicStatusSchema,
-  MemoryTypeSchema,
+  MemoryEntitySchema,
+  MemoryRelationSchema,
+  MemorySchemaCandidateSchema,
   type EvidenceSpan,
   type MemoryItem,
 } from "@distillery/contracts";
@@ -48,10 +51,13 @@ const FixtureSchema = z.object({
   expectedMemoryItems: z.array(
     z.object({
       id: z.string().min(1),
-      type: MemoryTypeSchema,
+      claimType: ClaimTypeSchema,
       statement: z.string().min(1),
       support: z.array(z.string().min(1)).min(1),
       epistemicStatus: EpistemicStatusSchema,
+      entities: z.array(MemoryEntitySchema).default([]),
+      relations: z.array(MemoryRelationSchema).default([]),
+      schemas: z.array(MemorySchemaCandidateSchema).default([]),
     }),
   ),
 });
@@ -229,7 +235,7 @@ async function seedFixture(args: {
       memoryGenerationVersion: `${MEMORY_GENERATION_VERSION}:seed:${fixtureSlug}`,
       items: fixture.expectedMemoryItems.map((item) => ({
         id: memoryItemId(fixture.id, item.id),
-        type: item.type,
+        claimType: item.claimType,
         statement: item.statement,
         evidenceSpanIds: item.support.map((supportId) => spanId(fixture.id, supportId)),
         epistemicStatus: item.epistemicStatus,
@@ -241,6 +247,12 @@ async function seedFixture(args: {
           source: "approved Stable v0 fixture",
         },
         stableDomainTags: fixture.stableDomainTags,
+        entities: item.entities,
+        relations: item.relations.map((relation) => ({
+          ...relation,
+          evidenceSpanIds: relation.evidenceSpanIds.map((supportId) => spanId(fixture.id, supportId)),
+        })),
+        schemas: item.schemas,
       })),
     });
     createdMemory = true;

@@ -1,6 +1,12 @@
 import fs from "node:fs";
 import { z } from "zod";
-import { EPISTEMIC_STATUSES, MEMORY_TYPES } from "@distillery/contracts";
+import {
+  CLAIM_TYPES,
+  EPISTEMIC_STATUSES,
+  MemoryEntitySchema,
+  MemoryRelationSchema,
+  MemorySchemaCandidateSchema,
+} from "@distillery/contracts";
 
 const FixtureFileSchema = z.object({
   version: z.string(),
@@ -24,10 +30,13 @@ const FixtureFileSchema = z.object({
       expectedMemoryItems: z.array(
         z.object({
           id: z.string(),
-          type: z.enum(MEMORY_TYPES),
+          claimType: z.enum(CLAIM_TYPES),
           statement: z.string().min(1),
           support: z.array(z.string()).min(1),
           epistemicStatus: z.enum(EPISTEMIC_STATUSES),
+          entities: z.array(MemoryEntitySchema).default([]),
+          relations: z.array(MemoryRelationSchema).default([]),
+          schemas: z.array(MemorySchemaCandidateSchema).default([]),
         }),
       ),
       expectedConflicts: z.array(
@@ -70,6 +79,15 @@ for (const fixture of parsed.fixtures) {
     for (const support of item.support) {
       if (!spanIds.has(support)) errors.push(`${fixture.id}:${item.id}: missing support ${support}`);
     }
+
+    for (const [relationIndex, relation] of item.relations.entries()) {
+      for (const support of relation.evidenceSpanIds) {
+        if (!spanIds.has(support)) errors.push(`${fixture.id}:${item.id}:relation:${relationIndex}: missing support ${support}`);
+        if (!item.support.includes(support)) {
+          errors.push(`${fixture.id}:${item.id}:relation:${relationIndex}: support ${support} is outside parent memory support`);
+        }
+      }
+    }
   }
 
   for (const conflict of fixture.expectedConflicts) {
@@ -85,4 +103,3 @@ if (errors.length > 0) {
 }
 
 console.log(`fixtures=ok count=${parsed.fixtures.length} version=${parsed.version}`);
-
