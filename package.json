@@ -10,17 +10,21 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "fixtures:validate": "tsx evals/runners/validate-memory-fixtures.ts",
+    "smoke:live": "tsx evals/runners/live-v0-smoke.ts",
+    "seed:stable": "tsx scripts/seed-stable-memory.ts",
     "dev": "wrangler dev --config apps/web/wrangler.toml",
-    "deploy": "wrangler deploy --config apps/web/wrangler.toml"
+    "deploy": "wrangler deploy --config apps/web/wrangler.toml",
+    "deploy:cloudflare": "tsx scripts/deploy-cloudflare.ts"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260706.1",
+    "@types/node": "^26.1.0",
     "tsx": "^4.23.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9",
