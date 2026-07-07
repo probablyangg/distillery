@@ -16,7 +16,7 @@ import { validateGeneratedMemory } from "@distillery/validation";
 
 export const MEMORY_GENERATION_VERSION = "memory-generation-v0.1";
 export const MEMORY_PROMPT_VERSION = "stable-memory-prompt-v0.1";
-export const MEMORY_SCHEMA_VERSION = "generated-memory-batch-v0.1";
+export const MEMORY_SCHEMA_VERSION = "generated-memory-batch-v0.2";
 export const DEFAULT_TENANT_ID = "stable";
 
 export type TextCaptureCommand = {
@@ -198,12 +198,15 @@ export async function runMemoryGenerationWorkflow(args: {
       memoryGenerationVersion: MEMORY_GENERATION_VERSION,
       items: validation.items.map((item) => ({
         id: newId("mem"),
-        type: item.type,
+        claimType: item.claimType,
         statement: item.statement,
         evidenceSpanIds: item.evidenceSpanIds,
         epistemicStatus: item.epistemicStatus,
         qualifiers: item.qualifiers,
         stableDomainTags: item.stableDomainTags,
+        entities: item.entities,
+        relations: item.relations,
+        schemas: item.schemas,
       })),
     });
 

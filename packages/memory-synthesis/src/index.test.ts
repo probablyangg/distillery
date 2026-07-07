@@ -10,12 +10,15 @@ const memoryItem: MemoryItem = {
   id: "mem_1",
   ingestionId: "ing_1",
   sourceVersionId: "srcv_1",
-  type: "dependency",
+  claimType: "dependency",
   statement: "Stable checkout depends on relayer reliability before public launch.",
   evidenceSpanIds: ["ev_1"],
   epistemicStatus: "reported",
   qualifiers: {},
   stableDomainTags: ["checkout"],
+  entities: [],
+  relations: [],
+  schemas: [],
   reviewState: "confirmed",
 };
 

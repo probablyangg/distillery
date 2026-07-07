@@ -199,11 +199,24 @@ describe("memory generation workflow", () => {
         items: [
           {
             temporaryId: "m1",
-            type: "constraint",
+            claimType: "constraint",
             statement: "Stable should not launch the campaign until reliability metrics are boring.",
             evidenceSpanIds: [spanId!],
             epistemicStatus: "reported",
             stableDomainTags: ["gtm", "protocol"],
+            entities: [{ name: "Stable", entityType: "company", canonicalName: "Stable" }],
+            relations: [{
+              subject: "Stable",
+              predicate: "constrains",
+              object: "campaign launch",
+              evidenceSpanIds: [spanId!],
+            }],
+            schemas: [{
+              subjectType: "company",
+              predicate: "constrains",
+              objectType: "gtm_motion",
+              status: "candidate",
+            }],
             qualifiers: {},
           },
         ],
@@ -213,6 +226,11 @@ describe("memory generation workflow", () => {
     expect(result.status).toBe("ready");
     expect(result.memoryItems).toHaveLength(1);
     expect(result.memoryItems[0]?.evidenceSpanIds).toEqual([spanId]);
+    expect(result.memoryItems[0]?.entities).toEqual([
+      { name: "Stable", entityType: "company", canonicalName: "Stable" },
+    ]);
+    expect(result.memoryItems[0]?.relations[0]?.predicate).toBe("constrains");
+    expect(result.memoryItems[0]?.schemas[0]?.status).toBe("candidate");
   });
 
   it("fails closed when the model invents evidence ids", async () => {
@@ -238,11 +256,14 @@ describe("memory generation workflow", () => {
         items: [
           {
             temporaryId: "m1",
-            type: "dependency",
+            claimType: "dependency",
             statement: "Gas waiver requires governance approval.",
             evidenceSpanIds: ["invented_span"],
             epistemicStatus: "reported",
             stableDomainTags: ["gasless_ux"],
+            entities: [],
+            relations: [],
+            schemas: [],
             qualifiers: {},
           },
         ],
@@ -277,11 +298,14 @@ describe("memory generation workflow", () => {
         items: [
           {
             temporaryId: "m1",
-            type: "dependency",
+            claimType: "dependency",
             statement: "Gas waiver requires governance approval.",
             evidenceSpanIds: [spanId!],
             epistemicStatus: "reported",
             stableDomainTags: ["gasless_ux"],
+            entities: [],
+            relations: [],
+            schemas: [],
             qualifiers: {},
           },
         ],
@@ -305,11 +329,14 @@ describe("memory generation workflow", () => {
         action: "edit",
         reviewerLabel: "Stable reviewer",
         replacement: {
-          type: "constraint",
+          claimType: "constraint",
           statement: "Public gas waiver promises require governance approval.",
           evidenceSpanIds: [spanId!],
           epistemicStatus: "reported",
           stableDomainTags: ["gasless_ux", "governance"],
+          entities: [],
+          relations: [],
+          schemas: [],
           qualifiers: {},
         },
       },
