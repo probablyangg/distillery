@@ -1,0 +1,104 @@
+flowchart TB
+
+%% =====================================================
+%% DISTILLERY LOOP SYSTEM DIAGRAM
+%% Status: simplified architecture direction.
+%%
+%% Idea: the system is a small fleet of homogeneous loops.
+%% Committed ledger events route to pending work. A context loader
+%% prepares typed policy input. Policy runners emit proposed events.
+%% Validators and humans decide what becomes committed ledger state.
+%% =====================================================
+
+subgraph LEDGER["Authoritative ledger"]
+  direction TB
+  A["Evidence<br/>source versions, spans, provenance"]
+  B["Memory<br/>claims, entities, relations, schemas"]
+  C["Decisions<br/>approvals, rejections, supersessions"]
+  D["Artifacts<br/>briefs, PRDs, trace bundles"]
+end
+
+subgraph RUNNER["Loop runner"]
+  direction TB
+  E["Load work item"]
+  F["Get input<br/>read ledger context"]
+  G["Run policy"]
+  H["Emit proposal"]
+end
+
+subgraph ROUTER["Event router"]
+  direction TB
+  R["Map committed events<br/>to follow-up work"]
+end
+
+subgraph POLICIES["Atomic policies"]
+  direction TB
+  P1["ingest_source"]
+  P2["extract_memory"]
+  P3["check_freshness"]
+  P4["detect_contradiction"]
+  P5["discover_candidate"]
+  P6["draft_artifact"]
+  P7["gate_output"]
+  P8["record_decision"]
+end
+
+subgraph GATE["Validation and approval"]
+  direction TB
+  I["Validator<br/>schema, evidence, freshness, permissions"]
+  J{"Human approval<br/>required?"}
+  K["Human review"]
+  L["Commit event"]
+  M["Reject / revise"]
+end
+
+subgraph QUEUE["Work queue"]
+  direction TB
+  Q["Pending work<br/>source changed, memory changed,<br/>candidate stale, draft requested"]
+end
+
+A -. "read context" .-> F
+B -. "read context" .-> F
+C -. "read context" .-> F
+D -. "read context" .-> F
+
+A --> R
+B --> R
+C --> R
+D --> R
+R --> Q
+
+Q --> E
+E --> F
+F --> G
+
+G --> P1
+G --> P2
+G --> P3
+G --> P4
+G --> P5
+G --> P6
+G --> P7
+G --> P8
+
+P1 --> H
+P2 --> H
+P3 --> H
+P4 --> H
+P5 --> H
+P6 --> H
+P7 --> H
+P8 --> H
+
+H --> I
+I --> J
+J -->|"No"| L
+J -->|"Yes"| K
+K -->|"Approve"| L
+K -->|"Reject / edit"| M
+
+M --> Q
+L --> A
+L --> B
+L --> C
+L --> D
