@@ -18,6 +18,7 @@
       "@distillery/evidence": ["packages/evidence/src/index.ts"],
       "@distillery/validation": ["packages/validation/src/index.ts"],
       "@distillery/model-gateway": ["packages/model-gateway/src/index.ts"],
+      "@distillery/loop": ["packages/loop/src/index.ts"],
       "@distillery/db": ["packages/db/src/index.ts"],
       "@distillery/memory-generation": ["packages/memory-generation/src/index.ts"],
       "@distillery/memory-synthesis": ["packages/memory-synthesis/src/index.ts"]
