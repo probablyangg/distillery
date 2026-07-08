@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@distillery/contracts": "workspace:*",
+    "@distillery/loop": "workspace:*",
     "@distillery/memory-generation": "workspace:*",
     "@distillery/memory-synthesis": "workspace:*"
   },

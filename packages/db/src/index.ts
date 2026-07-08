@@ -7,7 +7,13 @@ import {
   CreateInitiativeBriefInputSchema,
   InitiativeBriefDecisionInputSchema,
   InitiativeBriefSchema,
+  EventOutboxRowSchema,
+  LedgerEventSchema,
+  LoopStatusResponseSchema,
   MemoryWithEvidenceSchema,
+  PendingWorkItemSchema,
+  PolicyRunSchema,
+  ProposedEventSchema,
   CitedAnswerSchema,
   RecallMatchSchema,
   type EvidenceSpan,
@@ -21,9 +27,19 @@ import {
   type MemoryItemActionInput,
   type MemoryItemHistory,
   type MemoryItem,
+  type EventOutboxRow,
+  type LedgerEvent,
+  type LoopStatusResponse,
+  type PendingWorkItem,
+  type PolicyRun,
+  type PolicyName,
+  type ProposedEvent,
+  type WorkSubjectType,
 } from "@distillery/contracts";
+import type { LoopPersistence } from "@distillery/loop";
 import { buildDeterministicCitedAnswer } from "@distillery/memory-generation";
 import { validateInitiativeBriefTraceability } from "@distillery/memory-synthesis";
+import { z } from "zod";
 import type {
   CommittableMemoryItem,
   ExtractionRunRecord,
@@ -275,6 +291,197 @@ export class SupabaseMemoryGenerationRepository implements MemoryGenerationRepos
   }
 }
 
+export class SupabaseLoopPersistence implements LoopPersistence {
+  constructor(private readonly rpcClient: SupabaseRpcClient) {}
+
+  async commitLedgerEventWithOutbox(input: Omit<LedgerEvent, "createdAt"> & { createdAt?: string }): Promise<LedgerEvent> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_commit_ledger_event_with_outbox", {
+      p_event: input,
+    });
+    return LedgerEventSchema.parse(result);
+  }
+
+  async claimEventOutboxRow(): Promise<EventOutboxRow | null> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_claim_event_outbox_row", {});
+    return result ? EventOutboxRowSchema.parse(result) : null;
+  }
+
+  async loadLedgerEvent(id: string): Promise<LedgerEvent | null> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_get_ledger_event", {
+      p_id: id,
+    });
+    return result ? LedgerEventSchema.parse(result) : null;
+  }
+
+  async markEventOutboxProcessed(id: string): Promise<void> {
+    await this.rpcClient.rpc("distillery_mark_event_outbox_processed", { p_id: id });
+  }
+
+  async markEventOutboxFailed(id: string, error: string): Promise<void> {
+    await this.rpcClient.rpc("distillery_mark_event_outbox_failed", { p_id: id, p_error: error });
+  }
+
+  async enqueuePendingWork(input: {
+    tenantId: string;
+    policy: PolicyName;
+    subjectType: WorkSubjectType;
+    subjectId: string;
+    causedByEventId: string;
+    inputVersion: string;
+  }): Promise<{ workItem: PendingWorkItem; inserted: boolean }> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_enqueue_pending_work", {
+      p_tenant_id: input.tenantId,
+      p_policy: input.policy,
+      p_subject_type: input.subjectType,
+      p_subject_id: input.subjectId,
+      p_caused_by_event_id: input.causedByEventId,
+      p_input_version: input.inputVersion,
+    });
+    const parsed = PendingWorkEnqueueResponseSchema.parse(result);
+    return {
+      workItem: PendingWorkItemSchema.parse(parsed.workItem),
+      inserted: parsed.inserted,
+    };
+  }
+
+  async claimPendingWork(workItemId?: string): Promise<PendingWorkItem | null> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_claim_pending_work", {
+      p_work_item_id: workItemId ?? null,
+    });
+    return result ? PendingWorkItemSchema.parse(result) : null;
+  }
+
+  async completePendingWork(id: string): Promise<void> {
+    await this.rpcClient.rpc("distillery_complete_pending_work", { p_id: id });
+  }
+
+  async failPendingWork(id: string, error: string): Promise<void> {
+    await this.rpcClient.rpc("distillery_fail_pending_work", { p_id: id, p_error: error });
+  }
+
+  async cancelPendingWork(id: string, reason: string): Promise<void> {
+    await this.rpcClient.rpc("distillery_cancel_pending_work", { p_id: id, p_reason: reason });
+  }
+
+  async createPolicyRun(input: Omit<PolicyRun, "createdAt"> & { createdAt?: string }): Promise<PolicyRun> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_create_policy_run", {
+      p_policy_run: input,
+    });
+    return PolicyRunSchema.parse(result);
+  }
+
+  async completePolicyRun(id: string, input: Partial<PolicyRun>): Promise<void> {
+    await this.rpcClient.rpc("distillery_complete_policy_run", {
+      p_id: id,
+      p_patch: input,
+    });
+  }
+
+  async failPolicyRun(id: string, error: string, issues: PolicyRun["validationIssues"] = []): Promise<void> {
+    await this.rpcClient.rpc("distillery_fail_policy_run", {
+      p_id: id,
+      p_error: error,
+      p_issues: issues,
+    });
+  }
+
+  async createProposedEvent(input: Omit<ProposedEvent, "createdAt" | "updatedAt" | "validationStatus" | "validationIssues" | "reviewStatus" | "committedLedgerEventId">): Promise<ProposedEvent> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_create_proposed_event", {
+      p_proposed_event: input,
+    });
+    return ProposedEventSchema.parse(result);
+  }
+
+  async markProposedEventValid(id: string): Promise<void> {
+    await this.rpcClient.rpc("distillery_mark_proposed_event_valid", { p_id: id });
+  }
+
+  async markProposedEventInvalid(id: string, issues: ProposedEvent["validationIssues"]): Promise<void> {
+    await this.rpcClient.rpc("distillery_mark_proposed_event_invalid", {
+      p_id: id,
+      p_issues: issues,
+    });
+  }
+
+  async approveProposedEvent(id: string, decision: { reviewerLabel: string; rationale?: string }): Promise<ProposedEvent> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_approve_proposed_event", {
+      p_id: id,
+      p_reviewer_label: decision.reviewerLabel,
+      p_rationale: decision.rationale ?? null,
+    });
+    return ProposedEventSchema.parse(result);
+  }
+
+  async rejectProposedEvent(id: string, decision: { reviewerLabel: string; rationale?: string }): Promise<ProposedEvent> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_reject_proposed_event", {
+      p_id: id,
+      p_reviewer_label: decision.reviewerLabel,
+      p_rationale: decision.rationale ?? null,
+    });
+    return ProposedEventSchema.parse(result);
+  }
+
+  async commitValidatedProposedEvent(id: string): Promise<LedgerEvent> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_commit_validated_proposed_event", {
+      p_id: id,
+    });
+    return LedgerEventSchema.parse(result);
+  }
+
+  async getIngestionContextBySourceVersionId(sourceVersionId: string): Promise<IngestionContext> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_get_ingestion_context_by_source_version", {
+      p_source_version_id: sourceVersionId,
+    });
+    return IngestionContextResponseSchema.parse(result);
+  }
+
+  async recordExtractionRun(record: ExtractionRunRecord): Promise<void> {
+    await this.rpcClient.rpc("distillery_record_extraction_run", {
+      p_id: record.id,
+      p_ingestion_id: record.ingestionId,
+      p_tenant_id: record.tenantId,
+      p_provider: record.provider,
+      p_model: record.model,
+      p_prompt_version: record.promptVersion,
+      p_schema_version: record.schemaVersion,
+      p_raw_response: record.rawResponse,
+      p_status: record.status,
+    });
+  }
+
+  async commitGeneratedMemory(input: {
+    ingestionId: string;
+    tenantId: string;
+    sourceVersionId: string;
+    extractionRunId: string;
+    memoryGenerationVersion: string;
+    items: CommittableMemoryItem[];
+  }): Promise<string[]> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_commit_generated_memory", {
+      p_ingestion_id: input.ingestionId,
+      p_tenant_id: input.tenantId,
+      p_source_version_id: input.sourceVersionId,
+      p_extraction_run_id: input.extractionRunId,
+      p_memory_generation_version: input.memoryGenerationVersion,
+      p_items: input.items,
+    });
+    return IngestionResultSchema.parse(result).memoryItems.map((item) => item.id);
+  }
+
+  async getLoopStatus(input: {
+    tenantId?: string;
+    ingestionId?: string;
+    limit?: number;
+  } = {}): Promise<LoopStatusResponse> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_get_loop_status", {
+      p_tenant_id: input.tenantId ?? "stable",
+      p_ingestion_id: input.ingestionId ?? null,
+      p_limit: input.limit ?? 25,
+    });
+    return LoopStatusResponseSchema.parse(result);
+  }
+}
+
 function parseTraceableBrief(result: unknown): InitiativeBrief {
   const brief = InitiativeBriefSchema.parse(result);
   assertTraceableBrief(brief);
@@ -299,4 +506,9 @@ const IngestionContextResponseSchema = IngestionResultSchema.pick({
 }).extend({
   tenantId: EvidenceSpanSchema.shape.id,
   sourceVersionId: EvidenceSpanSchema.shape.sourceVersionId,
+});
+
+const PendingWorkEnqueueResponseSchema = z.object({
+  workItem: PendingWorkItemSchema,
+  inserted: z.boolean(),
 });
