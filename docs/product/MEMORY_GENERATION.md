@@ -1,27 +1,29 @@
 # Memory Generation
 
-Status: implemented for v0 text braindumps.
+Status: implemented for text braindumps.
 
 Memory Generation turns one user-submitted text braindump into evidence-backed, correctable memory.
 
 It does not create initiatives, PRDs, tasks, priorities, or recommendations.
 
-## Implemented v0 flow
+## Implemented flow
 
 ```text
 POST /api/ingestions
   -> create ingestion
   -> store source version
   -> create evidence spans
-  -> enqueue memory generation
+  -> commit source_committed
+  -> route pending work
 
-Queue consumer
-  -> load ingestion context
+Queue consumer or inline fallback
+  -> claim pending_work by workItemId
+  -> load source/evidence context
   -> call OpenRouter
   -> parse structured JSON
   -> validate evidence and schema
-  -> commit memory through Supabase RPC
-  -> mark ingestion ready
+  -> create memory_proposed
+  -> auto-commit valid memory_committed
 
 GET /api/ingestions/{id}
   -> return status, evidence spans, memory items, error if any
@@ -152,7 +154,7 @@ Original evidence, original extraction output, and history remain inspectable.
 
 ## Recall
 
-v0 recall is deterministic lexical retrieval over active memory and evidence spans.
+Recall is deterministic lexical retrieval over active memory and evidence spans.
 
 If memory supports an answer, Distillery returns:
 

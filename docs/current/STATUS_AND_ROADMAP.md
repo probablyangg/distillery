@@ -1,12 +1,12 @@
 # Distillery status and roadmap
 
-Last updated: 2026-07-07
+Last updated: 2026-07-08
 
-This is the canonical current-state document for implemented v0 behavior. For loop-system implementation requirements, use [LOOP_SYSTEM_PRD.md](../implementation/LOOP_SYSTEM_PRD.md).
+This is the canonical current-state document for implemented behavior. For the intended loop-system contract, use [LOOP_SYSTEM_PRD.md](../implementation/LOOP_SYSTEM_PRD.md).
 
 ## Current product state
 
-Distillery v0 is live as a private internal pilot.
+Distillery is live as a private internal pilot.
 
 ```text
 Capture/Recall app
@@ -33,7 +33,7 @@ Current seeded data:
 - 3 starter initiative briefs;
 - all active memory returns `claimType`, `entities`, `relations`, and `schemas`.
 
-Current system diagram: [v0-current.mermaid](./v0-current.mermaid).
+Current system diagram: [current-system.mermaid](./current-system.mermaid).
 Loop-system implementation PRD: [LOOP_SYSTEM_PRD.md](../implementation/LOOP_SYSTEM_PRD.md).
 Loop-system diagram: [loop-system.mermaid](../architecture/loop-system.mermaid).
 North-star system diagram: [system.mermaid](../architecture/system.mermaid).
@@ -53,6 +53,9 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 ### Memory Generation
 
 - Immutable source version and evidence-span storage.
+- Text capture commits a `source_committed` ledger event and `event_outbox` row in the same RPC path.
+- Event router maps committed source events to `extract_memory` pending work.
+- Policy executor records `policy_runs`, emits `proposed_events`, validates output, and auto-commits valid `memory_committed` events.
 - OpenRouter structured memory generation.
 - Runtime validation before memory commit.
 - `claimType` taxonomy:
@@ -88,8 +91,16 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 ### Infrastructure
 
 - Cloudflare Worker web/API deployment.
-- Cloudflare Queue binding for memory generation.
+- Cloudflare Queue binding used as a noncanonical wakeup transport with `{ workItemId }` messages.
 - Supabase PostgreSQL with RPC functions for multi-table commits.
+- Loop tables:
+  - `ledger_events`;
+  - `event_outbox`;
+  - `pending_work`;
+  - `policy_runs`;
+  - `proposed_events`.
+- Loop status endpoint at `GET /api/loop-status`.
+- Loop status drawer in the capture UI.
 - `pgvector` enabled.
 - OpenRouter model gateway.
 - Stable fixture validation.
@@ -104,10 +115,19 @@ Browser
   -> Supabase HTTP/RPC
   -> PostgreSQL ledger
 
-Worker queue consumer
-  -> memory generation workflow
+Capture
+  -> source_committed
+  -> event_outbox
+  -> event router
+  -> pending_work
+
+Worker queue consumer or inline fallback
+  -> claim pending_work by workItemId
+  -> policy runner
   -> OpenRouter
-  -> Supabase RPC commit
+  -> proposed_events
+  -> validation and approval
+  -> ledger_events
 
 Synthesis page
   -> active memory
@@ -136,7 +156,15 @@ qwen/qwen3-embedding-8b
 
 Embedding storage exists, but asynchronous embedding generation and hybrid retrieval are not implemented yet.
 
-## What is intentionally not done in v0
+## Current loop-system limitations
+
+- `extract_memory` is the only policy with real domain logic.
+- `discover_candidate`, `check_freshness`, `detect_contradiction`, `rank_candidate`, `draft_artifact`, `gate_output`, and `revise_artifact` are registered policy runners but currently emit placeholder `not_enough_context` proposals.
+- After a worker auto-commits a proposed event, the newly inserted `event_outbox` row is not automatically drained by the same worker invocation. Multi-hop loops can therefore wait until another router invocation occurs.
+- SQL/RPC loop behavior has minimal automated coverage. Most loop tests run against `InMemoryLoopPersistence`.
+- Embedding storage exists, but asynchronous embedding generation and hybrid retrieval are not implemented yet.
+
+## What is intentionally not done
 
 - Slack, docs, meetings, tickets, metrics, or URL ingestion.
 - Voice input.
@@ -156,7 +184,7 @@ Embedding storage exists, but asynchronous embedding generation and hybrid retri
 
 ## Roadmap
 
-### v0 hardening
+### Current system hardening
 
 Goal: make the existing private pilot reliable enough for repeated Stable leadership use.
 
@@ -176,9 +204,9 @@ Build next:
    - fallback used;
    - latency;
    - failure reason.
-5. Safer DB reset/seed command for v0 pilots.
+5. Safer DB reset/seed command for pilots.
 
-### v0.1 memory quality
+### Memory quality
 
 Goal: improve the reliability of extracted memory before adding more input channels.
 
@@ -191,7 +219,7 @@ Build:
 - contradiction candidate detection;
 - semantic metadata quality review.
 
-### v0.2 synthesis quality
+### Synthesis quality
 
 Goal: make brief generation more useful without hiding uncertainty.
 

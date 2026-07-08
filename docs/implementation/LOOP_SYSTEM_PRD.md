@@ -1,11 +1,18 @@
 # Distillery loop system implementation PRD
 
-Status: ready for implementation.
+Status: implementation contract; initial loop infrastructure is implemented.
+
+Implementation note, 2026-07-08:
+
+- The canonical loop tables, queue wakeup shape, router, executor, proposal validation, memory auto-commit path, loop status API, and loop status UI are present in the repo.
+- `extract_memory` is implemented with real OpenRouter-backed memory generation.
+- Downstream policy runners are registered but currently placeholder implementations. Treat them as incomplete product behavior unless a later change replaces the placeholders.
+- For exact current-state facts and known gaps, read [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md) before coding.
 
 Related docs:
 
 - Docs index: [README.md](../README.md)
-- Current v0 state: [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md)
+- Current state: [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md)
 - Current system design: [SYSTEM_DESIGN.md](../architecture/SYSTEM_DESIGN.md)
 - System diagram: [loop-system.mermaid](../architecture/loop-system.mermaid)
 
@@ -99,7 +106,7 @@ Existing runtime:
 apps/web/src/index.ts
   Cloudflare Worker
   HTTP routes for capture, recall, memory review, synthesis, and brief decisions
-  queue consumer currently accepts MEMORY_GENERATION_QUEUE messages shaped as { ingestionId }
+  queue consumer accepts MEMORY_GENERATION_QUEUE messages shaped as { workItemId }
 
 apps/web/wrangler.toml
   Worker name: distillery-v0
@@ -116,16 +123,16 @@ packages/model-gateway
   OpenRouter memory generation and initiative brief draft model calls
 
 packages/memory-generation
-  v0 capture, evidence storage, memory generation workflow, recall, memory correction logic
+  capture, evidence storage, memory generation workflow, recall, memory correction logic
 
 packages/memory-synthesis
-  v0 initiative brief draft traceability validation
+  initiative brief draft traceability validation
 
 packages/db/migrations
-  SQL migrations 0001 through 0006
+  SQL migrations 0001 through 0008
 ```
 
-Existing v0 domain tables remain part of the canonical system:
+Existing domain tables remain part of the canonical system:
 
 ```text
 tenants
@@ -148,7 +155,7 @@ initiative_brief_decisions
 memory_embeddings
 ```
 
-Existing `outbox_events`, `audit_events`, and `workflow_runs` tables are legacy v0 support tables. The loop system requires the new tables named in this PRD. Do not silently repurpose `outbox_events` or `workflow_runs` as substitutes for `ledger_events`, `event_outbox`, `pending_work`, `policy_runs`, or `proposed_events`.
+Existing `outbox_events`, `audit_events`, and `workflow_runs` tables are legacy support tables. The loop system requires the new tables named in this PRD. Do not silently repurpose `outbox_events` or `workflow_runs` as substitutes for `ledger_events`, `event_outbox`, `pending_work`, `policy_runs`, or `proposed_events`.
 
 The existing Cloudflare Queue binding name remains `MEMORY_GENERATION_QUEUE`. Change the message body from:
 
@@ -206,7 +213,7 @@ When a deterministic policy requires LLM assistance in a future change, that cha
 
 ## External Services, Accounts, And Secrets
 
-No new external service is introduced by this PRD. The implementation uses the services already required by Distillery v0:
+No new external service is introduced by this PRD. The implementation uses the services already required by Distillery:
 
 ```text
 Supabase project with PostgreSQL
@@ -280,7 +287,7 @@ Implementation agents must stop and ask the human for missing service access or 
 
 ## Required Data Model
 
-Add the following PostgreSQL tables. Keep existing v0 domain tables for source versions, evidence spans, memory items, memory item events, initiative briefs, evidence bindings, and decisions.
+Add the following PostgreSQL tables. Keep existing domain tables for source versions, evidence spans, memory items, memory item events, initiative briefs, evidence bindings, and decisions.
 
 ### `ledger_events`
 
@@ -1097,13 +1104,13 @@ Functional requirements:
 - Approved human review commits exactly one target ledger event.
 - Rejected human review commits no target event and records rejection rationale.
 - Router, worker, and validation behavior is covered by automated tests.
-- The existing v0 capture, recall, memory review, synthesis, and approval flows still work.
+- The existing capture, recall, memory review, synthesis, and approval flows still work.
 - The Worker queue consumer no longer runs memory generation directly from `{ ingestionId }`; it claims `pending_work` using `{ workItemId }`.
 - `MEMORY_GENERATION_QUEUE` remains the Cloudflare binding name unless `apps/web/wrangler.toml`, deployment scripts, and this PRD are updated in the same implementation change.
 
 Regression requirements:
 
-- Existing API routes listed in [V0_RUNBOOK.md](../runbooks/V0_RUNBOOK.md) continue to respond with compatible request/response behavior unless this PRD explicitly changes them.
+- Existing API routes listed in [RUNBOOK.md](../runbooks/RUNBOOK.md) continue to respond with compatible request/response behavior unless this PRD explicitly changes them.
 - Existing seeded Stable memory and starter briefs remain loadable.
 - Existing memory generation validation behavior remains enforced, including relation evidence validation.
 - Existing synthesis traceability validation remains enforced for generated and saved briefs.

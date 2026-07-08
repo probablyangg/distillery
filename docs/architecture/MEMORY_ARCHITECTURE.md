@@ -2,7 +2,7 @@
 
 Status: research/reference and forward architecture recommendation.
 
-Current v0 implementation borrows the MemGraphRAG separation partially:
+The current implementation borrows the MemGraphRAG separation partially:
 
 - evidence spans are authoritative;
 - memory items use `claimType`;
@@ -304,7 +304,7 @@ entity_alias
 
 The schema layer should begin as a small managed product ontology, then evolve from observed usage. Learned schema suggestions may be proposed, but schema promotion requires review. Frequency can inform review; it cannot determine semantic validity.
 
-Recommended v0 claim types:
+Recommended claim types:
 
 - customer/user signal;
 - problem or pain point;
@@ -359,7 +359,7 @@ assertion_support
 
 Initiatives and briefs are versioned syntheses over memory. They do not become new source evidence merely because an LLM generated them. Approved artifacts may support later work only through an explicit `prior_artifact` relationship.
 
-## 7. Boundary between the two v0 systems
+## 7. Boundary between generation and synthesis
 
 ### Memory Generation owns
 
@@ -448,7 +448,7 @@ semantic relevance
 - low extraction quality
 ```
 
-Add Personalized PageRank only after an evaluation set shows that multi-hop graph propagation improves recall without increasing unsupported synthesis. PostgreSQL plus `pgvector` and an edge table is sufficient for v0.
+Add Personalized PageRank only after an evaluation set shows that multi-hop graph propagation improves recall without increasing unsupported synthesis. PostgreSQL plus `pgvector` and an edge table is sufficient for the current system.
 
 ## 10. Memory Synthesis path
 
@@ -497,7 +497,7 @@ Automated conflict detection is diagnostic. Automated resolution may suggest act
 
 ## 12. Derived retrieval graph
 
-The v0 graph is a projection, not a separate graph database.
+The current graph is a projection, not a separate graph database.
 
 Recommended nodes:
 
@@ -522,7 +522,7 @@ Recommended typed edges:
 
 Avoid similarity edges in the authoritative graph. Calculate them in the retrieval index with model/version metadata and thresholds. Similarity is a retrieval hypothesis, not an organizational relationship.
 
-## 13. v0 implementation order
+## 13. Implementation order
 
 1. Implement immutable source versions and exact evidence spans.
 2. Implement observations and extraction-run lineage.

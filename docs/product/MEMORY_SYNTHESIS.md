@@ -1,12 +1,12 @@
 # Memory Synthesis
 
-Status: v0 manual synthesis implemented; automated grouping/discovery is future work.
+Status: manual synthesis implemented; automated grouping/discovery is future work.
 
 Memory Synthesis turns committed memory into a human-reviewed initiative brief.
 
 It must preserve traceability. A brief should never hide weak evidence or present generated interpretation as proof.
 
-## Implemented v0 flow
+## Implemented flow
 
 ```text
 GET /synthesis
@@ -53,7 +53,7 @@ Approval/rejection writes an append-only decision record with a self-attested re
 
 ## Brief fields
 
-v0 keeps the brief intentionally small:
+The current brief shape is intentionally small:
 
 ```ts
 type InitiativeBrief = {

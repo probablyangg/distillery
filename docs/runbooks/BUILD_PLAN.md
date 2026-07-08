@@ -1,12 +1,12 @@
-# Distillery v0 build plan
+# Distillery build plan
 
-Status: v0 implemented and deployed as a private pilot.
+Status: implemented and deployed as a private pilot.
 
-For current status and roadmap, start with [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md). This file explains how v0 is structured, what shipped, and what remains after v0.
+For current status and roadmap, start with [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md). This file explains the initial build structure, what shipped, and what remains.
 
-## v0 product outcome
+## Product outcome
 
-v0 delivers two complete end-to-end systems:
+The initial build delivers two complete end-to-end systems:
 
 ```text
 Memory Generation
@@ -215,17 +215,17 @@ Recommended next coverage:
 - browser-level synthesis flow;
 - deployed smoke that verifies `claimType`, entities, relations, schemas, and brief generation.
 
-## Remaining v0 hardening backlog
+## Remaining hardening backlog
 
 - Improve first-run UX copy.
 - Make trace details easier to scan.
 - Add model run metadata display for generated drafts.
-- Add a safe `reset:stable` script for v0 pilots.
+- Add a safe `reset:stable` script for pilots.
 - Add automated deployed smoke coverage for both pages.
 - Add duplicate/contradiction candidate detection.
 - Add basic observability for latency, fallback model use, and failure reasons.
 
-## Deferred beyond v0
+## Deferred
 
 - automated initiative discovery;
 - automated evidence grouping;

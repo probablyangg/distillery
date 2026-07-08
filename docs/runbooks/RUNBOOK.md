@@ -1,4 +1,4 @@
-# Distillery v0 runbook
+# Distillery runbook
 
 Use this document for local setup, database migration, seed/reset, deployment, and smoke testing.
 
@@ -70,7 +70,7 @@ done
 Apply only the latest migration after pulling new code:
 
 ```bash
-psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0006_backfill_memory_semantics.sql
+psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0008_loop_status_read_model.sql
 ```
 
 Do not run migrations from the Cloudflare Worker. Migrations require `DATABASE_DIRECT_URL` from local/CI.
@@ -83,6 +83,8 @@ Current migration set:
 - `0004_memory_synthesis.sql` — initiative briefs, evidence bindings, approval decisions.
 - `0005_memgraphrag_schema_layer.sql` — `claimType`, memory entities, relations, schema candidates.
 - `0006_backfill_memory_semantics.sql` — conservative semantic metadata for pre-schema-layer rows.
+- `0007_loop_system.sql` — canonical loop tables, router/executor RPCs, proposed event commit path, and text capture `source_committed` write.
+- `0008_loop_status_read_model.sql` — loop status read model for UI/API inspection.
 
 ## Seed Stable starter data
 
@@ -102,9 +104,9 @@ Use all fixtures only when intentionally loading the full eval corpus:
 pnpm seed:stable -- --all
 ```
 
-## Reset v0 data
+## Reset pilot data
 
-For v0 pilots it is acceptable to clear application data and reseed.
+For pilots it is acceptable to clear application data and reseed.
 
 This deletes all tenant-scoped app data while preserving schema/functions:
 
@@ -134,13 +136,14 @@ Manual check:
 1. Log in with `DISTILLERY_APP_PASSWORD`.
 2. On `/`, paste a text braindump and click `Remember`.
 3. Confirm memory items appear with `claimType`.
-4. Expand `Trace details` and verify entities, relations, schemas, and evidence.
-5. Ask a recall question.
-6. Open `/synthesis`.
-7. Select memory.
-8. Generate a brief draft.
-9. Edit/save a brief.
-10. Approve or reject it.
+4. Open the loop status drawer and verify `source_committed`, routed work, policy run, proposal, and commit activity are visible.
+5. Expand `Trace details` and verify entities, relations, schemas, and evidence.
+6. Ask a recall question.
+7. Open `/synthesis`.
+8. Select memory.
+9. Generate a brief draft.
+10. Edit/save a brief.
+11. Approve or reject it.
 
 ## Deploy to Cloudflare
 
@@ -198,8 +201,9 @@ Session:
 
 Memory Generation:
 
-- `POST /api/ingestions` — stores text evidence and queues memory generation.
+- `POST /api/ingestions` — stores text evidence, commits `source_committed`, routes pending work, and wakes the loop runner.
 - `GET /api/ingestions/{id}` — returns ingestion status, evidence, and memory items.
+- `GET /api/loop-status` — returns UI-safe loop stages, timeline, and recent activity. Optional query params: `ingestionId`, `limit`.
 - `POST /api/queries` — deterministic cited recall.
 
 Memory review:

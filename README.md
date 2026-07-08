@@ -11,13 +11,13 @@ The core product rule:
 For implementation work, read these in order:
 
 1. [Docs index](./docs/README.md) — source-of-truth map for all documentation.
-2. [Loop system PRD](./docs/implementation/LOOP_SYSTEM_PRD.md) — authoritative implementation handoff for the event-driven loop system.
-3. [Current status](./docs/current/STATUS_AND_ROADMAP.md) — what exists today and what is intentionally not implemented.
-4. [v0 runbook](./docs/runbooks/V0_RUNBOOK.md) — local setup, migrations, seed data, deployment, and smoke testing.
+2. [Current status](./docs/current/STATUS_AND_ROADMAP.md) — what exists today, including known loop-system gaps.
+3. [Loop system PRD](./docs/implementation/LOOP_SYSTEM_PRD.md) — implementation contract for the event-driven loop system.
+4. [Runbook](./docs/runbooks/RUNBOOK.md) — local setup, migrations, seed data, deployment, and smoke testing.
 
-Do not treat older roadmap or research docs as implementation authority when they conflict with the loop system PRD.
+Do not treat older roadmap or research docs as implementation authority when they conflict with the current status document or loop system PRD.
 
-## Current v0
+## Current System
 
 Implemented and deployed:
 
@@ -30,6 +30,9 @@ Implemented and deployed:
 - confirm/edit/remove memory actions with append-only history;
 - deterministic cited recall;
 - human-directed initiative brief draft, save, approve, and reject flow;
+- event-driven loop infrastructure with `ledger_events`, `event_outbox`, `pending_work`, `policy_runs`, and `proposed_events`;
+- `source_committed -> extract_memory -> memory_proposed -> validation -> memory_committed` loop path;
+- loop status endpoint and UI drawer for recent loop activity;
 - Cloudflare Worker deployment;
 - Supabase PostgreSQL/RPC persistence with `pgvector`.
 
@@ -53,6 +56,8 @@ pnpm
 ```
 
 Canonical state is PostgreSQL. Queues, indexes, embeddings, and future graph projections are derived or transport mechanisms.
+
+Current loop limitation: `extract_memory` is the only policy with real domain logic. Downstream policies are wired as placeholder runners until their product behavior is implemented.
 
 ## Quick Start
 
@@ -113,4 +118,3 @@ Copy `.env.example` to `.env.local` and populate:
 For Worker runtime secrets, copy `apps/web/.dev.vars.example` to `apps/web/.dev.vars`.
 
 Never commit `.env.local`, `.dev.vars`, database URLs, API keys, or Worker secrets.
-

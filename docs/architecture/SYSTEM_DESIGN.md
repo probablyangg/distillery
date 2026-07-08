@@ -16,7 +16,7 @@ Therefore:
 - approved artifacts bind to exact memory/evidence inputs;
 - uncertainty must stay visible.
 
-## v0 architecture
+## Current Architecture
 
 ```text
 Browser
@@ -25,9 +25,12 @@ Browser
   -> PostgreSQL ledger
 
 Cloudflare Queue
-  -> memory generation handler
+  -> pending_work wakeup by workItemId
+  -> policy runner
   -> OpenRouter
-  -> Supabase RPC commit
+  -> proposed event
+  -> validation and approval
+  -> ledger event
 ```
 
 ### Runtime
@@ -36,11 +39,12 @@ Cloudflare Queue
 - Supabase RPC functions perform multi-table atomic writes.
 - OpenRouter provides structured LLM calls.
 - PostgreSQL is authoritative.
+- Cloudflare Queue messages are wakeups only; PostgreSQL owns committed events, outbox state, pending work, policy runs, and proposals.
 - Full-text indexes, embeddings, and future graph projections are derived.
 
 ### Access
 
-v0 uses one shared password:
+The current pilot uses one shared password:
 
 - `DISTILLERY_APP_PASSWORD`;
 - 30-day `HttpOnly`, `Secure`, `SameSite=Lax` cookie;
@@ -67,6 +71,12 @@ initiative_brief
   -> initiative_brief_memory
   -> initiative_brief_evidence
   -> initiative_brief_decisions
+
+ledger_events
+  -> event_outbox
+  -> pending_work
+  -> policy_runs
+  -> proposed_events
 ```
 
 Memory item fields:
@@ -90,7 +100,7 @@ A consequential output claim must point to at least one of:
 - human decision record;
 - explicitly labeled inference/assumption.
 
-v0 enforces this at the brief level by binding briefs to memory and evidence spans. Later versions should enforce assertion-level traceability.
+The current system enforces this at the brief level by binding briefs to memory and evidence spans. Later versions should enforce assertion-level traceability.
 
 ## Implemented product surfaces
 
@@ -99,9 +109,24 @@ v0 enforces this at the brief level by binding briefs to memory and evidence spa
 Capture and recall:
 
 - remember text braindumps;
+- inspect recent loop activity;
 - show committed memory;
 - confirm/edit/remove memory;
 - ask cited recall questions.
+
+## Implemented loop
+
+```text
+source_committed
+  -> event_outbox
+  -> extract_memory pending_work
+  -> policy_run
+  -> memory_proposed
+  -> validation
+  -> memory_committed
+```
+
+The loop runner and persistence scaffolding are installed for the full policy set. Current production logic is real for `extract_memory`; downstream policies are placeholders until their domain behavior is implemented.
 
 ### `/synthesis`
 
@@ -114,7 +139,7 @@ Memory Synthesis:
 - save initiative brief;
 - approve/reject.
 
-## What v0 deliberately avoids
+## What the current system deliberately avoids
 
 - initiative suggestions during ingestion;
 - automated PRD generation;
@@ -125,7 +150,7 @@ Memory Synthesis:
 
 ## Next design steps
 
-### v0 hardening
+### Current system hardening
 
 - improve first-use UI clarity;
 - add deployed browser smoke tests;

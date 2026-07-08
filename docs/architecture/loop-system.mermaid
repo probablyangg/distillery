@@ -2,7 +2,7 @@ flowchart TB
 
 %% =====================================================
 %% DISTILLERY LOOP SYSTEM DIAGRAM
-%% Status: simplified architecture direction.
+%% Status: simplified current architecture plus intended downstream loop.
 %%
 %% Idea: the system is a small fleet of homogeneous loops.
 %% Committed ledger events route to pending work. A context loader
@@ -33,14 +33,14 @@ end
 
 subgraph POLICIES["Atomic policies"]
   direction TB
-  P1["ingest_source"]
-  P2["extract_memory"]
+  P1["extract_memory"]
+  P2["discover_candidate"]
   P3["check_freshness"]
   P4["detect_contradiction"]
-  P5["discover_candidate"]
+  P5["rank_candidate"]
   P6["draft_artifact"]
   P7["gate_output"]
-  P8["record_decision"]
+  P8["revise_artifact"]
 end
 
 subgraph GATE["Validation and approval"]
