@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { EvidenceSpan, InitiativeBrief, MemoryItem } from "@distillery/contracts";
 import {
   buildBriefEvidenceSet,
+  buildSynthesisBundle,
   validateInitiativeBriefDraftTraceability,
   validateInitiativeBriefTraceability,
 } from "./index";
@@ -103,6 +104,78 @@ describe("memory synthesis traceability", () => {
 
     expect(result.ok).toBe(false);
     expect(result.issues.some((issue) => issue.code === "draft_unsupported_evidence")).toBe(true);
+  });
+
+  it("expands seed memory through semantic connections", () => {
+    const bundle = buildSynthesisBundle({
+      seedMemoryItemIds: ["mem_1"],
+      memory: [
+        {
+          memoryItem: {
+            ...memoryItem,
+            entities: [{ name: "Relayer reliability", entityType: "capability" }],
+            schemas: [{
+              subjectType: "capability",
+              predicate: "gates",
+              objectType: "launch",
+              status: "candidate",
+            }],
+          },
+          evidenceSpans: [evidenceSpan],
+        },
+        {
+          memoryItem: {
+            ...memoryItem,
+            id: "mem_2",
+            claimType: "risk",
+            statement: "Checkout launch risk remains high until relayer reliability is proven.",
+            evidenceSpanIds: ["ev_2"],
+            entities: [{ name: "Relayer reliability", entityType: "capability" }],
+            schemas: [{
+              subjectType: "capability",
+              predicate: "gates",
+              objectType: "launch",
+              status: "candidate",
+            }],
+          },
+          evidenceSpans: [{ ...evidenceSpan, id: "ev_2", sourceVersionId: "srcv_2" }],
+        },
+      ],
+    });
+
+    expect(bundle.bundle.selectedMemoryItemIds).toEqual(["mem_1", "mem_2"]);
+    expect(bundle.bundle.connections.map((connection) => connection.reason)).toContain("shared_entity");
+    expect(bundle.bundle.connections.map((connection) => connection.reason)).toContain("matching_schema_candidate");
+    expect(bundle.bundle.readiness.ready).toBe(true);
+  });
+
+  it("blocks readiness for unresolved blocking contradictions", () => {
+    const bundle = buildSynthesisBundle({
+      seedMemoryItemIds: ["mem_1"],
+      memory: [
+        {
+          memoryItem: {
+            ...memoryItem,
+            entities: [{ name: "Relayer reliability", entityType: "capability" }],
+            qualifiers: { contradictionSeverity: "blocking" },
+          },
+          evidenceSpans: [evidenceSpan],
+        },
+        {
+          memoryItem: {
+            ...memoryItem,
+            id: "mem_2",
+            statement: "Relayer reliability is already proven.",
+            evidenceSpanIds: ["ev_2"],
+            entities: [{ name: "Relayer reliability", entityType: "capability" }],
+          },
+          evidenceSpans: [{ ...evidenceSpan, id: "ev_2", sourceVersionId: "srcv_2" }],
+        },
+      ],
+    });
+
+    expect(bundle.bundle.readiness.ready).toBe(false);
+    expect(bundle.bundle.readiness.skipReasons).toContain("Unresolved blocking contradiction exists.");
   });
 });
 
