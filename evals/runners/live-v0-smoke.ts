@@ -33,7 +33,7 @@ function readLocalEnv(): LocalEnv {
 }
 
 function requireEnv(env: LocalEnv, key: string): string {
-  const value = env[key];
+  const value = process.env[key] ?? env[key];
   if (!value) throw new Error(`${key} is required for live v0 smoke.`);
   return value;
 }
@@ -141,6 +141,15 @@ function cleanupSmokeRows(env: LocalEnv, nonce: string): void {
   const databaseDirectUrl = requireEnv(env, "DATABASE_DIRECT_URL");
   const cleanupSql = `
     delete from initiative_briefs where id like $$brief_live_e2e_${nonce}_%$$;
+    delete from proposed_events where payload->>$$ingestionId$$ like $$ing_live_e2e_${nonce}_%$$;
+    delete from policy_runs where work_item_id in (
+      select id from pending_work where subject_id like $$srcv_live_e2e_${nonce}_%$$
+    );
+    delete from pending_work where subject_id like $$srcv_live_e2e_${nonce}_%$$;
+    delete from event_outbox where ledger_event_id in (
+      select id from ledger_events where payload->>$$ingestionId$$ like $$ing_live_e2e_${nonce}_%$$
+    );
+    delete from ledger_events where payload->>$$ingestionId$$ like $$ing_live_e2e_${nonce}_%$$;
     delete from memory_item_events where memory_item_id like $$mem_live_e2e_${nonce}_%$$;
     delete from outbox_events where payload->>$$ingestionId$$ like $$ing_live_e2e_${nonce}_%$$;
     delete from memory_item_evidence where memory_item_id like $$mem_live_e2e_${nonce}_%$$;
