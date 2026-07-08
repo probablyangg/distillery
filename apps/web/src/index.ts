@@ -5,6 +5,7 @@ import {
   InitiativeBriefDecisionInputSchema,
   MemoryItemActionInputSchema,
   RecallQueryInputSchema,
+  type MemoryWithEvidence,
 } from "@distillery/contracts";
 import { SupabaseMemoryGenerationRepository, SupabaseRpcClient } from "@distillery/db";
 import { SupabaseLoopPersistence } from "@distillery/db";
@@ -23,7 +24,10 @@ import {
   applyMemoryItemAction,
   submitTextCapture,
 } from "@distillery/memory-generation";
-import { validateInitiativeBriefDraftTraceability } from "@distillery/memory-synthesis";
+import {
+  buildSynthesisBundle,
+  validateInitiativeBriefDraftTraceability,
+} from "@distillery/memory-synthesis";
 
 const SESSION_COOKIE_NAME = "distillery_session";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
@@ -256,19 +260,38 @@ async function handleGenerateInitiativeBriefDraft(request: Request, env: Env): P
 
     const input = parsedInput.data;
     const repository = createRepository(env);
-    const activeMemory = await repository.listActiveMemory({ limit: 200 });
-    const selectedMemory = input.memoryItemIds.map((memoryItemId) =>
-      activeMemory.find((record) => record.memoryItem.id === memoryItemId)
+    let selectedMemoryWithEvidence: MemoryWithEvidence[];
+    let synthesisBundle: ReturnType<typeof buildSynthesisBundle>["bundle"] | null = null;
+
+    if (input.expandRelatedMemory) {
+      const expanded = buildSynthesisBundle({
+        seedMemoryItemIds: input.memoryItemIds,
+        memory: await createLoopPersistence(env).getMemorySynthesisContext({
+          tenantId: DEFAULT_TENANT_ID,
+          seedMemoryItemIds: input.memoryItemIds,
+          limit: 100,
+        }),
+        maxMemoryItems: MAX_DRAFT_MEMORY_ITEMS,
+      });
+      selectedMemoryWithEvidence = expanded.selectedMemory;
+      synthesisBundle = expanded.bundle;
+    } else {
+      const activeMemory = await repository.listActiveMemory({ limit: 200 });
+      selectedMemoryWithEvidence = input.memoryItemIds
+        .map((memoryItemId) => activeMemory.find((record) => record.memoryItem.id === memoryItemId))
+        .filter((record): record is MemoryWithEvidence => Boolean(record));
+    }
+
+    const missingMemoryItemId = input.memoryItemIds.find((memoryItemId) =>
+      !selectedMemoryWithEvidence.some((record) => record.memoryItem.id === memoryItemId)
     );
-    const missingMemoryItemId = input.memoryItemIds.find((_, index) => !selectedMemory[index]);
 
     if (missingMemoryItemId) {
       return json({ error: `Selected memory is not active or was not found: ${missingMemoryItemId}` }, 422);
     }
 
-    const memoryWithEvidence = selectedMemory.filter((record): record is NonNullable<typeof record> => Boolean(record));
-    const memoryItems = memoryWithEvidence.map((record) => record.memoryItem);
-    const evidenceSpans = uniqueEvidenceSpans(memoryWithEvidence.flatMap((record) => record.evidenceSpans));
+    const memoryItems = selectedMemoryWithEvidence.map((record) => record.memoryItem);
+    const evidenceSpans = uniqueEvidenceSpans(selectedMemoryWithEvidence.flatMap((record) => record.evidenceSpans));
     try {
       const generated = await new OpenRouterInitiativeBriefDraftModel(openRouterConfig(env, {
         maxPrimaryTimeoutMs: 25_000,
@@ -291,6 +314,7 @@ async function handleGenerateInitiativeBriefDraft(request: Request, env: Env): P
         return json({
           ...generated.parsed,
           model: generated.model,
+          ...(synthesisBundle ? { synthesisBundle } : {}),
         });
       }
 
@@ -300,7 +324,10 @@ async function handleGenerateInitiativeBriefDraft(request: Request, env: Env): P
         ...(input.intent ? { intent: input.intent } : {}),
         fallbackReason: validation.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "),
       });
-      return json(fallbackDraft);
+      return json({
+        ...fallbackDraft,
+        ...(synthesisBundle ? { synthesisBundle } : {}),
+      });
     } catch (error) {
       const fallbackDraft = buildDeterministicInitiativeBriefDraft({
         memoryItems,
@@ -308,7 +335,10 @@ async function handleGenerateInitiativeBriefDraft(request: Request, env: Env): P
         ...(input.intent ? { intent: input.intent } : {}),
         fallbackReason: error instanceof Error ? error.message : String(error),
       });
-      return json(fallbackDraft);
+      return json({
+        ...fallbackDraft,
+        ...(synthesisBundle ? { synthesisBundle } : {}),
+      });
     }
   } catch (error) {
     return json(
@@ -382,6 +412,11 @@ async function processWorkItem(workItemId: string, env: Env): Promise<void> {
     policies: createPolicies({
       persistence,
       memoryModel: new OpenRouterMemoryGenerationModel(openRouterConfig(env)),
+      initiativeBriefDraftModel: new OpenRouterInitiativeBriefDraftModel(openRouterConfig(env, {
+        maxPrimaryTimeoutMs: 25_000,
+        maxFallbackTimeoutMs: 15_000,
+        maxFallbackModels: 1,
+      })),
     }),
     workItemId,
   });
