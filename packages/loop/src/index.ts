@@ -4,7 +4,9 @@ import {
   type EventType,
   type EvidenceSpan,
   type GeneratedMemoryBatch,
+  type InitiativeBrief,
   type LedgerEvent,
+  type MemoryWithEvidence,
   type PendingWorkItem,
   type PolicyName,
   type PolicyRun,
@@ -20,7 +22,13 @@ import {
   type CommittableMemoryItem,
   type IngestionContext,
 } from "@distillery/memory-generation";
-import type { MemoryGenerationModel } from "@distillery/model-gateway";
+import type { InitiativeBriefDraftModel, MemoryGenerationModel } from "@distillery/model-gateway";
+import {
+  MEMORY_SYNTHESIS_VERSION,
+  buildSynthesisBundle,
+  validateInitiativeBriefDraftTraceability,
+  type SynthesisBundle,
+} from "@distillery/memory-synthesis";
 import {
   mergeValidationResults,
   validateGeneratedMemory,
@@ -86,6 +94,14 @@ export type ExtractMemoryInput = PolicyInputEnvelope<{
   evidenceSpans: EvidenceSpan[];
   existingRelatedMemory: unknown[];
   memoryGenerationSchema: string;
+}>;
+
+export type SynthesizeBriefInput = PolicyInputEnvelope<{
+  tenantId: string;
+  causedByEventId: string;
+  seedMemoryItemIds: string[];
+  synthesisBundle: SynthesisBundle;
+  selectedMemory: MemoryWithEvidence[];
 }>;
 
 export type LoopPersistence = {
@@ -157,6 +173,11 @@ export type LoopPersistence = {
     memoryGenerationVersion: string;
     items: CommittableMemoryItem[];
   }): Promise<string[]>;
+  getMemorySynthesisContext(input: {
+    tenantId: string;
+    seedMemoryItemIds: string[];
+    limit: number;
+  }): Promise<MemoryWithEvidence[]>;
 };
 
 export type QueueLike = {
@@ -167,6 +188,7 @@ export const eventRoutes: EventRoute[] = [
   route("source_committed", "extract_memory", "source"),
   route("memory_committed", "discover_candidate", "memory"),
   route("memory_committed", "check_freshness", "memory"),
+  route("memory_committed", "synthesize_brief", "memory"),
   route("candidate_created", "rank_candidate", "candidate"),
   route("candidate_approved", "draft_artifact", "candidate"),
   route("artifact_drafted", "gate_output", "artifact"),
@@ -221,14 +243,17 @@ export async function routeCommittedEvents(args: {
 export function createPolicies(args: {
   persistence: LoopPersistence;
   memoryModel: MemoryGenerationModel;
+  initiativeBriefDraftModel?: InitiativeBriefDraftModel;
   newId?: (prefix: string) => string;
 }): Record<PolicyName, Policy<unknown, PolicyOutput>> {
   const extractMemory = createExtractMemoryPolicy(args);
+  const synthesizeBrief = createSynthesizeBriefPolicy(args);
   return {
     extract_memory: extractMemory as Policy<unknown, PolicyOutput>,
     discover_candidate: deterministicNoopPolicy("discover_candidate", "candidate_proposed", "candidate_created"),
     check_freshness: deterministicNoopPolicy("check_freshness", "freshness_warning_proposed", "freshness_warning_committed"),
     detect_contradiction: deterministicNoopPolicy("detect_contradiction", "contradiction_proposed", "contradiction_recorded"),
+    synthesize_brief: synthesizeBrief as Policy<unknown, PolicyOutput>,
     rank_candidate: deterministicNoopPolicy("rank_candidate", "candidate_proposed", "candidate_created"),
     draft_artifact: deterministicNoopPolicy("draft_artifact", "artifact_draft_proposed", "artifact_drafted"),
     gate_output: deterministicNoopPolicy("gate_output", "decision_record_proposed", "decision_committed"),
@@ -366,6 +391,8 @@ export class InMemoryLoopPersistence implements LoopPersistence {
   readonly policyRuns = new Map<string, PolicyRun>();
   readonly proposedEvents = new Map<string, ProposedEvent>();
   readonly ingestionContextsBySourceVersionId = new Map<string, IngestionContext>();
+  readonly memorySynthesisContext = new Map<string, MemoryWithEvidence>();
+  readonly initiativeBriefs = new Map<string, InitiativeBrief>();
   readonly committedMemory: CommittableMemoryItem[] = [];
   readonly extractionRuns: unknown[] = [];
   private id = 0;
@@ -612,6 +639,10 @@ export class InMemoryLoopPersistence implements LoopPersistence {
       });
     }
 
+    if (proposal.targetEventType === "artifact_drafted") {
+      this.createInitiativeBriefDraftFromProposal(proposal);
+    }
+
     const event = await this.commitLedgerEventWithOutbox({
       id: this.nextId("levt"),
       tenantId: proposal.tenantId,
@@ -662,8 +693,29 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     return input.items.map((item) => item.id);
   }
 
+  async getMemorySynthesisContext(input: {
+    tenantId: string;
+    seedMemoryItemIds: string[];
+    limit: number;
+  }): Promise<MemoryWithEvidence[]> {
+    const seedSet = new Set(input.seedMemoryItemIds);
+    return [...this.memorySynthesisContext.values()]
+      .sort((left, right) => {
+        const leftSeed = seedSet.has(left.memoryItem.id) ? 0 : 1;
+        const rightSeed = seedSet.has(right.memoryItem.id) ? 0 : 1;
+        return leftSeed - rightSeed || left.memoryItem.id.localeCompare(right.memoryItem.id);
+      })
+      .slice(0, input.limit);
+  }
+
   seedIngestionContext(context: IngestionContext): void {
     this.ingestionContextsBySourceVersionId.set(context.sourceVersionId, context);
+  }
+
+  seedMemorySynthesisContext(records: MemoryWithEvidence[]): void {
+    for (const record of records) {
+      this.memorySynthesisContext.set(record.memoryItem.id, record);
+    }
   }
 
   nextId(prefix: string): string {
@@ -675,6 +727,42 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     const value = map.get(id);
     if (!value) throw new Error(`${label} not found: ${id}`);
     return value;
+  }
+
+  private createInitiativeBriefDraftFromProposal(proposal: ProposedEvent): void {
+    const briefId = String(proposal.payload.briefId ?? proposal.subjectId);
+    if (this.initiativeBriefs.has(briefId)) return;
+
+    const memoryItemIds = stringArray(proposal.payload.memoryItemIds ?? proposal.payload.selectedMemoryItemIds);
+    const evidenceSpanIds = stringArray(proposal.payload.evidenceSpanIds ?? proposal.payload.selectedEvidenceSpanIds);
+    const memoryItems = memoryItemIds
+      .map((id) => this.memorySynthesisContext.get(id)?.memoryItem)
+      .filter((item): item is InitiativeBrief["memoryItems"][number] => Boolean(item));
+    const evidenceSpans = evidenceSpanIds
+      .map((id) => [...this.memorySynthesisContext.values()]
+        .flatMap((record) => record.evidenceSpans)
+        .find((span) => span.id === id))
+      .filter((span): span is EvidenceSpan => Boolean(span));
+
+    this.initiativeBriefs.set(briefId, {
+      id: briefId,
+      title: String(proposal.payload.title ?? "Untitled initiative brief"),
+      status: "draft",
+      problem: String(proposal.payload.problem ?? ""),
+      proposal: String(proposal.payload.proposal ?? ""),
+      successMetric: String(proposal.payload.successMetric ?? ""),
+      risksAndDependencies: typeof proposal.payload.risksAndDependencies === "string"
+        ? proposal.payload.risksAndDependencies
+        : null,
+      memoryItemIds,
+      evidenceSpanIds,
+      memoryItems,
+      evidenceSpans,
+      createdByLabel: "synthesize_brief",
+      createdAt: now(),
+      updatedAt: now(),
+      decisions: [],
+    });
   }
 }
 
@@ -784,6 +872,148 @@ function createExtractMemoryPolicy(args: {
         generated: parsed,
         allowedEvidenceSpans: output.validationEvidenceSpans ?? [],
       }).result;
+    },
+  };
+}
+
+function createSynthesizeBriefPolicy(args: {
+  persistence: LoopPersistence;
+  initiativeBriefDraftModel?: InitiativeBriefDraftModel;
+  newId?: (prefix: string) => string;
+}): Policy<SynthesizeBriefInput, PolicyOutput> {
+  const newId = args.newId ?? defaultNewId;
+  return {
+    name: "synthesize_brief",
+    version: "synthesize-brief-v0.1",
+    async buildInput(workItem) {
+      const ledgerEvent = await args.persistence.loadLedgerEvent(workItem.causedByEventId);
+      if (!ledgerEvent) throw new Error(`causing ledger event not found: ${workItem.causedByEventId}`);
+
+      const seedMemoryItemIds = extractSeedMemoryItemIds(ledgerEvent.payload);
+      const context = await args.persistence.getMemorySynthesisContext({
+        tenantId: ledgerEvent.tenantId,
+        seedMemoryItemIds,
+        limit: 100,
+      });
+      const { bundle, selectedMemory } = buildSynthesisBundle({
+        seedMemoryItemIds,
+        memory: context,
+        maxMemoryItems: 8,
+      });
+      const input = {
+        tenantId: ledgerEvent.tenantId,
+        causedByEventId: ledgerEvent.id,
+        seedMemoryItemIds,
+        synthesisBundle: bundle,
+        selectedMemory,
+      };
+
+      return {
+        input,
+        inputHash: await sha256Hex(JSON.stringify({
+          seedMemoryItemIds,
+          selectedMemoryItemIds: bundle.selectedMemoryItemIds,
+          selectedEvidenceSpanIds: bundle.selectedEvidenceSpanIds,
+          connections: bundle.connections,
+        })),
+        inputSummary: {
+          causedByEventId: ledgerEvent.id,
+          seedMemoryItemIds,
+          selectedMemoryItemIds: bundle.selectedMemoryItemIds,
+          selectedEvidenceSpanIds: bundle.selectedEvidenceSpanIds,
+          connectionReasons: bundle.connections.map((connection) => connection.reason),
+          readiness: bundle.readiness,
+        },
+      };
+    },
+    async run(envelope) {
+      const selectedMemoryItems = envelope.input.selectedMemory.map((record) => record.memoryItem);
+      const selectedEvidenceSpans = uniqueEvidenceSpans(envelope.input.selectedMemory.flatMap((record) => record.evidenceSpans));
+
+      if (!envelope.input.synthesisBundle.readiness.ready) {
+        return {
+          proposedEvents: [],
+          fallbackReason: envelope.input.synthesisBundle.readiness.skipReasons.join("; "),
+          promptVersion: MEMORY_SYNTHESIS_VERSION,
+          schemaVersion: MEMORY_SYNTHESIS_VERSION,
+          outputSchemaVersion: MEMORY_SYNTHESIS_VERSION,
+        };
+      }
+
+      if (!args.initiativeBriefDraftModel) {
+        throw new Error("synthesize_brief requires an initiative brief draft model.");
+      }
+
+      const generated = await args.initiativeBriefDraftModel.generateInitiativeBriefDraft({
+        memoryItems: selectedMemoryItems,
+        evidenceSpans: selectedEvidenceSpans,
+        intent: renderSynthesisIntent(envelope.input.synthesisBundle),
+      });
+      const validation = validateInitiativeBriefDraftTraceability({
+        draft: generated.parsed,
+        selectedMemoryItems,
+        selectedEvidenceSpans,
+      });
+
+      if (!validation.ok) {
+        return {
+          proposedEvents: [],
+          provider: "openrouter",
+          model: generated.model,
+          fallbackReason: validation.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "),
+          promptVersion: MEMORY_SYNTHESIS_VERSION,
+          schemaVersion: MEMORY_SYNTHESIS_VERSION,
+          outputSchemaVersion: MEMORY_SYNTHESIS_VERSION,
+          rawResponse: generated.raw,
+        };
+      }
+
+      const briefId = newId("brief");
+      return {
+        proposedEvents: [{
+          proposedEventType: "artifact_draft_proposed",
+          targetEventType: "artifact_drafted",
+          subjectType: "artifact",
+          subjectId: briefId,
+          payload: {
+            briefId,
+            ...generated.parsed,
+            selectedMemoryItemIds: selectedMemoryItems.map((item) => item.id),
+            selectedEvidenceSpanIds: selectedEvidenceSpans.map((span) => span.id),
+            synthesisBundle: envelope.input.synthesisBundle,
+            modelMetadata: {
+              provider: "openrouter",
+              model: generated.model,
+              promptVersion: MEMORY_SYNTHESIS_VERSION,
+              schemaVersion: MEMORY_SYNTHESIS_VERSION,
+            },
+            validationMetadata: {
+              ok: validation.ok,
+              issues: validation.issues,
+            },
+          },
+          evidenceSpanIds: generated.parsed.evidenceSpanIds,
+          memoryItemIds: generated.parsed.memoryItemIds,
+          requiresHumanApproval: false,
+        }],
+        provider: "openrouter",
+        model: generated.model,
+        promptVersion: MEMORY_SYNTHESIS_VERSION,
+        schemaVersion: MEMORY_SYNTHESIS_VERSION,
+        outputSchemaVersion: MEMORY_SYNTHESIS_VERSION,
+        rawResponse: generated.raw,
+      };
+    },
+    async validate(output) {
+      if (output.proposedEvents.length === 0) return { ok: true, issues: [] };
+      const draft = output.proposedEvents[0];
+      if (!draft || draft.proposedEventType !== "artifact_draft_proposed" || draft.targetEventType !== "artifact_drafted") {
+        return {
+          ok: false,
+          issues: [{ code: "missing_artifact_draft_proposal", message: "synthesize_brief must emit artifact_draft_proposed targeting artifact_drafted.", path: [] }],
+        };
+      }
+      return { ok: true, issues: [] };
     },
   };
 }
@@ -904,6 +1134,46 @@ function GeneratedMemoryBatchFromPayload(payload: Record<string, unknown>): Gene
 function GeneratedMemoryPayloadSchema(payload: Record<string, unknown>): CommittableMemoryItem[] {
   const rawItems = Array.isArray(payload.items) ? payload.items : [];
   return rawItems.map((item) => item as CommittableMemoryItem);
+}
+
+function extractSeedMemoryItemIds(payload: Record<string, unknown>): string[] {
+  if (Array.isArray(payload.memoryItemIds)) {
+    return stringArray(payload.memoryItemIds);
+  }
+
+  if (Array.isArray(payload.items)) {
+    return payload.items
+      .map((item) => typeof item === "object" && item !== null && "id" in item ? String(item.id) : "")
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : [];
+}
+
+function uniqueEvidenceSpans(spans: EvidenceSpan[]): EvidenceSpan[] {
+  const seen = new Set<string>();
+  return spans.filter((span) => {
+    if (seen.has(span.id)) return false;
+    seen.add(span.id);
+    return true;
+  });
+}
+
+function renderSynthesisIntent(bundle: SynthesisBundle): string {
+  return [
+    "Draft an initiative brief only from the selected memory and evidence.",
+    `Seed memory: ${bundle.seedMemoryItemIds.join(", ")}`,
+    `Connection reasons: ${bundle.connections.map((connection) => `${connection.reason}(${connection.fromMemoryItemId}->${connection.toMemoryItemId})`).join(", ")}`,
+    bundle.readiness.warningReasons.length > 0
+      ? `Warnings to surface: ${bundle.readiness.warningReasons.join("; ")}`
+      : "",
+  ].filter(Boolean).join("\n");
 }
 
 function defaultNewId(prefix: string): string {

@@ -80,6 +80,9 @@ importers:
       '@distillery/memory-generation':
         specifier: workspace:*
         version: link:../memory-generation
+      '@distillery/memory-synthesis':
+        specifier: workspace:*
+        version: link:../memory-synthesis
       '@distillery/model-gateway':
         specifier: workspace:*
         version: link:../model-gateway
