@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LoopStatusResponseSchema } from "./index";
+import { InitiativeBriefDraftInputSchema, PolicyNameSchema, LoopStatusResponseSchema } from "./index";
 
 describe("LoopStatusResponseSchema", () => {
   it("accepts current item loop status with stages, timeline, and activity", () => {
@@ -70,5 +70,19 @@ describe("LoopStatusResponseSchema", () => {
     });
 
     expect(result.success).toBe(false);
+  });
+});
+
+describe("policy contracts", () => {
+  it("accepts synthesize_brief as a policy name", () => {
+    expect(PolicyNameSchema.parse("synthesize_brief")).toBe("synthesize_brief");
+  });
+
+  it("keeps manual draft expansion disabled by default", () => {
+    const parsed = InitiativeBriefDraftInputSchema.parse({
+      memoryItemIds: ["mem_1"],
+    });
+
+    expect(parsed.expandRelatedMemory).toBe(false);
   });
 });

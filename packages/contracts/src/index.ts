@@ -66,6 +66,7 @@ export const POLICY_NAMES = [
   "discover_candidate",
   "check_freshness",
   "detect_contradiction",
+  "synthesize_brief",
   "rank_candidate",
   "draft_artifact",
   "gate_output",
@@ -649,6 +650,7 @@ export type CreateInitiativeBriefInput = z.infer<typeof CreateInitiativeBriefInp
 export const InitiativeBriefDraftInputSchema = z.object({
   memoryItemIds: z.array(z.string().min(1)).min(1).max(8),
   intent: z.string().trim().max(1_000).optional(),
+  expandRelatedMemory: z.boolean().default(false),
 }).superRefine((value, context) => {
   const seen = new Set<string>();
   for (const [index, memoryItemId] of value.memoryItemIds.entries()) {
