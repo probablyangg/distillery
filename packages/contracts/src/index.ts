@@ -61,6 +61,133 @@ export const INITIATIVE_BRIEF_DECISIONS = [
   "reject",
 ] as const;
 
+export const POLICY_NAMES = [
+  "extract_memory",
+  "discover_candidate",
+  "check_freshness",
+  "detect_contradiction",
+  "rank_candidate",
+  "draft_artifact",
+  "gate_output",
+  "revise_artifact",
+] as const;
+
+export const EVENT_TYPES = [
+  "source_committed",
+  "memory_committed",
+  "memory_confirmed",
+  "memory_edited",
+  "memory_removed",
+  "candidate_created",
+  "candidate_approved",
+  "candidate_rejected",
+  "artifact_drafted",
+  "artifact_approved",
+  "artifact_rejected",
+  "artifact_delivered",
+  "decision_committed",
+  "freshness_warning_committed",
+  "contradiction_recorded",
+  "policy_run_recorded",
+] as const;
+
+export const PROPOSED_EVENT_TYPES = [
+  "memory_proposed",
+  "candidate_proposed",
+  "artifact_draft_proposed",
+  "freshness_warning_proposed",
+  "contradiction_proposed",
+  "decision_record_proposed",
+] as const;
+
+export const ACTOR_TYPES = [
+  "human",
+  "policy",
+  "router",
+  "system",
+  "connector",
+] as const;
+
+export const WORK_SUBJECT_TYPES = [
+  "source",
+  "memory",
+  "candidate",
+  "artifact",
+  "decision",
+  "system",
+] as const;
+
+export const WORK_STATUSES = [
+  "pending",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+] as const;
+
+export const OUTBOX_STATUSES = [
+  "pending",
+  "processing",
+  "processed",
+  "failed",
+] as const;
+
+export const POLICY_RUN_STATUSES = [
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+] as const;
+
+export const PROPOSED_EVENT_VALIDATION_STATUSES = [
+  "pending",
+  "valid",
+  "invalid",
+] as const;
+
+export const PROPOSED_EVENT_REVIEW_STATUSES = [
+  "not_required",
+  "pending",
+  "approved",
+  "rejected",
+] as const;
+
+export const LOOP_STAGE_KEYS = [
+  "source_committed",
+  "routed",
+  "work_queued",
+  "policy_running",
+  "proposed_event",
+  "validated",
+  "ledger_committed",
+  "human_review",
+] as const;
+
+export const LOOP_STAGE_STATUSES = [
+  "not_started",
+  "pending",
+  "running",
+  "completed",
+  "failed",
+  "waiting",
+] as const;
+
+export const LOOP_TIMELINE_ITEM_KINDS = [
+  "ledger_event",
+  "outbox",
+  "work",
+  "policy_run",
+  "proposed_event",
+  "system",
+] as const;
+
+export const LOOP_TIMELINE_SEVERITIES = [
+  "info",
+  "success",
+  "warning",
+  "error",
+] as const;
+
 export const CaptureModeSchema = z.enum(["remember", "ask"]);
 export type CaptureMode = z.infer<typeof CaptureModeSchema>;
 
@@ -110,6 +237,231 @@ export type InitiativeBriefStatus = z.infer<typeof InitiativeBriefStatusSchema>;
 
 export const InitiativeBriefDecisionSchema = z.enum(INITIATIVE_BRIEF_DECISIONS);
 export type InitiativeBriefDecision = z.infer<typeof InitiativeBriefDecisionSchema>;
+
+export const PolicyNameSchema = z.enum(POLICY_NAMES);
+export type PolicyName = z.infer<typeof PolicyNameSchema>;
+
+export const EventTypeSchema = z.enum(EVENT_TYPES);
+export type EventType = z.infer<typeof EventTypeSchema>;
+
+export const ProposedEventTypeSchema = z.enum(PROPOSED_EVENT_TYPES);
+export type ProposedEventType = z.infer<typeof ProposedEventTypeSchema>;
+
+export const ActorTypeSchema = z.enum(ACTOR_TYPES);
+export type ActorType = z.infer<typeof ActorTypeSchema>;
+
+export const WorkSubjectTypeSchema = z.enum(WORK_SUBJECT_TYPES);
+export type WorkSubjectType = z.infer<typeof WorkSubjectTypeSchema>;
+
+export const WorkStatusSchema = z.enum(WORK_STATUSES);
+export type WorkStatus = z.infer<typeof WorkStatusSchema>;
+
+export const EventOutboxStatusSchema = z.enum(OUTBOX_STATUSES);
+export type EventOutboxStatus = z.infer<typeof EventOutboxStatusSchema>;
+
+export const PolicyRunStatusSchema = z.enum(POLICY_RUN_STATUSES);
+export type PolicyRunStatus = z.infer<typeof PolicyRunStatusSchema>;
+
+export const ProposedEventValidationStatusSchema = z.enum(PROPOSED_EVENT_VALIDATION_STATUSES);
+export type ProposedEventValidationStatus = z.infer<typeof ProposedEventValidationStatusSchema>;
+
+export const ProposedEventReviewStatusSchema = z.enum(PROPOSED_EVENT_REVIEW_STATUSES);
+export type ProposedEventReviewStatus = z.infer<typeof ProposedEventReviewStatusSchema>;
+
+export const LoopStageKeySchema = z.enum(LOOP_STAGE_KEYS);
+export type LoopStageKey = z.infer<typeof LoopStageKeySchema>;
+
+export const LoopStageStatusSchema = z.enum(LOOP_STAGE_STATUSES);
+export type LoopStageStatus = z.infer<typeof LoopStageStatusSchema>;
+
+export const LoopTimelineItemKindSchema = z.enum(LOOP_TIMELINE_ITEM_KINDS);
+export type LoopTimelineItemKind = z.infer<typeof LoopTimelineItemKindSchema>;
+
+export const LoopTimelineSeveritySchema = z.enum(LOOP_TIMELINE_SEVERITIES);
+export type LoopTimelineSeverity = z.infer<typeof LoopTimelineSeveritySchema>;
+
+export const IsoDateTimeStringSchema = z.string().min(1);
+
+export const ValidationIssueSchema = z.object({
+  code: z.string().min(1),
+  message: z.string().min(1),
+  path: z.array(z.string()).default([]),
+});
+export type ValidationIssue = z.infer<typeof ValidationIssueSchema>;
+
+export const ValidationResultSchema = z.object({
+  ok: z.boolean(),
+  issues: z.array(ValidationIssueSchema),
+});
+export type ValidationResult = z.infer<typeof ValidationResultSchema>;
+
+export const LedgerEventSchema = z.object({
+  id: z.string().min(1),
+  tenantId: z.string().min(1),
+  eventType: EventTypeSchema,
+  subjectType: WorkSubjectTypeSchema,
+  subjectId: z.string().min(1),
+  actorType: ActorTypeSchema,
+  actorLabel: z.string().nullable().optional(),
+  causedByEventId: z.string().nullable().optional(),
+  causedByWorkItemId: z.string().nullable().optional(),
+  inputVersion: z.string().nullable().optional(),
+  idempotencyKey: z.string().min(1),
+  payload: z.record(z.string(), z.unknown()).default({}),
+  createdAt: IsoDateTimeStringSchema,
+});
+export type LedgerEvent = z.infer<typeof LedgerEventSchema>;
+
+export const EventOutboxRowSchema = z.object({
+  id: z.string().min(1),
+  tenantId: z.string().min(1),
+  ledgerEventId: z.string().min(1),
+  status: EventOutboxStatusSchema,
+  attempts: z.number().int().min(0),
+  lastError: z.string().nullable().optional(),
+  lockedAt: IsoDateTimeStringSchema.nullable().optional(),
+  processedAt: IsoDateTimeStringSchema.nullable().optional(),
+  createdAt: IsoDateTimeStringSchema,
+  updatedAt: IsoDateTimeStringSchema,
+});
+export type EventOutboxRow = z.infer<typeof EventOutboxRowSchema>;
+
+export const PendingWorkItemSchema = z.object({
+  id: z.string().min(1),
+  tenantId: z.string().min(1),
+  policy: PolicyNameSchema,
+  subjectType: WorkSubjectTypeSchema,
+  subjectId: z.string().min(1),
+  causedByEventId: z.string().min(1),
+  inputVersion: z.string().min(1),
+  status: WorkStatusSchema,
+  attempts: z.number().int().min(0),
+  lastError: z.string().nullable().optional(),
+  lockedAt: IsoDateTimeStringSchema.nullable().optional(),
+  startedAt: IsoDateTimeStringSchema.nullable().optional(),
+  completedAt: IsoDateTimeStringSchema.nullable().optional(),
+  cancelledAt: IsoDateTimeStringSchema.nullable().optional(),
+  createdAt: IsoDateTimeStringSchema,
+  updatedAt: IsoDateTimeStringSchema,
+});
+export type PendingWorkItem = z.infer<typeof PendingWorkItemSchema>;
+
+export const PolicyRunSchema = z.object({
+  id: z.string().min(1),
+  tenantId: z.string().min(1),
+  workItemId: z.string().min(1),
+  causedByEventId: z.string().nullable().optional(),
+  policyName: PolicyNameSchema,
+  policyVersion: z.string().min(1),
+  status: PolicyRunStatusSchema,
+  inputVersion: z.string().min(1),
+  inputHash: z.string().min(1),
+  inputSummary: z.record(z.string(), z.unknown()).default({}),
+  provider: z.string().nullable().optional(),
+  model: z.string().nullable().optional(),
+  fallbackUsed: z.boolean().default(false),
+  fallbackReason: z.string().nullable().optional(),
+  promptVersion: z.string().nullable().optional(),
+  schemaVersion: z.string().nullable().optional(),
+  outputSchemaVersion: z.string().nullable().optional(),
+  validationOk: z.boolean().nullable().optional(),
+  validationIssues: z.array(ValidationIssueSchema).default([]),
+  failureReason: z.string().nullable().optional(),
+  retryCount: z.number().int().min(0).default(0),
+  rawResponseHash: z.string().nullable().optional(),
+  rawResponseRef: z.string().nullable().optional(),
+  promptTokens: z.number().int().min(0).nullable().optional(),
+  completionTokens: z.number().int().min(0).nullable().optional(),
+  totalTokens: z.number().int().min(0).nullable().optional(),
+  estimatedCostUsd: z.number().nullable().optional(),
+  startedAt: IsoDateTimeStringSchema,
+  completedAt: IsoDateTimeStringSchema.nullable().optional(),
+  latencyMs: z.number().int().min(0).nullable().optional(),
+  createdAt: IsoDateTimeStringSchema,
+});
+export type PolicyRun = z.infer<typeof PolicyRunSchema>;
+
+export const ProposedEventSchema = z.object({
+  id: z.string().min(1),
+  tenantId: z.string().min(1),
+  workItemId: z.string().nullable().optional(),
+  policyRunId: z.string().nullable().optional(),
+  proposedEventType: ProposedEventTypeSchema,
+  targetEventType: EventTypeSchema,
+  subjectType: WorkSubjectTypeSchema,
+  subjectId: z.string().min(1),
+  payload: z.record(z.string(), z.unknown()),
+  evidenceSpanIds: z.array(z.string().min(1)).default([]),
+  memoryItemIds: z.array(z.string().min(1)).default([]),
+  decisionIds: z.array(z.string().min(1)).default([]),
+  requiresHumanApproval: z.boolean(),
+  validationStatus: ProposedEventValidationStatusSchema.default("pending"),
+  validationIssues: z.array(ValidationIssueSchema).default([]),
+  reviewStatus: ProposedEventReviewStatusSchema.default("not_required"),
+  reviewerLabel: z.string().nullable().optional(),
+  reviewRationale: z.string().nullable().optional(),
+  committedLedgerEventId: z.string().nullable().optional(),
+  createdAt: IsoDateTimeStringSchema,
+  updatedAt: IsoDateTimeStringSchema,
+});
+export type ProposedEvent = z.infer<typeof ProposedEventSchema>;
+
+export const ValidationGateResultSchema = ValidationResultSchema;
+export type ValidationGateResult = z.infer<typeof ValidationGateResultSchema>;
+
+export const HumanReviewDecisionSchema = z.object({
+  decision: z.enum(["approve", "reject"]),
+  reviewerLabel: z.string().trim().min(1).max(160),
+  rationale: z.string().trim().max(2_000).optional(),
+});
+export type HumanReviewDecision = z.infer<typeof HumanReviewDecisionSchema>;
+
+export const LoopTechnicalReferenceSchema = z.object({
+  label: z.string().min(1),
+  value: z.string().min(1),
+}).strict();
+export type LoopTechnicalReference = z.infer<typeof LoopTechnicalReferenceSchema>;
+
+export const LoopStageSchema = z.object({
+  key: LoopStageKeySchema,
+  label: z.string().min(1),
+  status: LoopStageStatusSchema,
+  description: z.string().optional(),
+  occurredAt: IsoDateTimeStringSchema.nullable().optional(),
+  detail: z.string().nullable().optional(),
+}).strict();
+export type LoopStage = z.infer<typeof LoopStageSchema>;
+
+export const LoopTimelineItemSchema = z.object({
+  id: z.string().min(1),
+  kind: LoopTimelineItemKindSchema,
+  label: z.string().min(1),
+  status: z.string().min(1),
+  occurredAt: IsoDateTimeStringSchema,
+  summary: z.string().min(1),
+  severity: LoopTimelineSeveritySchema.default("info"),
+  technical: z.array(LoopTechnicalReferenceSchema).default([]),
+}).strict();
+export type LoopTimelineItem = z.infer<typeof LoopTimelineItemSchema>;
+
+export const LoopStatusSubjectSchema = z.object({
+  ingestionId: z.string().min(1).optional(),
+  subjectType: WorkSubjectTypeSchema.optional(),
+  subjectId: z.string().min(1).optional(),
+}).strict();
+export type LoopStatusSubject = z.infer<typeof LoopStatusSubjectSchema>;
+
+export const LoopStatusResponseSchema = z.object({
+  mode: z.enum(["current", "activity"]),
+  subject: LoopStatusSubjectSchema.nullable(),
+  summary: z.string().min(1),
+  isTerminal: z.boolean(),
+  lastUpdatedAt: IsoDateTimeStringSchema,
+  stages: z.array(LoopStageSchema),
+  timeline: z.array(LoopTimelineItemSchema),
+  activity: z.array(LoopTimelineItemSchema),
+}).strict();
+export type LoopStatusResponse = z.infer<typeof LoopStatusResponseSchema>;
 
 export const StableDomainTagSchema = z.string().min(1).max(64);
 
@@ -211,19 +563,6 @@ export const MemoryItemHistorySchema = z.object({
   replacements: z.array(MemoryItemSchema).default([]),
 });
 export type MemoryItemHistory = z.infer<typeof MemoryItemHistorySchema>;
-
-export const ValidationIssueSchema = z.object({
-  code: z.string().min(1),
-  message: z.string().min(1),
-  path: z.array(z.string()).default([]),
-});
-export type ValidationIssue = z.infer<typeof ValidationIssueSchema>;
-
-export const ValidationResultSchema = z.object({
-  ok: z.boolean(),
-  issues: z.array(ValidationIssueSchema),
-});
-export type ValidationResult = z.infer<typeof ValidationResultSchema>;
 
 export const IngestionReceiptSchema = z.object({
   ingestionId: z.string().min(1),
