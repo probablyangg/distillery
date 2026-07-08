@@ -2,7 +2,7 @@
 
 Status: v0 implemented and deployed as a private pilot.
 
-For current status and roadmap, start with [STATUS_AND_ROADMAP.md](./STATUS_AND_ROADMAP.md). This file explains how v0 is structured, what shipped, and what remains after v0.
+For current status and roadmap, start with [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md). This file explains how v0 is structured, what shipped, and what remains after v0.
 
 ## v0 product outcome
 

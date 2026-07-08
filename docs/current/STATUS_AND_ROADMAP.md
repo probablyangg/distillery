@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-07
 
-This is the canonical project-status document. If another doc disagrees with this file, treat this file as the current source of truth and update the stale doc.
+This is the canonical current-state document for implemented v0 behavior. For loop-system implementation requirements, use [LOOP_SYSTEM_PRD.md](../implementation/LOOP_SYSTEM_PRD.md).
 
 ## Current product state
 
@@ -34,7 +34,9 @@ Current seeded data:
 - all active memory returns `claimType`, `entities`, `relations`, and `schemas`.
 
 Current system diagram: [v0-current.mermaid](./v0-current.mermaid).
-North-star system diagram: [system.mermaid](./system.mermaid).
+Loop-system implementation PRD: [LOOP_SYSTEM_PRD.md](../implementation/LOOP_SYSTEM_PRD.md).
+Loop-system diagram: [loop-system.mermaid](../architecture/loop-system.mermaid).
+North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 
 ## Implemented
 

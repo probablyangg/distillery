@@ -12,7 +12,7 @@ Current v0 implementation borrows the MemGraphRAG separation partially:
 - there is no graph retrieval or Personalized PageRank yet;
 - conflict detection/resolution is not implemented yet.
 
-Use [STATUS_AND_ROADMAP.md](./STATUS_AND_ROADMAP.md) for current project state. Use this file for design rationale and future memory-layer direction.
+Use [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md) for current project state. Use this file for design rationale and future memory-layer direction.
 
 Sources reviewed:
 
