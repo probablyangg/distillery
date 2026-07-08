@@ -2,35 +2,36 @@
 
 Distillery is an internal company-intelligence system for turning scattered context into trustworthy memory and human-approved initiative briefs.
 
-The core product rule is:
+The core product rule:
 
 > A brief is only useful if a human can verify why every important claim says what it says.
 
-v0 is intentionally narrow. It handles text braindumps, creates evidence-backed memory, supports cited recall, and lets a human generate, edit, save, and approve an initiative brief from selected memory.
+## Start Here
 
-## Current v0 status
+For implementation work, read these in order:
+
+1. [Docs index](./docs/README.md) — source-of-truth map for all documentation.
+2. [Loop system PRD](./docs/implementation/LOOP_SYSTEM_PRD.md) — authoritative implementation handoff for the event-driven loop system.
+3. [Current status](./docs/current/STATUS_AND_ROADMAP.md) — what exists today and what is intentionally not implemented.
+4. [v0 runbook](./docs/runbooks/V0_RUNBOOK.md) — local setup, migrations, seed data, deployment, and smoke testing.
+
+Do not treat older roadmap or research docs as implementation authority when they conflict with the loop system PRD.
+
+## Current v0
 
 Implemented and deployed:
 
-- one-screen password-gated capture/recall app at `/`;
-- separate password-gated synthesis surface at `/synthesis`;
-- 30-day shared-password session cookie with logout;
+- password-gated capture/recall app at `/`;
+- password-gated synthesis surface at `/synthesis`;
 - text-only ingestion;
 - immutable source versions and evidence spans;
 - OpenRouter memory generation;
-- `claimType` memory contract;
-- MemGraphRAG-aligned semantic metadata on memory items:
-  - `entities`;
-  - `relations`;
-  - `schemas`;
+- evidence-backed memory with `claimType`, entities, relations, and schemas;
 - confirm/edit/remove memory actions with append-only history;
-- deterministic cited recall with evidence-gap responses;
-- initiative brief draft generation from 1-8 selected memory items;
-- human-editable initiative brief creation;
-- approve/reject decision writeback;
-- Stable starter seed data: 32 confirmed memory items and 3 starter briefs;
+- deterministic cited recall;
+- human-directed initiative brief draft, save, approve, and reject flow;
 - Cloudflare Worker deployment;
-- Supabase PostgreSQL/RPC persistence with `pgvector` enabled.
+- Supabase PostgreSQL/RPC persistence with `pgvector`.
 
 Live app:
 
@@ -38,36 +39,22 @@ Live app:
 https://distillery-v0.angela-f4b.workers.dev
 ```
 
-## How v0 works
+## Current Stack
 
 ```text
-Memory Generation
-  text braindump
-  -> immutable evidence spans
-  -> generated memory items
-  -> validation
-  -> committed memory
-  -> correction/history
-  -> cited recall
-
-Memory Synthesis
-  active committed memory
-  -> human selects memory
-  -> optional brief draft generation
-  -> human edits/saves brief
-  -> evidence binding
-  -> approve/reject decision
+TypeScript
+Cloudflare Worker
+Cloudflare Queue
+Supabase PostgreSQL/RPC
+OpenRouter
+Zod
+Vitest
+pnpm
 ```
 
-Important boundaries:
+Canonical state is PostgreSQL. Queues, indexes, embeddings, and future graph projections are derived or transport mechanisms.
 
-- Memory Generation does not create initiatives, PRDs, tasks, or priorities.
-- Memory Synthesis v0 is human-directed; automated initiative discovery is not implemented yet.
-- `entities`, `relations`, and `schemas` are interpretation metadata, not standalone proof.
-- Exact evidence spans remain authoritative.
-- Shared password access is acceptable only for a private v0 pilot.
-
-## Quick start
+## Quick Start
 
 ```bash
 pnpm install
@@ -82,36 +69,19 @@ cp apps/web/.dev.vars.example apps/web/.dev.vars
 PATH=/opt/homebrew/bin:$PATH pnpm dev
 ```
 
-Deploy:
-
-```bash
-PATH=/opt/homebrew/bin:$PATH pnpm deploy:cloudflare
-```
-
 Seed Stable starter data:
 
 ```bash
 PATH=/opt/homebrew/bin:$PATH pnpm seed:stable
 ```
 
-## Documentation map
+Deploy:
 
-Start here:
+```bash
+PATH=/opt/homebrew/bin:$PATH pnpm deploy:cloudflare
+```
 
-- [Status and roadmap](./docs/STATUS_AND_ROADMAP.md) — what is done, what is left, and where the system goes next.
-- [v0 runbook](./docs/V0_RUNBOOK.md) — local setup, migrations, seed data, deployment, smoke testing.
-- [v0 build plan](./docs/V0_BUILD_PLAN.md) — implemented slices and remaining backlog.
-
-Subsystem docs:
-
-- [Memory Generation](./docs/MEMORY_GENERATION.md)
-- [Memory Synthesis](./docs/MEMORY_SYNTHESIS.md)
-- [System design](./docs/SYSTEM_DESIGN.md)
-- [v0 current system diagram](./docs/v0-current.mermaid)
-- [Memory architecture and MemGraphRAG notes](./docs/MEMORY_ARCHITECTURE.md)
-- [Stable labeled fixtures](./evals/fixtures/memory-generation/README.md)
-
-## Useful commands
+## Verification Commands
 
 ```bash
 pnpm typecheck
@@ -119,15 +89,15 @@ pnpm test
 pnpm fixtures:validate
 pnpm build
 pnpm smoke:live
-pnpm seed:stable
-pnpm deploy:cloudflare
 ```
+
+`pnpm smoke:live` requires live Supabase, Cloudflare, OpenRouter, and app password configuration.
 
 ## Environment
 
 Copy `.env.example` to `.env.local` and populate:
 
-- Supabase:
+- Supabase/PostgreSQL:
   - `DATABASE_DIRECT_URL`;
   - `DATABASE_URL`;
   - `SUPABASE_URL`;
@@ -140,4 +110,7 @@ Copy `.env.example` to `.env.local` and populate:
 - app access:
   - `DISTILLERY_APP_PASSWORD`.
 
+For Worker runtime secrets, copy `apps/web/.dev.vars.example` to `apps/web/.dev.vars`.
+
 Never commit `.env.local`, `.dev.vars`, database URLs, API keys, or Worker secrets.
+
