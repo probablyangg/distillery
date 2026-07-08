@@ -7,6 +7,12 @@ import {
   RecallQueryInputSchema,
 } from "@distillery/contracts";
 import { SupabaseMemoryGenerationRepository, SupabaseRpcClient } from "@distillery/db";
+import { SupabaseLoopPersistence } from "@distillery/db";
+import {
+  createPolicies,
+  executeWorkItem,
+  routeCommittedEvents,
+} from "@distillery/loop";
 import {
   OpenRouterInitiativeBriefDraftModel,
   OpenRouterMemoryGenerationModel,
@@ -15,7 +21,6 @@ import {
 import {
   DEFAULT_TENANT_ID,
   applyMemoryItemAction,
-  runMemoryGenerationWorkflow,
   submitTextCapture,
 } from "@distillery/memory-generation";
 import { validateInitiativeBriefDraftTraceability } from "@distillery/memory-synthesis";
@@ -34,7 +39,7 @@ export type Env = {
   OPENROUTER_FALLBACK_MODELS?: string;
   OPENROUTER_TIMEOUT_MS?: string;
   OPENROUTER_FALLBACK_TIMEOUT_MS?: string;
-  MEMORY_GENERATION_QUEUE?: Queue<{ ingestionId: string }>;
+  MEMORY_GENERATION_QUEUE?: Queue<{ workItemId: string }>;
 };
 
 export default {
@@ -67,6 +72,10 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/api/session") {
       return json({ authenticated: true });
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/loop-status") {
+      return handleLoopStatus(url, env);
     }
 
     if (request.method === "POST" && url.pathname === "/api/ingestions") {
@@ -121,10 +130,10 @@ export default {
     return json({ error: "Not found" }, 404);
   },
 
-  async queue(batch: MessageBatch<{ ingestionId: string }>, env: Env): Promise<void> {
+  async queue(batch: MessageBatch<{ workItemId: string }>, env: Env): Promise<void> {
     await Promise.all(
       batch.messages.map(async (message) => {
-        await processIngestion(message.body.ingestionId, env);
+        await processWorkItem(message.body.workItemId, env);
         message.ack();
       }),
     );
@@ -194,11 +203,7 @@ async function handleCreateIngestion(request: Request, env: Env, ctx: ExecutionC
     repository,
   });
 
-  if (env.MEMORY_GENERATION_QUEUE) {
-    await env.MEMORY_GENERATION_QUEUE.send({ ingestionId: receipt.ingestionId });
-  } else {
-    ctx.waitUntil(processIngestion(receipt.ingestionId, env));
-  }
+  ctx.waitUntil(routeAndMaybeExecuteLoop(env));
 
   return json(receipt, 202);
 }
@@ -217,6 +222,18 @@ async function handleRecallQuery(request: Request, env: Env): Promise<Response> 
 async function handleListActiveMemory(env: Env): Promise<Response> {
   const memory = await createRepository(env).listActiveMemory({ limit: 100 });
   return json(memory);
+}
+
+async function handleLoopStatus(url: URL, env: Env): Promise<Response> {
+  const ingestionId = url.searchParams.get("ingestionId")?.trim() || undefined;
+  const requestedLimit = Number.parseInt(url.searchParams.get("limit") ?? "25", 10);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 25;
+  const status = await createLoopPersistence(env).getLoopStatus({
+    tenantId: DEFAULT_TENANT_ID,
+    ...(ingestionId ? { ingestionId } : {}),
+    limit,
+  });
+  return json(status);
 }
 
 async function handleListInitiativeBriefs(env: Env): Promise<Response> {
@@ -346,16 +363,41 @@ async function handleMemoryItemHistory(memoryItemId: string, env: Env): Promise<
   return json(result);
 }
 
-async function processIngestion(ingestionId: string, env: Env): Promise<void> {
-  await runMemoryGenerationWorkflow({
-    ingestionId,
-    repository: createRepository(env),
-    model: new OpenRouterMemoryGenerationModel(openRouterConfig(env)),
+async function routeAndMaybeExecuteLoop(env: Env): Promise<void> {
+  const persistence = createLoopPersistence(env);
+  const workItems = await routeCommittedEvents({
+    persistence,
+    ...(env.MEMORY_GENERATION_QUEUE ? { queue: env.MEMORY_GENERATION_QUEUE } : {}),
+  });
+
+  if (!env.MEMORY_GENERATION_QUEUE) {
+    await Promise.all(workItems.map((workItem) => processWorkItem(workItem.id, env)));
+  }
+}
+
+async function processWorkItem(workItemId: string, env: Env): Promise<void> {
+  const persistence = createLoopPersistence(env);
+  await executeWorkItem({
+    persistence,
+    policies: createPolicies({
+      persistence,
+      memoryModel: new OpenRouterMemoryGenerationModel(openRouterConfig(env)),
+    }),
+    workItemId,
   });
 }
 
 function createRepository(env: Env): SupabaseMemoryGenerationRepository {
   return new SupabaseMemoryGenerationRepository(
+    new SupabaseRpcClient({
+      supabaseUrl: env.SUPABASE_URL,
+      secretKey: env.SUPABASE_SECRET_KEY,
+    }),
+  );
+}
+
+function createLoopPersistence(env: Env): SupabaseLoopPersistence {
+  return new SupabaseLoopPersistence(
     new SupabaseRpcClient({
       supabaseUrl: env.SUPABASE_URL,
       secretKey: env.SUPABASE_SECRET_KEY,
@@ -592,6 +634,7 @@ function renderAppShell(): string {
     .row { display: flex; gap: 12px; align-items: center; margin-top: 12px; }
     .hidden { display: none; }
     pre { white-space: pre-wrap; word-break: break-word; background: #020617; border-radius: 12px; padding: 16px; overflow: auto; }
+    ${loopDrawerStyles()}
   </style>
 </head>
 <body>
@@ -612,11 +655,12 @@ function renderAppShell(): string {
       <div class="row"><button id="logout" type="button" class="secondary">Log out</button></div>
       <form id="capture-form">
         <textarea id="text" placeholder="Paste a Stable leadership braindump..."></textarea>
-        <div class="row"><button id="remember">Remember</button><button id="ask" type="button">Ask</button><span id="status"></span></div>
+        <div class="row"><button id="remember">Remember</button><button id="ask" type="button">Ask</button><button id="loop-open" type="button" class="secondary loop-button">Loop</button><span id="status"></span></div>
       </form>
       <pre id="result"></pre>
     </section>
   </main>
+  ${loopDrawerMarkup()}
   <script>
     const loginCard = document.querySelector("#login-card");
     const appCard = document.querySelector("#app-card");
@@ -627,6 +671,7 @@ function renderAppShell(): string {
     const loginStatusEl = document.querySelector("#login-status");
     const statusEl = document.querySelector("#status");
     const resultEl = document.querySelector("#result");
+    const loopController = initLoopDrawer();
 
     checkSession();
 
@@ -667,6 +712,7 @@ function renderAppShell(): string {
         statusEl.textContent = "Failed";
         return;
       }
+      loopController.setActiveIngestion(receipt.ingestionId, true);
       statusEl.textContent = "Processing...";
       poll(receipt.ingestionId);
     });
@@ -691,8 +737,9 @@ function renderAppShell(): string {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         const response = await fetch("/api/ingestions/" + encodeURIComponent(id));
         if (handleUnauthorized(response)) return;
-        const result = await response.json();
+      const result = await response.json();
       renderResult(result);
+      loopController.refresh();
       statusEl.textContent = result.status;
       if (["ready", "failed"].includes(result.status)) return;
       }
@@ -870,6 +917,8 @@ function renderAppShell(): string {
         + (evidence ? '<small>Evidence</small><pre>' + escapeHtml(evidence) + '</pre>' : '')
         + '</details>';
     }
+
+    ${loopDrawerScript()}
   </script>
 </body>
 </html>`;
@@ -902,6 +951,7 @@ function renderSynthesisShell(): string {
     .memory, .brief { border: 1px solid #334155; border-radius: 12px; padding: 12px; margin-top: 12px; background: #0f172a; }
     .memory label { display: flex; gap: 10px; align-items: flex-start; }
     pre { white-space: pre-wrap; word-break: break-word; background: #020617; border-radius: 12px; padding: 16px; overflow: auto; }
+    ${loopDrawerStyles()}
   </style>
 </head>
 <body>
@@ -923,6 +973,7 @@ function renderSynthesisShell(): string {
       <div class="row">
         <button id="load-memory" type="button">Load active memory</button>
         <button id="load-briefs" type="button" class="secondary">Load briefs</button>
+        <button id="loop-open" type="button" class="secondary loop-button">Loop</button>
         <span id="status"></span>
       </div>
 
@@ -953,6 +1004,7 @@ function renderSynthesisShell(): string {
       <pre id="result"></pre>
     </section>
   </main>
+  ${loopDrawerMarkup()}
   <script>
     const loginCard = document.querySelector("#login-card");
     const appCard = document.querySelector("#app-card");
@@ -966,6 +1018,7 @@ function renderSynthesisShell(): string {
     const briefForm = document.querySelector("#brief-form");
     const draftStatusEl = document.querySelector("#draft-status");
     const draftEvidenceEl = document.querySelector("#draft-evidence");
+    const loopController = initLoopDrawer();
 
     checkSession();
 
@@ -1239,7 +1292,244 @@ function renderSynthesisShell(): string {
         + (evidence ? '<small>Evidence</small><pre>' + escapeHtml(evidence) + '</pre>' : '')
         + '</details>';
     }
+
+    ${loopDrawerScript()}
   </script>
 </body>
 </html>`;
+}
+
+function loopDrawerStyles(): string {
+  return `
+    .loop-button[data-busy="true"]::after { content: ""; display: inline-block; width: 7px; height: 7px; margin-left: 8px; border-radius: 999px; background: #fbbf24; vertical-align: middle; }
+    .loop-backdrop { position: fixed; inset: 0; background: rgba(2, 6, 23, .55); opacity: 0; pointer-events: none; transition: opacity .16s ease; z-index: 20; }
+    .loop-backdrop.open { opacity: 1; pointer-events: auto; }
+    .loop-drawer { position: fixed; top: 0; right: 0; width: min(520px, 100vw); height: 100vh; background: #0f172a; border-left: 1px solid #334155; box-shadow: -28px 0 80px rgba(0,0,0,.42); transform: translateX(100%); transition: transform .18s ease; z-index: 21; display: flex; flex-direction: column; }
+    .loop-drawer.open { transform: translateX(0); }
+    .loop-header { padding: 18px; border-bottom: 1px solid #263244; display: grid; gap: 10px; }
+    .loop-header h2 { margin: 0; font-size: 20px; }
+    .loop-header p { margin: 0; color: #cbd5e1; }
+    .loop-header-actions { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+    .loop-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 18px 0; }
+    .loop-tabs button { background: #1e293b; color: #cbd5e1; padding: 10px 12px; }
+    .loop-tabs button.active { background: #38bdf8; color: #082f49; }
+    .loop-content { padding: 18px; overflow: auto; display: grid; gap: 18px; }
+    .loop-stage-grid { display: grid; gap: 8px; }
+    .loop-stage { display: grid; grid-template-columns: 26px 1fr; gap: 10px; align-items: start; padding: 10px; border: 1px solid #263244; background: #111827; border-radius: 8px; }
+    .loop-dot { width: 14px; height: 14px; border-radius: 999px; margin-top: 3px; background: #475569; box-shadow: 0 0 0 3px rgba(71,85,105,.22); }
+    .loop-stage.completed .loop-dot, .loop-item.success { border-color: #22c55e; }
+    .loop-stage.completed .loop-dot { background: #22c55e; }
+    .loop-stage.running .loop-dot, .loop-stage.pending .loop-dot, .loop-stage.waiting .loop-dot { background: #fbbf24; }
+    .loop-stage.failed .loop-dot { background: #fb7185; }
+    .loop-stage strong, .loop-item strong { display: block; }
+    .loop-stage small, .loop-item small { color: #94a3b8; }
+    .loop-timeline { display: grid; gap: 10px; }
+    .loop-item { border: 1px solid #263244; background: #111827; border-radius: 8px; padding: 12px; }
+    .loop-item.error { border-color: #fb7185; }
+    .loop-item.warning { border-color: #fbbf24; }
+    .loop-item.info { border-color: #334155; }
+    .loop-item details { margin-top: 10px; }
+    .loop-item dl { display: grid; grid-template-columns: minmax(110px, 150px) 1fr; gap: 6px 10px; margin: 10px 0 0; }
+    .loop-item dt { color: #94a3b8; }
+    .loop-item dd { margin: 0; word-break: break-word; }
+    .loop-empty { border: 1px dashed #334155; border-radius: 8px; padding: 14px; color: #cbd5e1; }
+    @media (max-width: 560px) {
+      .loop-drawer { width: 100vw; }
+      .loop-item dl { grid-template-columns: 1fr; }
+    }
+  `;
+}
+
+function loopDrawerMarkup(): string {
+  return `
+  <div id="loop-backdrop" class="loop-backdrop"></div>
+  <aside id="loop-drawer" class="loop-drawer" aria-label="Loop status" aria-hidden="true">
+    <div class="loop-header">
+      <div class="loop-header-actions">
+        <h2>Loop status</h2>
+        <div class="row" style="margin-top:0">
+          <button id="loop-refresh" type="button" class="secondary">Refresh</button>
+          <button id="loop-close" type="button" class="secondary">Close</button>
+        </div>
+      </div>
+      <p id="loop-summary">Open the drawer to inspect loop activity.</p>
+      <small id="loop-updated"></small>
+    </div>
+    <div class="loop-tabs" role="tablist">
+      <button id="loop-tab-current" type="button" class="active">Current item</button>
+      <button id="loop-tab-activity" type="button">Activity</button>
+    </div>
+    <div id="loop-content" class="loop-content"></div>
+  </aside>`;
+}
+
+function loopDrawerScript(): string {
+  return `
+    function initLoopDrawer() {
+      const openButton = document.querySelector("#loop-open");
+      const drawer = document.querySelector("#loop-drawer");
+      const backdrop = document.querySelector("#loop-backdrop");
+      const closeButton = document.querySelector("#loop-close");
+      const refreshButton = document.querySelector("#loop-refresh");
+      const currentTab = document.querySelector("#loop-tab-current");
+      const activityTab = document.querySelector("#loop-tab-activity");
+      const content = document.querySelector("#loop-content");
+      const summary = document.querySelector("#loop-summary");
+      const updated = document.querySelector("#loop-updated");
+      let activeIngestionId = localStorage.getItem("distillery_active_loop_ingestion_id") || "";
+      let activeTab = activeIngestionId ? "current" : "activity";
+      let timer = null;
+      let latestStatus = null;
+      const expandedTechnicalIds = new Set();
+
+      if (!openButton || !drawer || !backdrop || !content) {
+        return {
+          setActiveIngestion() {},
+          refresh() {}
+        };
+      }
+
+      openButton.addEventListener("click", () => openDrawer(activeIngestionId ? "current" : "activity"));
+      closeButton.addEventListener("click", closeDrawer);
+      backdrop.addEventListener("click", closeDrawer);
+      refreshButton.addEventListener("click", () => refreshLoopStatus());
+      currentTab.addEventListener("click", () => {
+        activeTab = "current";
+        renderLatest();
+        refreshLoopStatus();
+      });
+      activityTab.addEventListener("click", () => {
+        activeTab = "activity";
+        renderLatest();
+        refreshLoopStatus();
+      });
+      content.addEventListener("toggle", (event) => {
+        const details = event.target;
+        if (!(details instanceof HTMLDetailsElement)) return;
+        const item = details.closest("[data-loop-item-id]");
+        const id = item ? item.getAttribute("data-loop-item-id") : "";
+        if (!id) return;
+        if (details.open) {
+          expandedTechnicalIds.add(id);
+        } else {
+          expandedTechnicalIds.delete(id);
+        }
+      }, true);
+
+      if (activeIngestionId) scheduleRefresh();
+
+      function setActiveIngestion(ingestionId, shouldOpen) {
+        activeIngestionId = ingestionId || "";
+        if (activeIngestionId) {
+          localStorage.setItem("distillery_active_loop_ingestion_id", activeIngestionId);
+          activeTab = "current";
+          setBusy(true);
+        }
+        if (shouldOpen) openDrawer("current");
+        refreshLoopStatus();
+        scheduleRefresh();
+      }
+
+      function openDrawer(tab) {
+        activeTab = tab || activeTab;
+        drawer.classList.add("open");
+        backdrop.classList.add("open");
+        drawer.setAttribute("aria-hidden", "false");
+        renderLatest();
+        refreshLoopStatus();
+        scheduleRefresh();
+      }
+
+      function closeDrawer() {
+        drawer.classList.remove("open");
+        backdrop.classList.remove("open");
+        drawer.setAttribute("aria-hidden", "true");
+        scheduleRefresh();
+      }
+
+      async function refreshLoopStatus() {
+        const params = new URLSearchParams();
+        params.set("limit", "25");
+        if (activeTab === "current" && activeIngestionId) params.set("ingestionId", activeIngestionId);
+        const response = await fetch("/api/loop-status?" + params.toString());
+        if (typeof handleUnauthorized === "function" && handleUnauthorized(response)) return;
+        const status = await response.json();
+        latestStatus = status;
+        renderLatest();
+        setBusy(Boolean(activeIngestionId && !status.isTerminal));
+        scheduleRefresh();
+      }
+
+      function renderLatest() {
+        currentTab.classList.toggle("active", activeTab === "current");
+        activityTab.classList.toggle("active", activeTab === "activity");
+
+        if (!latestStatus) {
+          summary.textContent = activeIngestionId ? "Loading loop status..." : "Open Activity to inspect recent loop events.";
+          updated.textContent = "";
+          content.innerHTML = '<div class="loop-empty">No loop status loaded yet.</div>';
+          return;
+        }
+
+        summary.textContent = latestStatus.summary || "Loop status";
+        updated.textContent = latestStatus.lastUpdatedAt ? "Updated " + formatLoopTime(latestStatus.lastUpdatedAt) : "";
+
+        if (activeTab === "current") {
+          if (!activeIngestionId) {
+            content.innerHTML = '<div class="loop-empty">No active capture in this browser session yet. Submit a note, then open this drawer again.</div>' + renderTimeline(latestStatus.activity || []);
+            return;
+          }
+          content.innerHTML = renderStages(latestStatus.stages || []) + renderTimeline(latestStatus.timeline || []);
+          return;
+        }
+
+        content.innerHTML = renderTimeline(latestStatus.activity || []);
+      }
+
+      function renderStages(stages) {
+        if (!stages.length) return "";
+        return '<section><h3>Stages</h3><div class="loop-stage-grid">' + stages.map((stage) =>
+          '<div class="loop-stage ' + escapeHtml(stage.status) + '"><span class="loop-dot"></span><div><strong>' + escapeHtml(stage.label) + '</strong><small>' + escapeHtml(stage.status.replace("_", " ")) + (stage.occurredAt ? " · " + escapeHtml(formatLoopTime(stage.occurredAt)) : "") + '</small><p>' + escapeHtml(stage.description || "") + '</p>' + (stage.detail ? '<small>' + escapeHtml(stage.detail) + '</small>' : '') + '</div></div>'
+        ).join("") + '</div></section>';
+      }
+
+      function renderTimeline(items) {
+        if (!items.length) return '<section><h3>Timeline</h3><div class="loop-empty">No loop activity yet.</div></section>';
+        return '<section><h3>Timeline</h3><div class="loop-timeline">' + items.map((item) =>
+          '<article class="loop-item ' + escapeHtml(item.severity || "info") + '" data-loop-item-id="' + escapeHtml(item.id) + '"><strong>' + escapeHtml(item.label) + '</strong><small>' + escapeHtml(item.kind) + ' · ' + escapeHtml(item.status) + ' · ' + escapeHtml(formatLoopTime(item.occurredAt)) + '</small><p>' + escapeHtml(item.summary) + '</p>' + renderTechnical(item.id, item.technical || []) + '</article>'
+        ).join("") + '</div></section>';
+      }
+
+      function renderTechnical(itemId, technical) {
+        if (!technical.length) return "";
+        return '<details' + (expandedTechnicalIds.has(itemId) ? ' open' : '') + '><summary>Technical details</summary><dl>' + technical.map((ref) =>
+          '<dt>' + escapeHtml(ref.label) + '</dt><dd>' + escapeHtml(ref.value) + '</dd>'
+        ).join("") + '</dl></details>';
+      }
+
+      function formatLoopTime(value) {
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return value;
+        return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      }
+
+      function setBusy(isBusy) {
+        openButton.dataset.busy = isBusy ? "true" : "false";
+      }
+
+      function scheduleRefresh() {
+        if (timer) {
+          clearInterval(timer);
+          timer = null;
+        }
+        const shouldPoll = drawer.classList.contains("open") || Boolean(activeIngestionId && latestStatus && !latestStatus.isTerminal);
+        if (shouldPoll) timer = setInterval(refreshLoopStatus, 2000);
+      }
+
+      return {
+        setActiveIngestion,
+        refresh: refreshLoopStatus
+      };
+    }
+  `;
 }

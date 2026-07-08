@@ -6,6 +6,7 @@
   "dependencies": {
     "@distillery/contracts": "workspace:*",
     "@distillery/db": "workspace:*",
+    "@distillery/loop": "workspace:*",
     "@distillery/model-gateway": "workspace:*",
     "@distillery/memory-generation": "workspace:*"
   }

@@ -39,6 +39,9 @@ importers:
       '@distillery/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@distillery/loop':
+        specifier: workspace:*
+        version: link:../../packages/loop
       '@distillery/memory-generation':
         specifier: workspace:*
         version: link:../../packages/memory-generation
@@ -53,6 +56,9 @@ importers:
       '@distillery/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@distillery/loop':
+        specifier: workspace:*
+        version: link:../loop
       '@distillery/memory-generation':
         specifier: workspace:*
         version: link:../memory-generation
@@ -65,6 +71,21 @@ importers:
       '@distillery/contracts':
         specifier: workspace:*
         version: link:../contracts
+
+  packages/loop:
+    dependencies:
+      '@distillery/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@distillery/memory-generation':
+        specifier: workspace:*
+        version: link:../memory-generation
+      '@distillery/model-gateway':
+        specifier: workspace:*
+        version: link:../model-gateway
+      '@distillery/validation':
+        specifier: workspace:*
+        version: link:../validation
 
   packages/memory-generation:
     dependencies:
