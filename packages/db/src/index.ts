@@ -468,6 +468,19 @@ export class SupabaseLoopPersistence implements LoopPersistence {
     return IngestionResultSchema.parse(result).memoryItems.map((item) => item.id);
   }
 
+  async getMemorySynthesisContext(input: {
+    tenantId: string;
+    seedMemoryItemIds: string[];
+    limit: number;
+  }): Promise<MemoryWithEvidence[]> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_get_memory_synthesis_context", {
+      p_tenant_id: input.tenantId,
+      p_seed_memory_item_ids: input.seedMemoryItemIds,
+      p_limit: input.limit,
+    });
+    return MemoryWithEvidenceSchema.array().parse(result);
+  }
+
   async getLoopStatus(input: {
     tenantId?: string;
     ingestionId?: string;
