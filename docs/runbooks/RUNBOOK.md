@@ -70,7 +70,7 @@ done
 Apply only the latest migration after pulling new code:
 
 ```bash
-psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0008_loop_status_read_model.sql
+psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0009_synthesize_brief_policy.sql
 ```
 
 Do not run migrations from the Cloudflare Worker. Migrations require `DATABASE_DIRECT_URL` from local/CI.
@@ -85,6 +85,7 @@ Current migration set:
 - `0006_backfill_memory_semantics.sql` — conservative semantic metadata for pre-schema-layer rows.
 - `0007_loop_system.sql` — canonical loop tables, router/executor RPCs, proposed event commit path, and text capture `source_committed` write.
 - `0008_loop_status_read_model.sql` — loop status read model for UI/API inspection.
+- `0009_synthesize_brief_policy.sql` — `synthesize_brief` policy constraint, synthesis context RPC, semantic memory JSON projection, and atomic artifact-draft-to-initiative-brief commit path.
 
 ## Seed Stable starter data
 
@@ -141,7 +142,7 @@ Manual check:
 6. Ask a recall question.
 7. Open `/synthesis`.
 8. Select memory.
-9. Generate a brief draft.
+9. Generate a brief draft. To test related-memory expansion through the API, call `POST /api/initiative-brief-drafts` with `expandRelatedMemory: true`.
 10. Edit/save a brief.
 11. Approve or reject it.
 
@@ -214,7 +215,7 @@ Memory review:
 
 Memory Synthesis:
 
-- `POST /api/initiative-brief-drafts` — generate editable brief draft from selected memory.
+- `POST /api/initiative-brief-drafts` — generate editable brief draft from selected memory. Optional body field: `expandRelatedMemory` defaults to `false`; when `true`, the endpoint expands through the shared synthesis bundle builder.
 - `POST /api/initiative-briefs` — save human-reviewed brief.
 - `GET /api/initiative-briefs` — list briefs.
 - `GET /api/initiative-briefs/{id}` — inspect one brief.

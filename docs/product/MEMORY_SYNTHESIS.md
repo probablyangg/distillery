@@ -1,6 +1,6 @@
 # Memory Synthesis
 
-Status: manual synthesis implemented; automated grouping/discovery is future work.
+Status: manual synthesis and first-pass background synthesis are implemented. Candidate discovery and human-facing evidence grouping review remain future work.
 
 Memory Synthesis turns committed memory into a human-reviewed initiative brief.
 
@@ -28,11 +28,15 @@ Implemented endpoints:
 - `GET /api/initiative-briefs/{id}`;
 - `POST /api/initiative-briefs/{id}/decisions`.
 
+`POST /api/initiative-brief-drafts` accepts `expandRelatedMemory?: boolean`. The default is `false`, which preserves the original manual selected-memory behavior. When `true`, the endpoint uses the same derived synthesis bundle builder as the background policy and may include related active memory in the generated draft context.
+
 ## Current product behavior
 
 The reviewer chooses memory manually.
 
-The brief generator is optional. It drafts from selected memory and evidence only. The human can edit before saving.
+The brief generator is optional. It drafts from selected memory and evidence only unless `expandRelatedMemory` is explicitly enabled. The human can edit before saving.
+
+Background synthesis also runs after `memory_committed`. It derives related active memory at runtime, checks readiness, generates a traceable draft through the existing OpenRouter model gateway, emits `artifact_draft_proposed`, and auto-commits `artifact_drafted` only when validation passes.
 
 Saved briefs bind to:
 
@@ -50,6 +54,10 @@ Approval/rejection writes an append-only decision record with a self-attested re
 - Approval is blocked if supporting memory has become inactive.
 - Generated drafts must include every selected memory ID and required evidence ID.
 - Draft generation falls back to a deterministic traceable draft if the model fails or violates validation.
+- Background synthesis must select at least 2 active memory items and 2 evidence spans.
+- Background synthesis must have at least 1 connection stronger than shared source/context.
+- Background synthesis skips without a proposed event when memory is isolated, inactive, superseded, removed, or blocked by an unresolved contradiction.
+- `artifact_drafted` creates one traceable initiative-brief draft and memory/evidence bindings idempotently during proposal commit.
 
 ## Brief fields
 
@@ -105,12 +113,18 @@ It must not invent:
 
 If evidence is weak or unresolved, the draft should make uncertainty visible.
 
+## Background synthesis policy
+
+The `synthesize_brief` policy is routed from `memory_committed` events. It reads seed memory IDs from the ledger event payload, not from `pending_work.subjectId`, because a memory commit subject can represent a source version or batch.
+
+The policy builds a transient `SynthesisBundle`. Connection reasons can include shared entity, compatible relation, matching schema candidate, complementary claim type, shared evidence or source context, edit/supersession lineage, decision reference, contradiction warning, or blocking contradiction.
+
+Derived connections are not persisted as canonical memory links.
+
 ## What is not implemented yet
 
-- automatic related-memory grouping;
-- initiative candidate discovery;
+- full candidate-based initiative discovery;
 - candidate maturity scoring;
-- readiness checks;
 - evidence bundle freezing/versioning;
 - assertion-level trace tables;
 - contrary evidence display;
@@ -122,14 +136,15 @@ If evidence is weak or unresolved, the draft should make uncertainty visible.
 The intended next architecture is:
 
 ```text
-memory.ready event
+memory_committed event
+  -> synthesize_brief
   -> retrieve related active memory
-  -> propose evidence groups
-  -> detect conflicts/gaps
-  -> human accepts/ignores/merges group
-  -> generate initiative brief
-  -> validate assertion traceability
-  -> human approval
+  -> derive transient synthesis bundle
+  -> check readiness
+  -> generate initiative brief draft
+  -> validate traceability
+  -> auto-commit artifact_drafted
+  -> human reviews saved brief later
 ```
 
-This should be implemented as durable workflow steps, not as one long HTTP request.
+Future candidate discovery and PRD generation should be implemented as durable workflow steps, not as one long HTTP request.

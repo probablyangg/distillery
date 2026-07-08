@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-08
 
-This is the canonical current-state document for implemented behavior. For the intended loop-system contract, use [LOOP_SYSTEM_PRD.md](../implementation/LOOP_SYSTEM_PRD.md).
+This is the canonical current-state document for implemented behavior. For the intended loop-system contract, use [LOOP_SYSTEM_PRD.md](../implementation/LOOP_SYSTEM_PRD.md). For background synthesis behavior, use [MEMORY_SYNTHESIS_POLICY_PRD.md](../implementation/MEMORY_SYNTHESIS_POLICY_PRD.md).
 
 ## Current product state
 
@@ -82,11 +82,17 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 
 - Active-memory listing with evidence spans.
 - Optional LLM brief draft generation from 1-8 selected memory items.
+- Optional manual related-memory expansion for brief draft generation with `expandRelatedMemory: true`.
 - Deterministic fallback draft when model drafting fails validation or times out.
 - Human-editable initiative brief creation.
 - Brief-to-memory and brief-to-evidence bindings.
 - Approve/reject decision writeback.
 - Traceability validation for created briefs and generated drafts.
+- First-class `synthesize_brief` policy worker after `memory_committed`.
+- Runtime synthesis bundle builder that derives related active memory from entities, relations, schemas, evidence/source context, lineage, decision references, and contradiction metadata without persisting canonical memory links.
+- Background synthesis readiness gates require at least 2 active memory items, at least 2 evidence spans, at least 1 strong connection beyond shared source/context, no inactive selected memory, and no unresolved blocking contradiction.
+- Valid background synthesis emits `artifact_draft_proposed` and auto-commits `artifact_drafted` without human approval.
+- Committed `artifact_drafted` events create traceable `initiative_briefs` drafts and memory/evidence bindings idempotently.
 
 ### Infrastructure
 
@@ -129,6 +135,15 @@ Worker queue consumer or inline fallback
   -> validation and approval
   -> ledger_events
 
+After memory commit
+  -> synthesize_brief
+  -> derive active related memory bundle
+  -> readiness checks
+  -> OpenRouter brief draft
+  -> artifact_draft_proposed
+  -> artifact_drafted
+  -> initiative_briefs draft rows
+
 Synthesis page
   -> active memory
   -> optional brief draft model call
@@ -158,7 +173,7 @@ Embedding storage exists, but asynchronous embedding generation and hybrid retri
 
 ## Current loop-system limitations
 
-- `extract_memory` is the only policy with real domain logic.
+- `extract_memory` and `synthesize_brief` have real domain logic.
 - `discover_candidate`, `check_freshness`, `detect_contradiction`, `rank_candidate`, `draft_artifact`, `gate_output`, and `revise_artifact` are registered policy runners but currently emit placeholder `not_enough_context` proposals.
 - After a worker auto-commits a proposed event, the newly inserted `event_outbox` row is not automatically drained by the same worker invocation. Multi-hop loops can therefore wait until another router invocation occurs.
 - SQL/RPC loop behavior has minimal automated coverage. Most loop tests run against `InMemoryLoopPersistence`.
@@ -171,8 +186,8 @@ Embedding storage exists, but asynchronous embedding generation and hybrid retri
 - Formal user accounts.
 - SSO/RBAC.
 - Source-level ACL enforcement.
-- Automated initiative discovery.
-- Automated evidence grouping.
+- Full candidate-based initiative discovery.
+- Human-facing automated evidence grouping review.
 - Automated candidate maturity scoring.
 - PRD generation.
 - TDD generation.

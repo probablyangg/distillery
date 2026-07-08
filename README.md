@@ -13,9 +13,10 @@ For implementation work, read these in order:
 1. [Docs index](./docs/README.md) — source-of-truth map for all documentation.
 2. [Current status](./docs/current/STATUS_AND_ROADMAP.md) — what exists today, including known loop-system gaps.
 3. [Loop system PRD](./docs/implementation/LOOP_SYSTEM_PRD.md) — implementation contract for the event-driven loop system.
-4. [Runbook](./docs/runbooks/RUNBOOK.md) — local setup, migrations, seed data, deployment, and smoke testing.
+4. [Memory synthesis policy PRD](./docs/implementation/MEMORY_SYNTHESIS_POLICY_PRD.md) — implementation contract for the `synthesize_brief` policy worker.
+5. [Runbook](./docs/runbooks/RUNBOOK.md) — local setup, migrations, seed data, deployment, and smoke testing.
 
-Do not treat older roadmap or research docs as implementation authority when they conflict with the current status document or loop system PRD.
+Do not treat older roadmap or research docs as implementation authority when they conflict with the current status document, loop system PRD, or memory synthesis policy PRD.
 
 ## Current System
 
@@ -32,6 +33,8 @@ Implemented and deployed:
 - human-directed initiative brief draft, save, approve, and reject flow;
 - event-driven loop infrastructure with `ledger_events`, `event_outbox`, `pending_work`, `policy_runs`, and `proposed_events`;
 - `source_committed -> extract_memory -> memory_proposed -> validation -> memory_committed` loop path;
+- `memory_committed -> synthesize_brief -> artifact_draft_proposed -> validation -> artifact_drafted` loop path;
+- automatic initiative-brief draft creation when connected active memory passes synthesis readiness checks;
 - loop status endpoint and UI drawer for recent loop activity;
 - Cloudflare Worker deployment;
 - Supabase PostgreSQL/RPC persistence with `pgvector`.
@@ -57,7 +60,7 @@ pnpm
 
 Canonical state is PostgreSQL. Queues, indexes, embeddings, and future graph projections are derived or transport mechanisms.
 
-Current loop limitation: `extract_memory` is the only policy with real domain logic. Downstream policies are wired as placeholder runners until their product behavior is implemented.
+Current loop limitation: `extract_memory` and `synthesize_brief` have real domain logic. Candidate, freshness, ranking, artifact gating, and revision policies are wired as placeholder runners until their product behavior is implemented.
 
 ## Quick Start
 
