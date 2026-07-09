@@ -45,6 +45,9 @@ importers:
       '@distillery/memory-generation':
         specifier: workspace:*
         version: link:../../packages/memory-generation
+      '@distillery/memory-retrieval':
+        specifier: workspace:*
+        version: link:../../packages/memory-retrieval
       '@distillery/memory-synthesis':
         specifier: workspace:*
         version: link:../../packages/memory-synthesis
@@ -72,6 +75,9 @@ importers:
       '@distillery/memory-generation':
         specifier: workspace:*
         version: link:../memory-generation
+      '@distillery/memory-retrieval':
+        specifier: workspace:*
+        version: link:../memory-retrieval
       '@distillery/memory-synthesis':
         specifier: workspace:*
         version: link:../memory-synthesis
@@ -90,6 +96,9 @@ importers:
       '@distillery/memory-generation':
         specifier: workspace:*
         version: link:../memory-generation
+      '@distillery/memory-retrieval':
+        specifier: workspace:*
+        version: link:../memory-retrieval
       '@distillery/memory-synthesis':
         specifier: workspace:*
         version: link:../memory-synthesis
@@ -120,6 +129,15 @@ importers:
       '@distillery/validation':
         specifier: workspace:*
         version: link:../validation
+
+  packages/memory-retrieval:
+    dependencies:
+      '@distillery/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@distillery/model-gateway':
+        specifier: workspace:*
+        version: link:../model-gateway
 
   packages/memory-synthesis:
     dependencies:

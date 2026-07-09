@@ -22,6 +22,7 @@
       "@distillery/loop": ["packages/loop/src/index.ts"],
       "@distillery/db": ["packages/db/src/index.ts"],
       "@distillery/memory-generation": ["packages/memory-generation/src/index.ts"],
+      "@distillery/memory-retrieval": ["packages/memory-retrieval/src/index.ts"],
       "@distillery/memory-synthesis": ["packages/memory-synthesis/src/index.ts"]
     }
   },

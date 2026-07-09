@@ -1,0 +1,13 @@
+{
+  "name": "@distillery/memory-retrieval",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@distillery/contracts": "workspace:*",
+    "@distillery/model-gateway": "workspace:*"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

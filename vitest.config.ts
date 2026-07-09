@@ -13,6 +13,7 @@ export default defineConfig({
       "@distillery/loop": `${root}packages/loop/src/index.ts`,
       "@distillery/db": `${root}packages/db/src/index.ts`,
       "@distillery/memory-generation": `${root}packages/memory-generation/src/index.ts`,
+      "@distillery/memory-retrieval": `${root}packages/memory-retrieval/src/index.ts`,
       "@distillery/memory-synthesis": `${root}packages/memory-synthesis/src/index.ts`,
     },
   },
