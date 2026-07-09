@@ -1,6 +1,6 @@
 # Distillery status and roadmap
 
-Last updated: 2026-07-08
+Last updated: 2026-07-09
 
 This is the canonical current-state document for implemented behavior. For the intended loop-system contract, use [LOOP_SYSTEM_PRD.md](../implementation/LOOP_SYSTEM_PRD.md). For background synthesis behavior, use [MEMORY_SYNTHESIS_POLICY_PRD.md](../implementation/MEMORY_SYNTHESIS_POLICY_PRD.md).
 
@@ -94,6 +94,17 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 - Valid background synthesis emits `artifact_draft_proposed` and auto-commits `artifact_drafted` without human approval.
 - Committed `artifact_drafted` events create traceable `initiative_briefs` drafts and memory/evidence bindings idempotently.
 
+### Claim Graph Pilot
+
+- Claim graph contracts for durable connections, conflicts, graph clusters, graph retrieval context, embeddings, and grounded Ask answers.
+- Fresh pilot migration `0010_claim_graph_memory_upgrade.sql` adds observations, claims, claim evidence, promoted entities/predicates/schema patterns, claim connections, conflict groups/resolutions, graph projection tables, generic `memory_embeddings`, and graph review preferences.
+- `connect_memory` is a real deterministic policy that persists grounded connection proposals and prevents claim-type-only links.
+- `detect_contradiction` is a deterministic policy that records evidence-backed blocking/warning conflict groups for shared-subject polarity conflicts.
+- Graph retrieval RPCs and Worker wrappers exist for graph recall context, graph clusters, graph claims, connection review, conflict resolution, claim pinning/exclusion, and graph rebuild.
+- `/graph` reviewer route exists in the Worker with cluster list, graph canvas, details pane, and accept/reject/resolve/pin/exclude actions.
+- Ask uses graph retrieval plus grounded OpenRouter answer generation by default when graph context is available, with deterministic lexical fallback on retrieval/model/validation failure.
+- `packages/model-gateway` includes OpenRouter embedding and grounded-answer clients with mocked tests and dimension/citation validation.
+
 ### Infrastructure
 
 - Cloudflare Worker web/API deployment.
@@ -174,10 +185,13 @@ Embedding storage exists, but asynchronous embedding generation and hybrid retri
 ## Current loop-system limitations
 
 - `extract_memory` and `synthesize_brief` have real domain logic.
-- `discover_candidate`, `check_freshness`, `detect_contradiction`, `rank_candidate`, `draft_artifact`, `gate_output`, and `revise_artifact` are registered policy runners but currently emit placeholder `not_enough_context` proposals.
+- `extract_memory`, `connect_memory`, `detect_contradiction`, and `synthesize_brief` have real domain logic.
+- `discover_candidate`, `check_freshness`, `rank_candidate`, `draft_artifact`, `gate_output`, and `revise_artifact` are registered policy runners but currently emit placeholder `not_enough_context` proposals.
 - After a worker auto-commits a proposed event, the newly inserted `event_outbox` row is not automatically drained by the same worker invocation. Multi-hop loops can therefore wait until another router invocation occurs.
 - SQL/RPC loop behavior has minimal automated coverage. Most loop tests run against `InMemoryLoopPersistence`.
-- Embedding storage exists, but asynchronous embedding generation and hybrid retrieval are not implemented yet.
+- The OpenRouter embedding client and `memory_embeddings` table exist, but automatic embedding generation/backfill is not yet wired into the policy executor.
+- Graph retrieval currently uses lexical seed expansion plus durable connection neighborhoods; bounded TypeScript PPR and vector ranking remain the next hardening step.
+- The `/graph` page is Worker-rendered and operational, but it has not yet been checked with a browser automation screenshot pass.
 
 ## What is intentionally not done
 
@@ -195,7 +209,7 @@ Embedding storage exists, but asynchronous embedding generation and hybrid retri
 - Conflict resolution workflow.
 - Production-grade observability, cost dashboards, or alerting.
 - Canonical entity/schema promotion.
-- Graph retrieval / Personalized PageRank.
+- Production-grade graph retrieval / Personalized PageRank.
 
 ## Roadmap
 

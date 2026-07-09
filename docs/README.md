@@ -7,11 +7,12 @@ This directory is organized so an implementation agent can quickly separate curr
 1. [Current status](./current/STATUS_AND_ROADMAP.md)
 2. [Loop system PRD](./implementation/LOOP_SYSTEM_PRD.md)
 3. [Memory synthesis policy PRD](./implementation/MEMORY_SYNTHESIS_POLICY_PRD.md)
-4. [Runbook](./runbooks/RUNBOOK.md)
-5. [System design](./architecture/SYSTEM_DESIGN.md)
-6. [Loop system diagram](./architecture/loop-system.mermaid)
+4. [Claim graph memory upgrade plan](./implementation/CLAIM_GRAPH_MEMORY_UPGRADE_PLAN.md)
+5. [Runbook](./runbooks/RUNBOOK.md)
+6. [System design](./architecture/SYSTEM_DESIGN.md)
+7. [Loop system diagram](./architecture/loop-system.mermaid)
 
-The current status document is the source of truth for what is implemented today. The loop system PRD is the source of truth for the base loop contract. The memory synthesis policy PRD is the source of truth for the `synthesize_brief` worker. If another doc conflicts with these on event routing, queue ownership, policy runner behavior, validation gates, required tables, or definition of success, follow the current status document for reality and the relevant PRD for intended behavior.
+The current status document is the source of truth for what is implemented today. The loop system PRD is the source of truth for the base loop contract. The memory synthesis policy PRD is the source of truth for the `synthesize_brief` worker. The claim graph memory upgrade plan is the implementation contract for durable memory connections, graph retrieval, conflicts, and graph review UI. If another doc conflicts with these on event routing, queue ownership, policy runner behavior, validation gates, required tables, or definition of success, follow the current status document for reality and the relevant implementation document for intended behavior.
 
 As of 2026-07-08, `synthesize_brief` is implemented as a first-class policy worker. See the current status and Memory Synthesis product docs for runtime behavior.
 
@@ -19,6 +20,7 @@ As of 2026-07-08, `synthesize_brief` is implemented as a first-class policy work
 
 - [Loop system PRD](./implementation/LOOP_SYSTEM_PRD.md) — implementation contract for the event-driven loop system.
 - [Memory synthesis policy PRD](./implementation/MEMORY_SYNTHESIS_POLICY_PRD.md) — implementation contract for the `synthesize_brief` policy worker.
+- [Claim graph memory upgrade plan](./implementation/CLAIM_GRAPH_MEMORY_UPGRADE_PLAN.md) — implementation plan for durable memory connections, graph retrieval, conflicts, and graph review UI.
 
 ## Current State
 

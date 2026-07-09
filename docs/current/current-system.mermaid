@@ -1,56 +1,85 @@
 flowchart TB
 
 %% DISTILLERY CURRENT SYSTEM
-%% Status: implemented private pilot.
+%% Status: implemented private pilot as of 2026-07-08.
+%% PostgreSQL is canonical. Cloudflare Queue messages are wakeups only.
 
 subgraph USER["Human user"]
-  A["/ capture + recall<br/>one text input"]
-  B["/synthesis<br/>reviewer surface"]
+  direction TB
+  U1["/ capture + recall<br/>text braindump or cited question"]
+  U2["/synthesis<br/>memory selection, draft review, approval"]
 end
 
-subgraph WORKER["Cloudflare Worker"]
-  C["Shared-password session"]
-  D["Ingestion API"]
-  E["Recall API"]
-  F["Synthesis / brief APIs"]
-  G["Queue consumer"]
+subgraph CF["Cloudflare"]
+  direction TB
+  W["Worker<br/>HTML, API routes, shared-password session"]
+  Q["Queue<br/>workItemId wakeups"]
+end
+
+subgraph APP["Worker application modules"]
+  direction TB
+  A1["Capture API<br/>submitTextCapture"]
+  A2["Recall API<br/>deterministic cited answer"]
+  A3["Synthesis APIs<br/>draft, save, approve, reject"]
+  A4["Event router<br/>ledger_events -> pending_work"]
+  A5["Loop executor<br/>claim work, run policy, validate proposal"]
+  A6["Real policies<br/>extract_memory, synthesize_brief"]
+  A7["Placeholder policies<br/>candidate, freshness, contradiction, ranking, draft/gate/revise"]
 end
 
 subgraph MODEL["OpenRouter"]
-  H["Memory generation model"]
-  I["Brief draft model"]
+  direction TB
+  M1["Memory generation model"]
+  M2["Initiative brief draft model"]
 end
 
-subgraph DB["Supabase PostgreSQL"]
-  J["Source versions + evidence spans"]
-  K["Memory items<br/>claimType, entities, relations, schemas"]
-  L["Memory item events<br/>confirm, edit, remove"]
-  M["Initiative briefs"]
-  N["Brief evidence bindings"]
-  O["Brief decisions<br/>approve / reject"]
+subgraph DB["Supabase PostgreSQL via RPC"]
+  direction TB
+  D1["Text source store<br/>ingestions, source_items, source_versions, evidence_spans"]
+  D2["Memory store<br/>memory_items, memory_item_evidence,<br/>memory_entities, memory_relations, memory_schemas"]
+  D3["Human review history<br/>memory_item_events"]
+  D4["Brief store<br/>initiative_briefs, brief memory/evidence bindings,<br/>initiative_brief_decisions"]
+  D5["Loop ledger<br/>ledger_events, event_outbox,<br/>pending_work, policy_runs, proposed_events"]
+  D6["Derived retrieval data<br/>full-text indexes, embedding tables"]
 end
 
-A --> C
-B --> C
-C --> D
-C --> E
-C --> F
+U1 --> W
+U2 --> W
+W --> A1
+W --> A2
+W --> A3
+W --> A4
+Q --> W
+W --> Q
 
-D --> J
-D --> G
-G --> H
-H --> G
-G --> K
+A1 --> D1
+A1 --> D5
+A1 --> A4
 
-E --> K
-E --> J
+A4 --> D5
+A4 --> Q
+A4 --> A5
 
-F --> K
-F --> J
-F --> I
-I --> F
-F --> M
-F --> N
-F --> O
+A5 --> D5
+A5 --> A6
+A5 --> A7
+A6 --> M1
+A6 --> M2
+M1 --> A6
+M2 --> A6
+A5 --> D2
+A5 --> D4
+A5 --> D5
 
-K --> L
+A2 --> D2
+A2 --> D1
+A2 --> D6
+
+A3 --> D2
+A3 --> D1
+A3 --> M2
+M2 --> A3
+A3 --> D4
+
+D2 --> D3
+D2 --> D6
