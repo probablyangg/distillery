@@ -151,3 +151,108 @@ describe("synthesize_brief migration", () => {
     expect(migration).toContain("insert into initiative_briefs");
   });
 });
+
+describe("claim graph migration", () => {
+  it("adds graph schema, connect_memory policy, and graph RPCs", () => {
+    const migration = readFileSync(
+      resolve(testDir, "../migrations/0010_claim_graph_memory_upgrade.sql"),
+      "utf8",
+    );
+
+    expect(migration).toContain("create table if not exists observations");
+    expect(migration).toContain("create table if not exists claims");
+    expect(migration).toContain("create table if not exists claim_connections");
+    expect(migration).toContain("create table if not exists conflict_groups");
+    expect(migration).toContain("create table if not exists graph_nodes");
+    expect(migration).toContain("create table if not exists memory_embeddings");
+    expect(migration).toContain("distillery_upsert_memory_embeddings");
+    expect(migration).toContain("'connect_memory'");
+    expect(migration).toContain("'memory_connected'");
+    expect(migration).toContain("distillery_graph_recall_context");
+    expect(migration).toContain("distillery_get_graph_cluster");
+  });
+});
+
+describe("SupabaseLoopPersistence graph RPCs", () => {
+  it("calls graph recall and cluster RPCs with tenant scope", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const persistence = new SupabaseLoopPersistence(
+      new SupabaseRpcClient({
+        supabaseUrl: "https://example.supabase.co",
+        secretKey: "secret",
+        fetchImpl: async (input, init) => {
+          const body = JSON.parse(String(init?.body));
+          calls.push({ url: String(input), body });
+          if (String(input).endsWith("/distillery_graph_recall_context")) {
+            return Response.json({
+              question: "What blocks launch?",
+              claims: [],
+              conflicts: [],
+              metadata: { strategy: "test" },
+            });
+          }
+          return Response.json([]);
+        },
+      }),
+    );
+
+    await persistence.getGraphRecallContext({
+      tenantId: "stable",
+      question: "What blocks launch?",
+      limit: 8,
+    });
+    await persistence.listGraphClusters({ tenantId: "stable", limit: 10 });
+
+    expect(calls[0]?.body).toEqual({
+      p_tenant_id: "stable",
+      p_query: "What blocks launch?",
+      p_limit: 8,
+    });
+    expect(calls[1]?.body).toEqual({
+      p_tenant_id: "stable",
+      p_limit: 10,
+    });
+  });
+
+  it("calls embedding upsert RPC with derived embedding rows", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const persistence = new SupabaseLoopPersistence(
+      new SupabaseRpcClient({
+        supabaseUrl: "https://example.supabase.co",
+        secretKey: "secret",
+        fetchImpl: async (input, init) => {
+          calls.push({
+            url: String(input),
+            body: JSON.parse(String(init?.body)),
+          });
+          return new Response(null, { status: 204 });
+        },
+      }),
+    );
+
+    await persistence.upsertMemoryEmbeddings({
+      tenantId: "stable",
+      embeddings: [{
+        id: "emb_1",
+        targetType: "claim",
+        targetId: "mem_1",
+        embeddingModel: "qwen/qwen3-embedding-8b",
+        embedding: [0.1, 0.2, 0.3],
+        contentHash: "hash",
+      }],
+    });
+
+    expect(calls[0]?.url).toBe("https://example.supabase.co/rest/v1/rpc/distillery_upsert_memory_embeddings");
+    expect(calls[0]?.body).toEqual({
+      p_tenant_id: "stable",
+      p_embeddings: [{
+        id: "emb_1",
+        targetType: "claim",
+        targetId: "mem_1",
+        embeddingModel: "qwen/qwen3-embedding-8b",
+        embedding: [0.1, 0.2, 0.3],
+        contentHash: "hash",
+      }],
+    });
+  });
+});

@@ -8,6 +8,11 @@ import {
   InitiativeBriefDecisionInputSchema,
   InitiativeBriefSchema,
   EventOutboxRowSchema,
+  ClaimConnectionSchema,
+  ConflictGroupSchema,
+  GraphClusterSchema,
+  GraphClusterSummarySchema,
+  GraphRecallContextSchema,
   LedgerEventSchema,
   LoopStatusResponseSchema,
   MemoryWithEvidenceSchema,
@@ -20,7 +25,12 @@ import {
   type IngestionReceipt,
   type IngestionResult,
   type CitedAnswer,
+  type ClaimConnection,
+  type ConflictGroup,
   type CreateInitiativeBriefInput,
+  type GraphCluster,
+  type GraphClusterSummary,
+  type GraphRecallContext,
   type InitiativeBrief,
   type InitiativeBriefDecisionInput,
   type MemoryWithEvidence,
@@ -468,6 +478,24 @@ export class SupabaseLoopPersistence implements LoopPersistence {
     return IngestionResultSchema.parse(result).memoryItems.map((item) => item.id);
   }
 
+  async upsertMemoryEmbeddings(input: {
+    tenantId: string;
+    embeddings: Array<{
+      id: string;
+      targetType: "claim" | "evidence_span" | "entity" | "schema_pattern";
+      targetId: string;
+      embeddingModel: string;
+      embedding: number[];
+      contentHash: string;
+    }>;
+  }): Promise<void> {
+    if (input.embeddings.length === 0) return;
+    await this.rpcClient.rpc("distillery_upsert_memory_embeddings", {
+      p_tenant_id: input.tenantId,
+      p_embeddings: input.embeddings,
+    });
+  }
+
   async getMemorySynthesisContext(input: {
     tenantId: string;
     seedMemoryItemIds: string[];
@@ -492,6 +520,113 @@ export class SupabaseLoopPersistence implements LoopPersistence {
       p_limit: input.limit ?? 25,
     });
     return LoopStatusResponseSchema.parse(result);
+  }
+
+  async getGraphRecallContext(input: {
+    tenantId: string;
+    question: string;
+    limit: number;
+  }): Promise<GraphRecallContext> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_graph_recall_context", {
+      p_tenant_id: input.tenantId,
+      p_query: input.question,
+      p_limit: input.limit,
+    });
+    return GraphRecallContextSchema.parse(result);
+  }
+
+  async listGraphClusters(input: {
+    tenantId: string;
+    limit?: number;
+  }): Promise<GraphClusterSummary[]> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_list_graph_clusters", {
+      p_tenant_id: input.tenantId,
+      p_limit: input.limit ?? 50,
+    });
+    return GraphClusterSummarySchema.array().parse(result);
+  }
+
+  async getGraphCluster(input: {
+    tenantId: string;
+    clusterId: string;
+  }): Promise<GraphCluster> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_get_graph_cluster", {
+      p_tenant_id: input.tenantId,
+      p_cluster_id: input.clusterId,
+    });
+    return GraphClusterSchema.parse(result);
+  }
+
+  async getGraphClaim(input: {
+    tenantId: string;
+    claimId: string;
+  }): Promise<unknown> {
+    return this.rpcClient.rpc<unknown>("distillery_get_graph_claim", {
+      p_tenant_id: input.tenantId,
+      p_claim_id: input.claimId,
+    });
+  }
+
+  async reviewClaimConnection(input: {
+    tenantId: string;
+    connectionId: string;
+    status: "accepted" | "rejected";
+    reviewerLabel: string;
+    rationale?: string;
+  }): Promise<ClaimConnection> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_review_claim_connection", {
+      p_tenant_id: input.tenantId,
+      p_connection_id: input.connectionId,
+      p_status: input.status,
+      p_reviewer_label: input.reviewerLabel,
+      p_rationale: input.rationale ?? null,
+    });
+    return ClaimConnectionSchema.parse(result);
+  }
+
+  async resolveConflict(input: {
+    tenantId: string;
+    conflictGroupId: string;
+    resolutionId: string;
+    resolutionType: string;
+    winningClaimId?: string;
+    reviewerLabel: string;
+    rationale: string;
+  }): Promise<ConflictGroup> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_resolve_conflict", {
+      p_tenant_id: input.tenantId,
+      p_conflict_group_id: input.conflictGroupId,
+      p_resolution_id: input.resolutionId,
+      p_resolution_type: input.resolutionType,
+      p_winning_claim_id: input.winningClaimId ?? null,
+      p_reviewer_label: input.reviewerLabel,
+      p_rationale: input.rationale,
+    });
+    return ConflictGroupSchema.parse(result);
+  }
+
+  async setGraphClaimPreference(input: {
+    tenantId: string;
+    claimId: string;
+    pinned?: boolean;
+    excludeFromSynthesis?: boolean;
+    reviewerLabel?: string;
+    rationale?: string;
+  }): Promise<unknown> {
+    return this.rpcClient.rpc<unknown>("distillery_set_graph_claim_preference", {
+      p_tenant_id: input.tenantId,
+      p_claim_id: input.claimId,
+      p_pinned: input.pinned ?? null,
+      p_exclude_from_synthesis: input.excludeFromSynthesis ?? null,
+      p_reviewer_label: input.reviewerLabel ?? null,
+      p_rationale: input.rationale ?? null,
+    });
+  }
+
+  async rebuildGraphProjection(input: { tenantId: string }): Promise<unknown> {
+    return this.rpcClient.rpc<unknown>("distillery_rebuild_graph_projection", {
+      p_tenant_id: input.tenantId,
+    });
   }
 }
 
