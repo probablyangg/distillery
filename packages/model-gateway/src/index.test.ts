@@ -141,6 +141,27 @@ describe("OpenRouterEmbeddingModel", () => {
     expect(result.vectors[0]).toEqual([0.1, 0.2, 0.3]);
   });
 
+  it("records the configured embedding model even when provider returns an alias", async () => {
+    const model = new OpenRouterEmbeddingModel({
+      apiKey: "test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "google/gemini-embedding-001",
+      dimensions: 3,
+      fetchImpl: async () =>
+        Response.json({
+          model: "gemini-embedding-001",
+          data: [{ embedding: [0.1, 0.2, 0.3] }],
+        }),
+    });
+
+    const result = await model.embed({
+      targetType: "claim",
+      input: ["Docs block launch."],
+    });
+
+    expect(result.model).toBe("google/gemini-embedding-001");
+  });
+
   it("rejects embedding dimension mismatches", async () => {
     const model = new OpenRouterEmbeddingModel({
       apiKey: "test-key",

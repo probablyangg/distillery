@@ -496,7 +496,7 @@ export class OpenRouterEmbeddingModel implements EmbeddingModel {
       const vectors = raw.data?.map((item) => item.embedding ?? []) ?? [];
       const parsed = EmbeddingResponseSchema.parse({
         vectors,
-        model: raw.model ?? this.config.model,
+        model: this.config.model,
       });
 
       if (parsed.vectors.length !== parsedRequest.input.length) {
