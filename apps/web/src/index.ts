@@ -1,7 +1,6 @@
 import {
   CaptureInputSchema,
   CreateInitiativeBriefInputSchema,
-  GraphRecallContextSchema,
   InitiativeBriefDraftInputSchema,
   InitiativeBriefDecisionInputSchema,
   MemoryItemActionInputSchema,
@@ -23,6 +22,7 @@ import {
   OpenRouterEmbeddingModel,
   OpenRouterGroundedAnswerModel,
   OpenRouterMemoryGenerationModel,
+  OpenRouterRetrievalRerankerModel,
   type OpenRouterModelConfig,
 } from "@distillery/model-gateway";
 import d3LocalSource from "./vendor/d3.min.txt";
@@ -31,6 +31,7 @@ import {
   applyMemoryItemAction,
   submitTextCapture,
 } from "@distillery/memory-generation";
+import { retrieveMemoryContext } from "@distillery/memory-retrieval";
 import {
   buildSynthesisBundle,
   validateInitiativeBriefDraftTraceability,
@@ -277,50 +278,68 @@ async function handleGetIngestion(ingestionId: string, env: Env): Promise<Respon
 
 async function handleRecallQuery(request: Request, env: Env): Promise<Response> {
   const query = RecallQueryInputSchema.parse(await request.json());
-  const fallback = async (reason: string) => {
-    const answer = await createRepository(env).recallMemory(query);
-    return {
-      ...answer,
-      warnings: [...(answer.warnings ?? []), `Graph recall fallback: ${reason}`],
-      retrievalMetadata: {
-        ...(answer.retrievalMetadata ?? {}),
-        strategy: "lexical-fallback",
-        fallbackReason: reason,
-      },
-    };
-  };
 
   try {
-    const graphContext = await createLoopPersistence(env).getGraphRecallContext({
+    const graphContext = await retrieveMemoryContext({
       tenantId: DEFAULT_TENANT_ID,
-      question: query.question,
-      limit: query.limit,
+      profile: "ask",
+      queryText: query.question,
+      embeddingModel: createEmbeddingModel(env),
+      rerankerModel: createRetrievalRerankerModel(env),
+      persistence: createLoopPersistence(env),
     });
-    const parsedGraphContext = GraphRecallContextSchema.parse(graphContext);
-    if (parsedGraphContext.claims.length === 0) {
-      return json(await fallback("No graph retrieval claims matched the question."));
+    if (graphContext.claims.length === 0) {
+      return json(retrievalGapAnswer({
+        question: query.question,
+        reason: "No evidence-backed memory matched the question.",
+        retrievalMetadata: graphContext.metadata,
+      }));
     }
 
-    const evidenceSpans = uniqueEvidenceSpans(parsedGraphContext.claims.flatMap((claim) => claim.evidenceSpans));
-    const grounded = await new OpenRouterGroundedAnswerModel(openRouterConfig(env, {
-      maxPrimaryTimeoutMs: 20_000,
-      maxFallbackTimeoutMs: 12_000,
-      maxFallbackModels: 1,
-    })).generateGroundedAnswer({
-      question: query.question,
-      claims: parsedGraphContext.claims,
-      evidenceSpans,
-      conflicts: parsedGraphContext.conflicts,
-    });
+    const evidenceSpans = uniqueEvidenceSpans(graphContext.claims.flatMap((claim) => claim.evidenceSpans));
+    try {
+      const grounded = await new OpenRouterGroundedAnswerModel(openRouterConfig(env, {
+        maxPrimaryTimeoutMs: 20_000,
+        maxFallbackTimeoutMs: 12_000,
+        maxFallbackModels: 1,
+      })).generateGroundedAnswer({
+        question: query.question,
+        claims: graphContext.claims,
+        evidenceSpans,
+        conflicts: graphContext.conflicts,
+      });
 
-    return json(graphAnswerToCitedAnswer({
-      question: query.question,
-      graphContext: parsedGraphContext,
-      evidenceSpans,
-      answer: grounded,
-    }));
+      return json(graphAnswerToCitedAnswer({
+        question: query.question,
+        graphContext,
+        evidenceSpans,
+        answer: grounded,
+      }));
+    } catch (error) {
+      return json({
+        ...retrievalGapAnswer({
+          question: query.question,
+          reason: `Grounded answer generation failed: ${error instanceof Error ? error.message : String(error)}`,
+          retrievalMetadata: graphContext.metadata,
+        }),
+        matches: graphContext.claims.map((claim) => ({
+          rank: claim.rank,
+          memoryItem: claim.claim,
+          evidenceSpans: claim.evidenceSpans,
+        })),
+        conflicts: graphContext.conflicts,
+      });
+    }
   } catch (error) {
-    return json(await fallback(error instanceof Error ? error.message : String(error)));
+    return json(retrievalGapAnswer({
+      question: query.question,
+      reason: `Retrieval unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      retrievalMetadata: {
+        strategy: "hybrid-graph-ppr-rerank",
+        profile: "ask",
+        degraded: true,
+      },
+    }));
   }
 }
 
@@ -459,19 +478,29 @@ async function handleGenerateInitiativeBriefDraft(request: Request, env: Env): P
     const repository = createRepository(env);
     let selectedMemoryWithEvidence: MemoryWithEvidence[];
     let synthesisBundle: ReturnType<typeof buildSynthesisBundle>["bundle"] | null = null;
+    let retrievalMetadata: Record<string, unknown> | null = null;
 
     if (input.expandRelatedMemory) {
+      const retrievalContext = await retrieveMemoryContext({
+        tenantId: DEFAULT_TENANT_ID,
+        profile: "synthesis",
+        queryText: input.intent?.trim() || `Draft around selected memory ${input.memoryItemIds.join(", ")}.`,
+        seedMemoryItemIds: input.memoryItemIds,
+        embeddingModel: createEmbeddingModel(env),
+        rerankerModel: createRetrievalRerankerModel(env),
+        persistence: createLoopPersistence(env),
+      });
       const expanded = buildSynthesisBundle({
         seedMemoryItemIds: input.memoryItemIds,
-        memory: await createLoopPersistence(env).getMemorySynthesisContext({
-          tenantId: DEFAULT_TENANT_ID,
-          seedMemoryItemIds: input.memoryItemIds,
-          limit: 100,
-        }),
-        maxMemoryItems: MAX_DRAFT_MEMORY_ITEMS,
+        memory: retrievalContext.claims.map((claim) => ({
+          memoryItem: claim.claim,
+          evidenceSpans: claim.evidenceSpans,
+        })),
+        maxMemoryItems: 32,
       });
       selectedMemoryWithEvidence = expanded.selectedMemory;
       synthesisBundle = expanded.bundle;
+      retrievalMetadata = retrievalContext.metadata;
     } else {
       const activeMemory = await repository.listActiveMemory({ limit: 200 });
       selectedMemoryWithEvidence = input.memoryItemIds
@@ -512,6 +541,7 @@ async function handleGenerateInitiativeBriefDraft(request: Request, env: Env): P
           ...generated.parsed,
           model: generated.model,
           ...(synthesisBundle ? { synthesisBundle } : {}),
+          ...(retrievalMetadata ? { retrievalMetadata } : {}),
         });
       }
 
@@ -524,6 +554,7 @@ async function handleGenerateInitiativeBriefDraft(request: Request, env: Env): P
       return json({
         ...fallbackDraft,
         ...(synthesisBundle ? { synthesisBundle } : {}),
+        ...(retrievalMetadata ? { retrievalMetadata } : {}),
       });
     } catch (error) {
       const fallbackDraft = buildDeterministicInitiativeBriefDraft({
@@ -535,6 +566,7 @@ async function handleGenerateInitiativeBriefDraft(request: Request, env: Env): P
       return json({
         ...fallbackDraft,
         ...(synthesisBundle ? { synthesisBundle } : {}),
+        ...(retrievalMetadata ? { retrievalMetadata } : {}),
       });
     }
   } catch (error) {
@@ -615,6 +647,7 @@ async function processWorkItem(workItemId: string, env: Env): Promise<void> {
         maxFallbackModels: 1,
       })),
       ...(embeddingModel ? { embeddingModel } : {}),
+      retrievalRerankerModel: createRetrievalRerankerModel(env),
       initiativeBriefDraftModel: new OpenRouterInitiativeBriefDraftModel(openRouterConfig(env, {
         maxPrimaryTimeoutMs: 25_000,
         maxFallbackTimeoutMs: 15_000,
@@ -640,6 +673,14 @@ function createEmbeddingModel(env: Env): OpenRouterEmbeddingModel | undefined {
     ...(env.EMBEDDING_ENCODING_FORMAT === "float" ? { encodingFormat: "float" as const } : {}),
     timeoutMs: 30_000,
   });
+}
+
+function createRetrievalRerankerModel(env: Env): OpenRouterRetrievalRerankerModel {
+  return new OpenRouterRetrievalRerankerModel(openRouterConfig(env, {
+    maxPrimaryTimeoutMs: 18_000,
+    maxFallbackTimeoutMs: 8_000,
+    maxFallbackModels: 1,
+  }));
 }
 
 function createRepository(env: Env): SupabaseMemoryGenerationRepository {
@@ -774,6 +815,27 @@ function graphAnswerToCitedAnswer(args: {
     answerMetadata: {
       model: args.answer.model,
       strategy: "grounded-answer",
+    },
+  };
+}
+
+function retrievalGapAnswer(args: {
+  question: string;
+  reason: string;
+  retrievalMetadata: Record<string, unknown>;
+}): CitedAnswer {
+  return {
+    question: args.question,
+    answer: "",
+    evidenceSpanIds: [],
+    citations: [],
+    matches: [],
+    gap: args.reason,
+    conflicts: [],
+    warnings: [args.reason],
+    retrievalMetadata: args.retrievalMetadata,
+    answerMetadata: {
+      strategy: "no-lexical-fallback",
     },
   };
 }
@@ -1057,11 +1119,16 @@ function renderAppShell(): string {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         const response = await fetch("/api/ingestions/" + encodeURIComponent(id));
         if (handleUnauthorized(response)) return;
-      const result = await response.json();
-      renderResult(result);
-      loopController.refresh();
-      statusEl.textContent = result.status;
-      if (["ready", "failed"].includes(result.status)) return;
+        const result = await response.json();
+        renderResult(result);
+        const loopStatus = await loopController.refresh();
+        if (result.status === "ready") {
+          statusEl.textContent = loopStatus?.isTerminal ? "ready" : "Finalizing loop...";
+          if (loopStatus?.isTerminal) return;
+          continue;
+        }
+        statusEl.textContent = result.status;
+        if (result.status === "failed") return;
       }
     }
 
@@ -2781,12 +2848,13 @@ function loopDrawerScript(): string {
         params.set("limit", "25");
         if (activeTab === "current" && activeIngestionId) params.set("ingestionId", activeIngestionId);
         const response = await fetch("/api/loop-status?" + params.toString());
-        if (typeof handleUnauthorized === "function" && handleUnauthorized(response)) return;
+        if (typeof handleUnauthorized === "function" && handleUnauthorized(response)) return latestStatus;
         const status = await response.json();
         latestStatus = status;
         renderLatest();
         setBusy(Boolean(activeIngestionId && !status.isTerminal));
         scheduleRefresh();
+        return status;
       }
 
       function renderLatest() {

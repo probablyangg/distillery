@@ -8,6 +8,7 @@
     "@distillery/db": "workspace:*",
     "@distillery/loop": "workspace:*",
     "@distillery/memory-generation": "workspace:*",
+    "@distillery/memory-retrieval": "workspace:*",
     "@distillery/memory-synthesis": "workspace:*",
     "@distillery/model-gateway": "workspace:*",
     "d3": "^7.9.0"
