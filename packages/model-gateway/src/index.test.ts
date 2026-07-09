@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { OpenRouterInitiativeBriefDraftModel, OpenRouterMemoryGenerationModel } from "./index";
+import {
+  OpenRouterEmbeddingModel,
+  OpenRouterGroundedAnswerModel,
+  OpenRouterInitiativeBriefDraftModel,
+  OpenRouterMemoryGenerationModel,
+} from "./index";
 
 describe("OpenRouterMemoryGenerationModel", () => {
   it("falls back to the next configured model when the primary fails", async () => {
@@ -106,6 +111,157 @@ describe("OpenRouterMemoryGenerationModel", () => {
     });
 
     expect(result.parsed.items[0]?.statement).toBe("Stable checkout depends on relayer review.");
+  });
+});
+
+describe("OpenRouterEmbeddingModel", () => {
+  it("calls OpenRouter embeddings and validates dimensions", async () => {
+    const model = new OpenRouterEmbeddingModel({
+      apiKey: "test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "qwen/qwen3-embedding-8b",
+      dimensions: 3,
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as { model: string; input: string[] };
+        expect(body.model).toBe("qwen/qwen3-embedding-8b");
+        expect(body.input).toEqual(["Docs block launch."]);
+        return Response.json({
+          model: "qwen/qwen3-embedding-8b",
+          data: [{ embedding: [0.1, 0.2, 0.3] }],
+        });
+      },
+    });
+
+    const result = await model.embed({
+      targetType: "claim",
+      input: ["Docs block launch."],
+    });
+
+    expect(result.vectors[0]).toEqual([0.1, 0.2, 0.3]);
+  });
+
+  it("rejects embedding dimension mismatches", async () => {
+    const model = new OpenRouterEmbeddingModel({
+      apiKey: "test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "qwen/qwen3-embedding-8b",
+      dimensions: 3,
+      fetchImpl: async () =>
+        Response.json({
+          data: [{ embedding: [0.1, 0.2] }],
+        }),
+    });
+
+    await expect(model.embed({ targetType: "claim", input: ["x"] }))
+      .rejects.toThrow("expected 3");
+  });
+});
+
+describe("OpenRouterGroundedAnswerModel", () => {
+  it("generates and validates grounded citations", async () => {
+    const model = new OpenRouterGroundedAnswerModel({
+      apiKey: "test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "moonshotai/kimi-k2.7-code",
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as {
+          response_format?: { json_schema?: { name?: string } };
+          messages?: Array<{ content: string }>;
+        };
+        expect(body.response_format?.json_schema?.name).toBe("grounded_answer");
+        expect(body.messages?.[1]?.content).toContain("claim id=\"mem_1\"");
+        return Response.json({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                answer: "Docs ownership blocks launch readiness. [ev_1]",
+                citations: [{ evidenceSpanId: "ev_1", claimIds: ["mem_1"] }],
+                usedClaimIds: ["mem_1"],
+                usedEvidenceSpanIds: ["ev_1"],
+                warnings: [],
+              }),
+            },
+          }],
+        });
+      },
+    });
+
+    const result = await model.generateGroundedAnswer({
+      question: "What blocks launch?",
+      claims: [{
+        rank: 1,
+        graphScore: 1,
+        lexicalScore: 1,
+        vectorScore: 0,
+        connectionIds: [],
+        claim: {
+          id: "mem_1",
+          ingestionId: "ing_1",
+          sourceVersionId: "srcv_1",
+          claimType: "dependency",
+          statement: "Docs ownership blocks launch readiness.",
+          evidenceSpanIds: ["ev_1"],
+          epistemicStatus: "reported",
+          qualifiers: {},
+          stableDomainTags: [],
+          entities: [],
+          relations: [],
+          schemas: [],
+          reviewState: "confirmed",
+        },
+        evidenceSpans: [{
+          id: "ev_1",
+          sourceVersionId: "srcv_1",
+          startLine: 1,
+          endLine: 1,
+          startChar: 0,
+          endChar: 37,
+          text: "Docs ownership blocks launch readiness.",
+        }],
+      }],
+      evidenceSpans: [{
+        id: "ev_1",
+        sourceVersionId: "srcv_1",
+        startLine: 1,
+        endLine: 1,
+        startChar: 0,
+        endChar: 37,
+        text: "Docs ownership blocks launch readiness.",
+      }],
+      conflicts: [],
+    });
+
+    expect(result.citations[0]?.evidenceSpanId).toBe("ev_1");
+    expect(result.model).toBe("moonshotai/kimi-k2.7-code");
+  });
+
+  it("rejects unavailable citations", async () => {
+    const model = new OpenRouterGroundedAnswerModel({
+      apiKey: "test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "moonshotai/kimi-k2.7-code",
+      fetchImpl: async () =>
+        Response.json({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                answer: "Unsupported.",
+                citations: [{ evidenceSpanId: "ev_missing", claimIds: ["mem_1"] }],
+                usedClaimIds: ["mem_1"],
+                usedEvidenceSpanIds: ["ev_missing"],
+                warnings: [],
+              }),
+            },
+          }],
+        }),
+    });
+
+    await expect(model.generateGroundedAnswer({
+      question: "What blocks launch?",
+      claims: [],
+      evidenceSpans: [],
+      conflicts: [],
+    })).rejects.toThrow("unavailable");
   });
 });
 
