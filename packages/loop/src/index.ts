@@ -1,5 +1,7 @@
 import {
   EVENT_TYPES,
+  type ClaimConnection,
+  type ConflictGroup,
   type EventOutboxRow,
   type EventType,
   type EvidenceSpan,
@@ -23,6 +25,7 @@ import {
   type IngestionContext,
 } from "@distillery/memory-generation";
 import type { InitiativeBriefDraftModel, MemoryGenerationModel } from "@distillery/model-gateway";
+import type { EmbeddingModel } from "@distillery/model-gateway";
 import {
   MEMORY_SYNTHESIS_VERSION,
   buildSynthesisBundle,
@@ -104,6 +107,20 @@ export type SynthesizeBriefInput = PolicyInputEnvelope<{
   selectedMemory: MemoryWithEvidence[];
 }>;
 
+export type ConnectMemoryInput = PolicyInputEnvelope<{
+  tenantId: string;
+  causedByEventId: string;
+  seedMemoryItemIds: string[];
+  memory: MemoryWithEvidence[];
+}>;
+
+export type DetectContradictionInput = PolicyInputEnvelope<{
+  tenantId: string;
+  causedByEventId: string;
+  seedMemoryItemIds: string[];
+  memory: MemoryWithEvidence[];
+}>;
+
 export type LoopPersistence = {
   commitLedgerEventWithOutbox(input: Omit<LedgerEvent, "createdAt"> & { createdAt?: string }): Promise<LedgerEvent>;
   claimEventOutboxRow(): Promise<EventOutboxRow | null>;
@@ -173,6 +190,17 @@ export type LoopPersistence = {
     memoryGenerationVersion: string;
     items: CommittableMemoryItem[];
   }): Promise<string[]>;
+  upsertMemoryEmbeddings(input: {
+    tenantId: string;
+    embeddings: Array<{
+      id: string;
+      targetType: "claim" | "evidence_span" | "entity" | "schema_pattern";
+      targetId: string;
+      embeddingModel: string;
+      embedding: number[];
+      contentHash: string;
+    }>;
+  }): Promise<void>;
   getMemorySynthesisContext(input: {
     tenantId: string;
     seedMemoryItemIds: string[];
@@ -186,6 +214,8 @@ export type QueueLike = {
 
 export const eventRoutes: EventRoute[] = [
   route("source_committed", "extract_memory", "source"),
+  route("memory_committed", "connect_memory", "memory"),
+  route("memory_committed", "detect_contradiction", "memory"),
   route("memory_committed", "discover_candidate", "memory"),
   route("memory_committed", "check_freshness", "memory"),
   route("memory_committed", "synthesize_brief", "memory"),
@@ -243,16 +273,20 @@ export async function routeCommittedEvents(args: {
 export function createPolicies(args: {
   persistence: LoopPersistence;
   memoryModel: MemoryGenerationModel;
+  embeddingModel?: EmbeddingModel;
   initiativeBriefDraftModel?: InitiativeBriefDraftModel;
   newId?: (prefix: string) => string;
 }): Record<PolicyName, Policy<unknown, PolicyOutput>> {
   const extractMemory = createExtractMemoryPolicy(args);
+  const connectMemory = createConnectMemoryPolicy(args);
+  const detectContradiction = createDetectContradictionPolicy(args);
   const synthesizeBrief = createSynthesizeBriefPolicy(args);
   return {
     extract_memory: extractMemory as Policy<unknown, PolicyOutput>,
+    connect_memory: connectMemory as Policy<unknown, PolicyOutput>,
     discover_candidate: deterministicNoopPolicy("discover_candidate", "candidate_proposed", "candidate_created"),
     check_freshness: deterministicNoopPolicy("check_freshness", "freshness_warning_proposed", "freshness_warning_committed"),
-    detect_contradiction: deterministicNoopPolicy("detect_contradiction", "contradiction_proposed", "contradiction_recorded"),
+    detect_contradiction: detectContradiction as Policy<unknown, PolicyOutput>,
     synthesize_brief: synthesizeBrief as Policy<unknown, PolicyOutput>,
     rank_candidate: deterministicNoopPolicy("rank_candidate", "candidate_proposed", "candidate_created"),
     draft_artifact: deterministicNoopPolicy("draft_artifact", "artifact_draft_proposed", "artifact_drafted"),
@@ -390,11 +424,22 @@ export class InMemoryLoopPersistence implements LoopPersistence {
   readonly pendingWorkItems = new Map<string, PendingWorkItem>();
   readonly policyRuns = new Map<string, PolicyRun>();
   readonly proposedEvents = new Map<string, ProposedEvent>();
+  readonly claimConnections = new Map<string, ClaimConnection>();
+  readonly conflictGroups = new Map<string, ConflictGroup>();
   readonly ingestionContextsBySourceVersionId = new Map<string, IngestionContext>();
   readonly memorySynthesisContext = new Map<string, MemoryWithEvidence>();
   readonly initiativeBriefs = new Map<string, InitiativeBrief>();
   readonly committedMemory: CommittableMemoryItem[] = [];
   readonly extractionRuns: unknown[] = [];
+  readonly memoryEmbeddings: Array<{
+    id: string;
+    tenantId: string;
+    targetType: "claim" | "evidence_span" | "entity" | "schema_pattern";
+    targetId: string;
+    embeddingModel: string;
+    embedding: number[];
+    contentHash: string;
+  }> = [];
   private id = 0;
 
   async commitLedgerEventWithOutbox(input: Omit<LedgerEvent, "createdAt"> & { createdAt?: string }): Promise<LedgerEvent> {
@@ -643,6 +688,14 @@ export class InMemoryLoopPersistence implements LoopPersistence {
       this.createInitiativeBriefDraftFromProposal(proposal);
     }
 
+    if (proposal.targetEventType === "memory_connected") {
+      this.createMemoryConnectionsFromProposal(proposal);
+    }
+
+    if (proposal.targetEventType === "contradiction_recorded") {
+      this.createConflictGroupsFromProposal(proposal);
+    }
+
     const event = await this.commitLedgerEventWithOutbox({
       id: this.nextId("levt"),
       tenantId: proposal.tenantId,
@@ -691,6 +744,34 @@ export class InMemoryLoopPersistence implements LoopPersistence {
   }): Promise<string[]> {
     this.committedMemory.push(...input.items);
     return input.items.map((item) => item.id);
+  }
+
+  async upsertMemoryEmbeddings(input: {
+    tenantId: string;
+    embeddings: Array<{
+      id: string;
+      targetType: "claim" | "evidence_span" | "entity" | "schema_pattern";
+      targetId: string;
+      embeddingModel: string;
+      embedding: number[];
+      contentHash: string;
+    }>;
+  }): Promise<void> {
+    for (const embedding of input.embeddings) {
+      const existingIndex = this.memoryEmbeddings.findIndex((candidate) =>
+        candidate.tenantId === input.tenantId &&
+        candidate.targetType === embedding.targetType &&
+        candidate.targetId === embedding.targetId &&
+        candidate.embeddingModel === embedding.embeddingModel &&
+        candidate.contentHash === embedding.contentHash
+      );
+      const record = { ...embedding, tenantId: input.tenantId };
+      if (existingIndex >= 0) {
+        this.memoryEmbeddings[existingIndex] = record;
+      } else {
+        this.memoryEmbeddings.push(record);
+      }
+    }
   }
 
   async getMemorySynthesisContext(input: {
@@ -764,11 +845,65 @@ export class InMemoryLoopPersistence implements LoopPersistence {
       decisions: [],
     });
   }
+
+  private createMemoryConnectionsFromProposal(proposal: ProposedEvent): void {
+    const connections = Array.isArray(proposal.payload.connections) ? proposal.payload.connections : [];
+    for (const connection of connections) {
+      if (!isRecord(connection)) continue;
+      const id = String(connection.id);
+      if (this.claimConnections.has(id)) continue;
+      this.claimConnections.set(id, {
+        id,
+        tenantId: proposal.tenantId,
+        fromClaimId: String(connection.fromClaimId),
+        toClaimId: String(connection.toClaimId),
+        connectionType: String(connection.connectionType) as ClaimConnection["connectionType"],
+        status: String(connection.status ?? "proposed") as ClaimConnection["status"],
+        confidence: Number(connection.confidence),
+        scoreComponents: numericRecord(connection.scoreComponents),
+        evidenceSpanIds: stringArray(connection.evidenceSpanIds),
+        rationale: typeof connection.rationale === "string" ? connection.rationale : null,
+        createdByPolicyRunId: proposal.policyRunId ?? null,
+        reviewerLabel: null,
+        reviewRationale: null,
+        createdAt: now(),
+        updatedAt: now(),
+      });
+    }
+  }
+
+  private createConflictGroupsFromProposal(proposal: ProposedEvent): void {
+    const conflicts = Array.isArray(proposal.payload.conflicts) ? proposal.payload.conflicts : [];
+    for (const conflict of conflicts) {
+      if (!isRecord(conflict)) continue;
+      const id = String(conflict.id);
+      if (this.conflictGroups.has(id)) continue;
+      const rawMembers = Array.isArray(conflict.members) ? conflict.members : [];
+      this.conflictGroups.set(id, {
+        id,
+        tenantId: proposal.tenantId,
+        conflictType: String(conflict.conflictType) as ConflictGroup["conflictType"],
+        severity: String(conflict.severity) as ConflictGroup["severity"],
+        status: "open",
+        summary: String(conflict.summary),
+        createdByPolicyRunId: proposal.policyRunId ?? null,
+        members: rawMembers.filter(isRecord).map((member) => ({
+          conflictGroupId: id,
+          claimId: String(member.claimId),
+          role: String(member.role ?? "conflicts"),
+          evidenceSpanIds: stringArray(member.evidenceSpanIds),
+        })),
+        createdAt: now(),
+        updatedAt: now(),
+      });
+    }
+  }
 }
 
 function createExtractMemoryPolicy(args: {
   persistence: LoopPersistence;
   memoryModel: MemoryGenerationModel;
+  embeddingModel?: EmbeddingModel;
   newId?: (prefix: string) => string;
 }): Policy<ExtractMemoryInput, PolicyOutput> {
   const newId = args.newId ?? defaultNewId;
@@ -833,6 +968,18 @@ function createExtractMemoryPolicy(args: {
         schemas: item.schemas,
       }));
 
+      let embeddingMetadata: Record<string, unknown> | undefined;
+      if (args.embeddingModel) {
+        embeddingMetadata = await generateAndStoreEmbeddings({
+          persistence: args.persistence,
+          embeddingModel: args.embeddingModel,
+          tenantId: envelope.input.tenantId,
+          items,
+          evidenceSpans: envelope.input.evidenceSpans,
+          newId,
+        });
+      }
+
       return {
         proposedEvents: [{
           proposedEventType: "memory_proposed",
@@ -845,6 +992,7 @@ function createExtractMemoryPolicy(args: {
             extractionRunId,
             memoryGenerationVersion: MEMORY_GENERATION_VERSION,
             items,
+            ...(embeddingMetadata ? { embeddingMetadata } : {}),
           },
           evidenceSpanIds: [...new Set(items.flatMap((item) => item.evidenceSpanIds))],
           memoryItemIds: items.map((item) => item.id),
@@ -872,6 +1020,153 @@ function createExtractMemoryPolicy(args: {
         generated: parsed,
         allowedEvidenceSpans: output.validationEvidenceSpans ?? [],
       }).result;
+    },
+  };
+}
+
+function createConnectMemoryPolicy(args: {
+  persistence: LoopPersistence;
+  newId?: (prefix: string) => string;
+}): Policy<ConnectMemoryInput, PolicyOutput> {
+  const newId = args.newId ?? defaultNewId;
+  return {
+    name: "connect_memory",
+    version: "connect-memory-v0.1",
+    async buildInput(workItem) {
+      const ledgerEvent = await args.persistence.loadLedgerEvent(workItem.causedByEventId);
+      if (!ledgerEvent) throw new Error(`causing ledger event not found: ${workItem.causedByEventId}`);
+      const seedMemoryItemIds = extractSeedMemoryItemIds(ledgerEvent.payload);
+      const memory = await args.persistence.getMemorySynthesisContext({
+        tenantId: workItem.tenantId,
+        seedMemoryItemIds,
+        limit: 80,
+      });
+      const input = {
+        tenantId: workItem.tenantId,
+        causedByEventId: ledgerEvent.id,
+        seedMemoryItemIds,
+        memory,
+      };
+      return {
+        input,
+        inputHash: await sha256Hex(JSON.stringify(input)),
+        inputSummary: {
+          seedMemoryItemIds,
+          candidateMemoryCount: memory.length,
+        },
+      };
+    },
+    async run(envelope) {
+      const connections = buildDeterministicConnections(envelope.input.memory, newId);
+      if (connections.length === 0) {
+        return {
+          proposedEvents: [],
+          provider: "deterministic",
+          model: "connect-memory-v0.1",
+          fallbackReason: "No graph-grounded connection candidates crossed the pilot threshold.",
+        };
+      }
+      return {
+        proposedEvents: [{
+          proposedEventType: "memory_connection_proposed",
+          targetEventType: "memory_connected",
+          subjectType: "memory",
+          subjectId: envelope.input.seedMemoryItemIds[0] ?? envelope.input.causedByEventId,
+          payload: {
+            causedByEventId: envelope.input.causedByEventId,
+            seedMemoryItemIds: envelope.input.seedMemoryItemIds,
+            connections,
+          },
+          evidenceSpanIds: uniqueStrings(connections.flatMap((connection) => connection.evidenceSpanIds)),
+          memoryItemIds: uniqueStrings(connections.flatMap((connection) => [connection.fromClaimId, connection.toClaimId])),
+          requiresHumanApproval: false,
+        }],
+        provider: "deterministic",
+        model: "connect-memory-v0.1",
+      };
+    },
+    async validate(output) {
+      const issues = output.proposedEvents
+        .flatMap((event) => {
+          const connections = Array.isArray(event.payload.connections) ? event.payload.connections : [];
+          return connections.flatMap((connection, index) => validateConnectionPayload(connection, index));
+        });
+      return { ok: issues.length === 0, issues };
+    },
+  };
+}
+
+function createDetectContradictionPolicy(args: {
+  persistence: LoopPersistence;
+  newId?: (prefix: string) => string;
+}): Policy<DetectContradictionInput, PolicyOutput> {
+  const newId = args.newId ?? defaultNewId;
+  return {
+    name: "detect_contradiction",
+    version: "detect-contradiction-v0.1",
+    async buildInput(workItem) {
+      const ledgerEvent = await args.persistence.loadLedgerEvent(workItem.causedByEventId);
+      if (!ledgerEvent) throw new Error(`causing ledger event not found: ${workItem.causedByEventId}`);
+      const seedMemoryItemIds = extractSeedMemoryItemIds(ledgerEvent.payload);
+      const memory = await args.persistence.getMemorySynthesisContext({
+        tenantId: workItem.tenantId,
+        seedMemoryItemIds,
+        limit: 80,
+      });
+      const input = {
+        tenantId: workItem.tenantId,
+        causedByEventId: ledgerEvent.id,
+        seedMemoryItemIds,
+        memory,
+      };
+      return {
+        input,
+        inputHash: await sha256Hex(JSON.stringify(input)),
+        inputSummary: {
+          seedMemoryItemIds,
+          candidateMemoryCount: memory.length,
+        },
+      };
+    },
+    async run(envelope) {
+      const conflicts = buildDeterministicConflicts(envelope.input.memory, newId);
+      if (conflicts.length === 0) {
+        return {
+          proposedEvents: [],
+          provider: "deterministic",
+          model: "detect-contradiction-v0.1",
+          fallbackReason: "No deterministic conflict candidates found.",
+        };
+      }
+      return {
+        proposedEvents: [{
+          proposedEventType: "contradiction_proposed",
+          targetEventType: "contradiction_recorded",
+          subjectType: "memory",
+          subjectId: envelope.input.seedMemoryItemIds[0] ?? envelope.input.causedByEventId,
+          payload: {
+            causedByEventId: envelope.input.causedByEventId,
+            seedMemoryItemIds: envelope.input.seedMemoryItemIds,
+            conflicts,
+          },
+          evidenceSpanIds: uniqueStrings(conflicts.flatMap((conflict) =>
+            conflict.members.flatMap((member) => member.evidenceSpanIds)
+          )),
+          memoryItemIds: uniqueStrings(conflicts.flatMap((conflict) =>
+            conflict.members.map((member) => member.claimId)
+          )),
+          requiresHumanApproval: false,
+        }],
+        provider: "deterministic",
+        model: "detect-contradiction-v0.1",
+      };
+    },
+    async validate(output) {
+      const issues = output.proposedEvents.flatMap((event) => {
+        const conflicts = Array.isArray(event.payload.conflicts) ? event.payload.conflicts : [];
+        return conflicts.flatMap((conflict, index) => validateConflictPayload(conflict, index));
+      });
+      return { ok: issues.length === 0, issues };
     },
   };
 }
@@ -1148,6 +1443,391 @@ function extractSeedMemoryItemIds(payload: Record<string, unknown>): string[] {
   }
 
   return [];
+}
+
+function buildDeterministicConnections(
+  memory: MemoryWithEvidence[],
+  newId: (prefix: string) => string,
+): Array<{
+  id: string;
+  fromClaimId: string;
+  toClaimId: string;
+  connectionType: ClaimConnection["connectionType"];
+  status: ClaimConnection["status"];
+  confidence: number;
+  scoreComponents: Record<string, number>;
+  evidenceSpanIds: string[];
+  rationale: string;
+}> {
+  const connections: ReturnType<typeof buildDeterministicConnections> = [];
+
+  for (let leftIndex = 0; leftIndex < memory.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < memory.length; rightIndex += 1) {
+      const left = memory[leftIndex]!;
+      const right = memory[rightIndex]!;
+      const score = scoreConnection(left, right);
+      if (score.confidence < 0.55) continue;
+
+      connections.push({
+        id: newId("conn"),
+        fromClaimId: left.memoryItem.id,
+        toClaimId: right.memoryItem.id,
+        connectionType: score.connectionType,
+        status: score.confidence >= 0.95 && score.connectionType === "duplicates" ? "accepted" : "proposed",
+        confidence: score.confidence,
+        scoreComponents: score.scoreComponents,
+        evidenceSpanIds: uniqueStrings([
+          ...left.memoryItem.evidenceSpanIds,
+          ...right.memoryItem.evidenceSpanIds,
+        ]),
+        rationale: score.rationale,
+      });
+    }
+  }
+
+  return connections;
+}
+
+async function generateAndStoreEmbeddings(args: {
+  persistence: LoopPersistence;
+  embeddingModel: EmbeddingModel;
+  tenantId: string;
+  items: CommittableMemoryItem[];
+  evidenceSpans: EvidenceSpan[];
+  newId: (prefix: string) => string;
+}): Promise<Record<string, unknown>> {
+  const targets = uniqueEmbeddingTargets([
+    ...args.items.map((item) => ({
+      targetType: "claim" as const,
+      targetId: item.id,
+      content: item.statement,
+    })),
+    ...args.evidenceSpans.map((span) => ({
+      targetType: "evidence_span" as const,
+      targetId: span.id,
+      content: span.text,
+    })),
+    ...args.items.flatMap((item) =>
+      item.entities.map((entity) => {
+        const canonicalName = entity.canonicalName ?? entity.name;
+        return {
+          targetType: "entity" as const,
+          targetId: stableEntityId(args.tenantId, canonicalName, entity.entityType),
+          content: `${canonicalName} (${entity.entityType})`,
+        };
+      })
+    ),
+    ...args.items.flatMap((item) =>
+      item.schemas.map((schema) => ({
+        targetType: "schema_pattern" as const,
+        targetId: stableSchemaId(args.tenantId, schema.subjectType, schema.predicate, schema.objectType),
+        content: `${schema.subjectType} ${schema.predicate} ${schema.objectType}`,
+      }))
+    ),
+  ]);
+
+  const embeddings: Array<{
+    id: string;
+    targetType: "claim" | "evidence_span" | "entity" | "schema_pattern";
+    targetId: string;
+    embeddingModel: string;
+    embedding: number[];
+    contentHash: string;
+  }> = [];
+
+  for (const targetType of ["claim", "evidence_span", "entity", "schema_pattern"] as const) {
+    const typedTargets = targets.filter((target) => target.targetType === targetType);
+    if (typedTargets.length === 0) continue;
+    const response = await args.embeddingModel.embed({
+      targetType,
+      input: typedTargets.map((target) => target.content),
+    });
+    for (const [index, vector] of response.vectors.entries()) {
+      const target = typedTargets[index];
+      if (!target) continue;
+      embeddings.push({
+        id: args.newId("emb"),
+        targetType,
+        targetId: target.targetId,
+        embeddingModel: response.model,
+        embedding: vector,
+        contentHash: await sha256Hex(target.content),
+      });
+    }
+  }
+
+  await args.persistence.upsertMemoryEmbeddings({
+    tenantId: args.tenantId,
+    embeddings,
+  });
+
+  return {
+    embeddingCount: embeddings.length,
+    targetTypes: uniqueStrings(embeddings.map((embedding) => embedding.targetType)),
+    models: uniqueStrings(embeddings.map((embedding) => embedding.embeddingModel)),
+  };
+}
+
+function uniqueEmbeddingTargets<T extends {
+  targetType: "claim" | "evidence_span" | "entity" | "schema_pattern";
+  targetId: string;
+  content: string;
+}>(targets: T[]): T[] {
+  const seen = new Set<string>();
+  return targets.filter((target) => {
+    const key = `${target.targetType}:${target.targetId}:${target.content}`;
+    if (seen.has(key) || target.content.trim().length === 0) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function stableEntityId(tenantId: string, canonicalName: string, entityType: string): string {
+  return `entity_${syncHash(`${tenantId}:${canonicalName.toLowerCase()}:${entityType.toLowerCase()}`)}`;
+}
+
+function stableSchemaId(tenantId: string, subjectType: string, predicate: string, objectType: string): string {
+  return `schema_${syncHash(`${tenantId}:${subjectType.toLowerCase()}:${predicate.toLowerCase()}:${objectType.toLowerCase()}`)}`;
+}
+
+function syncHash(input: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function scoreConnection(
+  left: MemoryWithEvidence,
+  right: MemoryWithEvidence,
+): {
+  confidence: number;
+  connectionType: ClaimConnection["connectionType"];
+  scoreComponents: Record<string, number>;
+  rationale: string;
+} {
+  const leftStatement = normalizeText(left.memoryItem.statement);
+  const rightStatement = normalizeText(right.memoryItem.statement);
+  const duplicate = leftStatement === rightStatement ? 1 : 0;
+  const entityOverlap = jaccard(
+    left.memoryItem.entities.map((entity) => normalizeText(entity.canonicalName ?? entity.name)),
+    right.memoryItem.entities.map((entity) => normalizeText(entity.canonicalName ?? entity.name)),
+  );
+  const schemaOverlap = jaccard(
+    left.memoryItem.schemas.map((schema) => normalizeText(`${schema.subjectType}:${schema.predicate}:${schema.objectType}`)),
+    right.memoryItem.schemas.map((schema) => normalizeText(`${schema.subjectType}:${schema.predicate}:${schema.objectType}`)),
+  );
+  const evidenceOverlap = jaccard(left.memoryItem.evidenceSpanIds, right.memoryItem.evidenceSpanIds);
+  const sourceContextOverlap = left.memoryItem.sourceVersionId === right.memoryItem.sourceVersionId ? 1 : 0;
+  const relationCompatibility = jaccard(
+    left.memoryItem.relations.map((relation) => normalizeText(`${relation.subject}:${relation.predicate}:${relation.object}`)),
+    right.memoryItem.relations.map((relation) => normalizeText(`${relation.subject}:${relation.predicate}:${relation.object}`)),
+  );
+  const tokenOverlap = jaccard(tokenize(left.memoryItem.statement), tokenize(right.memoryItem.statement));
+  const claimTypeCompatibility = complementaryClaimTypes(left.memoryItem.claimType, right.memoryItem.claimType) ? 0.1 : 0;
+  const hasGrounding = duplicate > 0 || entityOverlap > 0 || schemaOverlap > 0 || evidenceOverlap > 0 ||
+    sourceContextOverlap > 0 || relationCompatibility > 0 || tokenOverlap >= 0.22;
+  const scoreComponents = {
+    entity_overlap: entityOverlap,
+    schema_overlap: schemaOverlap,
+    evidence_overlap: evidenceOverlap,
+    source_context_overlap: sourceContextOverlap,
+    relation_compatibility: relationCompatibility,
+    embedding_similarity: tokenOverlap,
+    temporal_compatibility: 0.5,
+    claim_type_compatibility: hasGrounding ? claimTypeCompatibility : 0,
+    model_confidence: 0,
+    review_prior: 0,
+  };
+  const confidence = duplicate === 1
+    ? 0.97
+    : Math.min(0.94, (
+      entityOverlap * 0.24 +
+      schemaOverlap * 0.2 +
+      evidenceOverlap * 0.2 +
+      sourceContextOverlap * 0.12 +
+      relationCompatibility * 0.14 +
+      tokenOverlap * 0.2 +
+      scoreComponents.claim_type_compatibility
+    ));
+  const connectionType = duplicate === 1
+    ? "duplicates"
+    : left.memoryItem.claimType === "dependency" || right.memoryItem.claimType === "dependency"
+      ? "depends_on"
+      : left.memoryItem.claimType === "risk" || right.memoryItem.claimType === "risk"
+        ? "blocks"
+        : confidence >= 0.72
+          ? "supports"
+          : "related_context";
+
+  return {
+    confidence: Number(confidence.toFixed(3)),
+    connectionType,
+    scoreComponents,
+    rationale: hasGrounding
+      ? "Deterministic graph signals crossed the pilot connection threshold."
+      : "No grounding signal; claim-type compatibility was ignored.",
+  };
+}
+
+function buildDeterministicConflicts(
+  memory: MemoryWithEvidence[],
+  newId: (prefix: string) => string,
+): Array<{
+  id: string;
+  conflictType: ConflictGroup["conflictType"];
+  severity: ConflictGroup["severity"];
+  summary: string;
+  members: Array<{
+    claimId: string;
+    role: string;
+    evidenceSpanIds: string[];
+  }>;
+  rationale: string;
+}> {
+  const conflicts: ReturnType<typeof buildDeterministicConflicts> = [];
+
+  for (let leftIndex = 0; leftIndex < memory.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < memory.length; rightIndex += 1) {
+      const left = memory[leftIndex]!;
+      const right = memory[rightIndex]!;
+      if (!sameConflictSubject(left, right)) continue;
+      const polarity = polarityConflict(left.memoryItem.statement, right.memoryItem.statement);
+      if (!polarity) continue;
+
+      const conflictType = inferConflictType(left, right);
+      conflicts.push({
+        id: newId("conflict"),
+        conflictType,
+        severity: conflictType === "decision" || conflictType === "ownership" || conflictType === "dependency" ? "blocking" : "warning",
+        summary: `Potential ${conflictType} conflict between ${left.memoryItem.id} and ${right.memoryItem.id}.`,
+        members: [
+          { claimId: left.memoryItem.id, role: "side_a", evidenceSpanIds: left.memoryItem.evidenceSpanIds },
+          { claimId: right.memoryItem.id, role: "side_b", evidenceSpanIds: right.memoryItem.evidenceSpanIds },
+        ],
+        rationale: "Deterministic polarity and shared subject signals indicate incompatible memory.",
+      });
+    }
+  }
+
+  return conflicts;
+}
+
+function sameConflictSubject(left: MemoryWithEvidence, right: MemoryWithEvidence): boolean {
+  const entityOverlap = jaccard(
+    left.memoryItem.entities.map((entity) => normalizeText(entity.canonicalName ?? entity.name)),
+    right.memoryItem.entities.map((entity) => normalizeText(entity.canonicalName ?? entity.name)),
+  );
+  const relationSubjectOverlap = jaccard(
+    left.memoryItem.relations.map((relation) => normalizeText(`${relation.subject}:${relation.predicate}`)),
+    right.memoryItem.relations.map((relation) => normalizeText(`${relation.subject}:${relation.predicate}`)),
+  );
+  return entityOverlap > 0 || relationSubjectOverlap > 0 || jaccard(tokenize(left.memoryItem.statement), tokenize(right.memoryItem.statement)) >= 0.35;
+}
+
+function polarityConflict(left: string, right: string): boolean {
+  const leftTokens = new Set(tokenize(left));
+  const rightTokens = new Set(tokenize(right));
+  const positive = ["approved", "clear", "ready", "unblocked", "owned", "included", "enabled", "launched"];
+  const negative = ["not", "no", "blocked", "unresolved", "unclear", "rejected", "excluded", "disabled", "delayed"];
+  const leftPositive = positive.some((token) => leftTokens.has(token));
+  const rightPositive = positive.some((token) => rightTokens.has(token));
+  const leftNegative = negative.some((token) => leftTokens.has(token));
+  const rightNegative = negative.some((token) => rightTokens.has(token));
+  return (leftPositive && rightNegative) || (leftNegative && rightPositive);
+}
+
+function inferConflictType(left: MemoryWithEvidence, right: MemoryWithEvidence): ConflictGroup["conflictType"] {
+  const claimTypes = new Set([left.memoryItem.claimType, right.memoryItem.claimType]);
+  const text = normalizeText(`${left.memoryItem.statement} ${right.memoryItem.statement}`);
+  if (claimTypes.has("reported_decision") || text.includes("approved") || text.includes("rejected")) return "decision";
+  if (claimTypes.has("ownership_statement") || text.includes("owner") || text.includes("owned")) return "ownership";
+  if (claimTypes.has("dependency") || text.includes("blocked") || text.includes("unblocked")) return "dependency";
+  if (claimTypes.has("metric")) return "metric_definition";
+  if (claimTypes.has("scope_statement")) return "scope";
+  return "mutual";
+}
+
+function validateConnectionPayload(connection: unknown, index: number): ValidationGateResult["issues"] {
+  if (!isRecord(connection)) {
+    return [{ code: "invalid_connection", message: "Connection payload must be an object.", path: [`connections.${index}`] }];
+  }
+  const evidenceSpanIds = stringArray(connection.evidenceSpanIds);
+  const confidence = Number(connection.confidence);
+  const issues: ValidationGateResult["issues"] = [];
+  if (!connection.fromClaimId || !connection.toClaimId || connection.fromClaimId === connection.toClaimId) {
+    issues.push({ code: "invalid_connection_claims", message: "Connection requires two distinct claim ids.", path: [`connections.${index}`] });
+  }
+  if (!Number.isFinite(confidence) || confidence < 0.55 || confidence > 1) {
+    issues.push({ code: "invalid_connection_confidence", message: "Connection confidence must be between 0.55 and 1.", path: [`connections.${index}.confidence`] });
+  }
+  if (evidenceSpanIds.length === 0) {
+    issues.push({ code: "connection_missing_evidence", message: "Connection must carry evidence span ids.", path: [`connections.${index}.evidenceSpanIds`] });
+  }
+  return issues;
+}
+
+function validateConflictPayload(conflict: unknown, index: number): ValidationGateResult["issues"] {
+  if (!isRecord(conflict)) {
+    return [{ code: "invalid_conflict", message: "Conflict payload must be an object.", path: [`conflicts.${index}`] }];
+  }
+  const members = Array.isArray(conflict.members) ? conflict.members : [];
+  const issues: ValidationGateResult["issues"] = [];
+  if (members.length < 2) {
+    issues.push({ code: "conflict_requires_members", message: "Conflict requires at least two members.", path: [`conflicts.${index}.members`] });
+  }
+  for (const [memberIndex, member] of members.entries()) {
+    if (!isRecord(member) || stringArray(member.evidenceSpanIds).length === 0) {
+      issues.push({ code: "conflict_member_missing_evidence", message: "Conflict members must cite evidence.", path: [`conflicts.${index}.members.${memberIndex}`] });
+    }
+  }
+  return issues;
+}
+
+function complementaryClaimTypes(left: string, right: string): boolean {
+  const pair = new Set([left, right]);
+  return (pair.has("risk") && pair.has("dependency")) ||
+    (pair.has("ownership_statement") && pair.has("reported_decision")) ||
+    (pair.has("scope_statement") && pair.has("strategic_statement"));
+}
+
+function tokenize(value: string): string[] {
+  const stop = new Set(["the", "a", "an", "and", "or", "to", "of", "for", "on", "in", "is", "are", "be", "we", "this", "that"]);
+  return normalizeText(value).split(" ").filter((token) => token.length > 2 && !stop.has(token));
+}
+
+function normalizeText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function jaccard(left: string[], right: string[]): number {
+  const leftSet = new Set(left.filter(Boolean));
+  const rightSet = new Set(right.filter(Boolean));
+  if (leftSet.size === 0 || rightSet.size === 0) return 0;
+  let intersection = 0;
+  for (const value of leftSet) {
+    if (rightSet.has(value)) intersection += 1;
+  }
+  return intersection / (leftSet.size + rightSet.size - intersection);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return values.filter((value, index) => value.length > 0 && values.indexOf(value) === index);
+}
+
+function numericRecord(value: unknown): Record<string, number> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([key, raw]) => [key, Number(raw)] as const)
+      .filter((entry): entry is readonly [string, number] => Number.isFinite(entry[1])),
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function stringArray(value: unknown): string[] {

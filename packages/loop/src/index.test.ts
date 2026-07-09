@@ -83,10 +83,115 @@ describe("loop system", () => {
 
     expect(work.map((item) => item.policy).sort()).toEqual([
       "check_freshness",
+      "connect_memory",
+      "detect_contradiction",
       "discover_candidate",
       "synthesize_brief",
     ]);
-    expect([...store.pendingWorkItems.values()]).toHaveLength(3);
+    expect([...store.pendingWorkItems.values()]).toHaveLength(5);
+  });
+
+  it("connect_memory persists grounded connection proposals and rejects claim-type-only lookalikes", async () => {
+    const store = seededStore();
+    store.seedMemorySynthesisContext([
+      ...connectedMemoryContext(),
+      memoryRecord({
+        id: "mem_lookalike",
+        claimType: "risk",
+        statement: "Rewards risk is still unresolved for a separate growth experiment.",
+        evidenceSpanIds: ["ev_3"],
+        entities: [{ name: "Rewards", entityType: "program" }],
+        sourceVersionId: "srcv_3",
+      }),
+    ]);
+    await store.commitLedgerEventWithOutbox({
+      id: "levt_memory",
+      tenantId: "stable",
+      eventType: "memory_committed",
+      subjectType: "memory",
+      subjectId: "batch_1",
+      actorType: "policy",
+      inputVersion: "batch:v1",
+      idempotencyKey: "memory:connect",
+      payload: { memoryItemIds: ["mem_1"] },
+    });
+    const work = await routeCommittedEvents({ persistence: store });
+    const connectWork = work.find((item) => item.policy === "connect_memory");
+    if (!connectWork) throw new Error("expected connect_memory work");
+
+    await executeWorkItem({
+      persistence: store,
+      policies: createPolicies({
+        persistence: store,
+        memoryModel: modelWithValidMemory(),
+        newId: deterministicId(),
+      }),
+      workItemId: connectWork.id,
+      newId: deterministicId(),
+    });
+
+    expect([...store.claimConnections.values()]).toEqual([
+      expect.objectContaining({
+        fromClaimId: "mem_1",
+        toClaimId: "mem_2",
+      }),
+    ]);
+    expect([...store.claimConnections.values()].some((connection) =>
+      connection.fromClaimId === "mem_lookalike" || connection.toClaimId === "mem_lookalike"
+    )).toBe(false);
+  });
+
+  it("detect_contradiction records blocking conflicts with evidence", async () => {
+    const store = seededStore();
+    store.seedMemorySynthesisContext([
+      memoryRecord({
+        id: "mem_owner_yes",
+        claimType: "ownership_statement",
+        statement: "API launch ownership is clear and owned by Docs.",
+        evidenceSpanIds: ["ev_1"],
+        entities: [{ name: "API launch", entityType: "initiative" }],
+      }),
+      memoryRecord({
+        id: "mem_owner_no",
+        claimType: "ownership_statement",
+        statement: "API launch ownership is unclear and not owned.",
+        evidenceSpanIds: ["ev_2"],
+        entities: [{ name: "API launch", entityType: "initiative" }],
+      }),
+    ]);
+    await store.commitLedgerEventWithOutbox({
+      id: "levt_memory",
+      tenantId: "stable",
+      eventType: "memory_committed",
+      subjectType: "memory",
+      subjectId: "batch_1",
+      actorType: "policy",
+      inputVersion: "batch:v1",
+      idempotencyKey: "memory:conflict",
+      payload: { memoryItemIds: ["mem_owner_yes"] },
+    });
+    const work = await routeCommittedEvents({ persistence: store });
+    const contradictionWork = work.find((item) => item.policy === "detect_contradiction");
+    if (!contradictionWork) throw new Error("expected detect_contradiction work");
+
+    await executeWorkItem({
+      persistence: store,
+      policies: createPolicies({
+        persistence: store,
+        memoryModel: modelWithValidMemory(),
+        newId: deterministicId(),
+      }),
+      workItemId: contradictionWork.id,
+      newId: deterministicId(),
+    });
+
+    const conflict = [...store.conflictGroups.values()][0];
+    expect(conflict).toMatchObject({
+      conflictType: "ownership",
+      severity: "blocking",
+      status: "open",
+    });
+    expect(conflict?.members.flatMap((member) => member.evidenceSpanIds).sort()).toEqual(["ev_1", "ev_2"]);
   });
 
   it("synthesize_brief reads seed memory IDs from the causing ledger payload", async () => {
@@ -293,6 +398,59 @@ describe("loop system", () => {
     expect(proposal?.targetEventType).toBe("memory_committed");
     expect(store.committedMemory).toHaveLength(1);
     expect([...store.ledgerEvents.values()].some((event) => event.eventType === "memory_committed")).toBe(true);
+  });
+
+  it("extract_memory stores embeddings for claims, evidence, entities, and schemas when configured", async () => {
+    const store = seededStore();
+    const workItem = await routeSourceToWork(store);
+
+    await executeWorkItem({
+      persistence: store,
+      policies: createPolicies({
+        persistence: store,
+        memoryModel: new StaticMemoryGenerationModel({
+          items: [{
+            temporaryId: "m1",
+            claimType: "dependency",
+            statement: "Dev docs need to be updated before the API launch.",
+            evidenceSpanIds: ["ev_1"],
+            epistemicStatus: "reported",
+            qualifiers: {},
+            stableDomainTags: ["docs"],
+            entities: [{ name: "API launch", entityType: "initiative" }],
+            relations: [],
+            schemas: [{
+              subjectType: "artifact",
+              predicate: "blocks",
+              objectType: "initiative",
+              status: "candidate",
+            }],
+          }],
+        }),
+        embeddingModel: {
+          async embed(request) {
+            return {
+              model: "qwen/qwen3-embedding-8b",
+              vectors: request.input.map(() => [0.1, 0.2, 0.3]),
+            };
+          },
+        },
+        newId: deterministicId(),
+      }),
+      workItemId: workItem.id,
+      newId: deterministicId(),
+    });
+
+    expect(store.memoryEmbeddings.map((embedding) => embedding.targetType).sort()).toEqual([
+      "claim",
+      "entity",
+      "evidence_span",
+      "schema_pattern",
+    ]);
+    expect([...store.proposedEvents.values()][0]?.payload.embeddingMetadata).toMatchObject({
+      embeddingCount: 4,
+      models: ["qwen/qwen3-embedding-8b"],
+    });
   });
 
   it("invalid proposal cannot commit", async () => {
@@ -669,6 +827,47 @@ function connectedMemoryContext() {
       evidenceSpans: [secondEvidenceSpan],
     },
   ];
+}
+
+function memoryRecord(input: {
+  id: string;
+  claimType: "dependency" | "risk" | "ownership_statement" | "reported_decision";
+  statement: string;
+  evidenceSpanIds: string[];
+  entities: Array<{ name: string; entityType: string }>;
+  sourceVersionId?: string;
+}) {
+  const spans = input.evidenceSpanIds.map((id) => {
+    if (id === "ev_1") return evidenceSpan;
+    if (id === "ev_2") return secondEvidenceSpan;
+    return {
+      id,
+      sourceVersionId: input.sourceVersionId ?? "srcv_3",
+      startLine: 1,
+      endLine: 1,
+      startChar: 0,
+      endChar: input.statement.length,
+      text: input.statement,
+    };
+  });
+  return {
+    memoryItem: {
+      id: input.id,
+      ingestionId: `ing_${input.id}`,
+      sourceVersionId: input.sourceVersionId ?? "srcv_1",
+      claimType: input.claimType,
+      statement: input.statement,
+      evidenceSpanIds: input.evidenceSpanIds,
+      epistemicStatus: "reported" as const,
+      qualifiers: {},
+      stableDomainTags: [],
+      entities: input.entities,
+      relations: [],
+      schemas: [],
+      reviewState: "unreviewed" as const,
+    },
+    evidenceSpans: spans,
+  };
 }
 
 function proposalPolicy(
