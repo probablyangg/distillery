@@ -167,6 +167,10 @@ class InMemoryRepository implements MemoryGenerationRepository {
       citations: [],
       matches: [],
       gap: "No active memory matched the question.",
+      conflicts: [],
+      warnings: [],
+      retrievalMetadata: { strategy: "test" },
+      answerMetadata: { strategy: "test" },
     };
   }
 }

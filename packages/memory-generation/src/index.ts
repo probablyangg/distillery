@@ -246,6 +246,10 @@ export function buildDeterministicCitedAnswer(args: {
       citations: [],
       matches: [],
       gap: "No active memory matched the question. Capture more context or ask a narrower question.",
+      conflicts: [],
+      warnings: [],
+      retrievalMetadata: { strategy: "lexical" },
+      answerMetadata: { strategy: "deterministic" },
     };
   }
 
@@ -272,5 +276,9 @@ export function buildDeterministicCitedAnswer(args: {
     evidenceSpanIds: citations.map((citation) => citation.evidenceSpanId),
     citations,
     matches: args.matches,
+    conflicts: [],
+    warnings: [],
+    retrievalMetadata: { strategy: "lexical" },
+    answerMetadata: { strategy: "deterministic" },
   };
 }
