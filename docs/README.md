@@ -16,9 +16,10 @@ The code is the final source of truth. When docs and implementation disagree, in
 2. [Loop system PRD](./implementation/LOOP_SYSTEM_PRD.md)
 3. [Memory synthesis policy PRD](./implementation/MEMORY_SYNTHESIS_POLICY_PRD.md)
 4. [Claim graph memory upgrade plan](./implementation/CLAIM_GRAPH_MEMORY_UPGRADE_PLAN.md)
-5. [Runbook](./runbooks/RUNBOOK.md)
-6. [System design](./architecture/SYSTEM_DESIGN.md)
-7. [Loop system diagram](./architecture/loop-system.mermaid)
+5. [Graph-grounded hybrid retrieval and synthesis PRD](./implementation/GRAPH_GROUNDED_HYBRID_RETRIEVAL_SYNTHESIS_PRD.md)
+6. [Runbook](./runbooks/RUNBOOK.md)
+7. [System design](./architecture/SYSTEM_DESIGN.md)
+8. [Loop system diagram](./architecture/loop-system.mermaid)
 
 The current status document is the prose source of truth for what is implemented today. The loop system PRD is the source of truth for the base loop contract. The memory synthesis policy PRD is the source of truth for the `synthesize_brief` worker. The claim graph memory upgrade plan records the claim-graph implementation contract and should be read with the current status document because the graph pilot is now partially implemented. If another doc conflicts with these on event routing, queue ownership, policy runner behavior, validation gates, required tables, or definition of success, follow the code and migrations first, then the current status document for reality and the relevant implementation document for intended behavior.
 
@@ -29,6 +30,7 @@ As of 2026-07-09, `extract_memory`, `connect_memory`, `detect_contradiction`, an
 - [Loop system PRD](./implementation/LOOP_SYSTEM_PRD.md) — implementation contract for the event-driven loop system.
 - [Memory synthesis policy PRD](./implementation/MEMORY_SYNTHESIS_POLICY_PRD.md) — implementation contract for the `synthesize_brief` policy worker.
 - [Claim graph memory upgrade plan](./implementation/CLAIM_GRAPH_MEMORY_UPGRADE_PLAN.md) — implemented pilot plan and remaining hardening notes for durable memory connections, graph retrieval, conflicts, and graph review UI.
+- [Graph-grounded hybrid retrieval and synthesis PRD](./implementation/GRAPH_GROUNDED_HYBRID_RETRIEVAL_SYNTHESIS_PRD.md) — implementation contract for hybrid retrieval, graph PPR, reranking, and synthesis context selection.
 
 ## Current State
 

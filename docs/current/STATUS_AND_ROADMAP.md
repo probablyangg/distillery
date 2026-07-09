@@ -82,7 +82,7 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 - Relation evidence validation: relation evidence must be valid and inside the parent memory item evidence set.
 - Append-only confirm/edit/remove memory actions.
 - Memory item history and replacements.
-- Graph-grounded cited recall with deterministic lexical fallback.
+- Graph-grounded cited recall through hybrid vector/sparse graph retrieval, with deterministic graph-score fallback when model reranking is unavailable.
 
 ### Memory Synthesis
 
@@ -108,7 +108,7 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 - `detect_contradiction` is a deterministic policy that records evidence-backed blocking/warning conflict groups for shared-subject polarity conflicts.
 - Graph retrieval RPCs and Worker wrappers exist for graph recall context, graph clusters, graph claims, connection review, conflict resolution, claim pinning/exclusion, and graph rebuild.
 - `/graph` reviewer route exists in the Worker with cluster list, graph canvas, details pane, and accept/reject/resolve/pin/exclude actions.
-- Ask uses graph retrieval plus grounded OpenRouter answer generation by default when graph context is available, with deterministic lexical fallback on retrieval/model/validation failure.
+- Ask uses shared hybrid graph retrieval plus grounded OpenRouter answer generation by default. The old DB lexical answer fallback is no longer on the Ask path; sparse/exact matching is only a graph seed source.
 - `packages/model-gateway` includes OpenRouter embedding and grounded-answer clients with mocked tests and dimension/citation validation.
 
 ### Infrastructure
@@ -178,9 +178,9 @@ Synthesis page
   -> human save/approval
 
 Ask
-  -> graph retrieval context
+  -> hybrid vector/sparse graph retrieval context
   -> grounded OpenRouter answer with citation validation
-  -> deterministic lexical fallback
+  -> explicit no-answer gap if graph retrieval or grounded answer generation cannot produce a cited answer
 
 Graph page
   -> graph clusters and claim details
@@ -206,7 +206,7 @@ google/gemini-embedding-001
 1536 dimensions
 ```
 
-Embedding storage and inline extraction-time embedding generation exist when embedding env vars are configured. Historical embedding backfill, vector ranking in recall, and hybrid lexical/vector graph retrieval are not implemented yet.
+Embedding storage and inline extraction-time embedding generation exist when embedding env vars are configured. A hybrid graph retrieval implementation is now present in code for Ask and synthesis, with vector/sparse seeds, TypeScript PPR, OpenRouter reranking, and a batch embedding backfill script. Apply migration `0011_hybrid_retrieval_rpcs.sql` and run the backfill before expecting full vector coverage on historical memory.
 
 ## Current loop-system limitations
 
@@ -214,8 +214,8 @@ Embedding storage and inline extraction-time embedding generation exist when emb
 - `discover_candidate`, `check_freshness`, `rank_candidate`, `draft_artifact`, `gate_output`, and `revise_artifact` are registered policy runners but currently emit placeholder `not_enough_context` proposals.
 - After a worker auto-commits a proposed event, the newly inserted `event_outbox` row is not automatically drained by the same worker invocation. Multi-hop loops can therefore wait until another router invocation occurs.
 - SQL/RPC loop behavior has minimal automated coverage. Most loop tests run against `InMemoryLoopPersistence`.
-- The OpenRouter embedding client and `memory_embeddings` table are wired into `extract_memory`, but historical backfill and vector ranking are not yet wired.
-- Graph retrieval currently uses lexical seed expansion plus durable connection neighborhoods; bounded TypeScript PPR and vector ranking remain future hardening.
+- The OpenRouter embedding client and `memory_embeddings` table are wired into `extract_memory`; historical embedding backfill is available through `scripts/backfill-memory-embeddings.ts`.
+- Ask and synthesis are wired to the shared hybrid graph retriever in code. Full runtime success requires migration `0011_hybrid_retrieval_rpcs.sql`, graph projection rebuild, and embedding backfill in the target database. If OpenRouter reranking fails, retrieval degrades to deterministic graph/vector/sparse ranking and reports the reranker failure in metadata.
 - The `/graph` page is Worker-rendered and operational, but it has not yet been checked with a browser automation screenshot pass.
 
 ## What is intentionally not done

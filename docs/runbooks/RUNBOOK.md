@@ -59,10 +59,11 @@ pnpm install
 pnpm typecheck
 pnpm test
 pnpm fixtures:validate
+pnpm retrieval:validate
 pnpm build
 ```
 
-`pnpm build` runs typecheck, tests, and fixture validation.
+`pnpm build` runs typecheck, tests, memory fixture validation, and retrieval fixture validation.
 
 ## Database migrations
 
@@ -77,7 +78,13 @@ done
 Apply only the latest migration after pulling new code:
 
 ```bash
-psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0010_claim_graph_memory_upgrade.sql
+psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0011_hybrid_retrieval_rpcs.sql
+```
+
+Equivalent helper:
+
+```bash
+pnpm retrieval:migrate
 ```
 
 Do not run migrations from the Cloudflare Worker. Migrations require `DATABASE_DIRECT_URL` from local/CI.
@@ -94,6 +101,7 @@ Current migration set:
 - `0008_loop_status_read_model.sql` — loop status read model for UI/API inspection.
 - `0009_synthesize_brief_policy.sql` — `synthesize_brief` policy constraint, synthesis context RPC, semantic memory JSON projection, and atomic artifact-draft-to-initiative-brief commit path.
 - `0010_claim_graph_memory_upgrade.sql` — claim graph pilot tables, memory-to-claim graph triggers, graph projection/retrieval RPCs, connection review, conflict resolution, claim preferences, generic `memory_embeddings`, and graph policy/event constraints.
+- `0011_hybrid_retrieval_rpcs.sql` — hybrid retrieval candidate/snapshot/hydration RPCs, schema graph projection, and missing embedding target listing for backfill.
 
 ## Seed Stable starter data
 
@@ -112,6 +120,24 @@ Use all fixtures only when intentionally loading the full eval corpus:
 ```bash
 pnpm seed:stable -- --all
 ```
+
+## Backfill retrieval embeddings
+
+Hybrid retrieval needs embeddings for existing claims, evidence spans, entities, and schema patterns. New memory can store embeddings during extraction when embedding env vars are configured, but historical rows need a backfill.
+
+Preview missing targets without writing:
+
+```bash
+pnpm retrieval:backfill -- --dry-run --batch-size 128
+```
+
+Backfill one batch:
+
+```bash
+pnpm retrieval:backfill -- --batch-size 128
+```
+
+Run repeatedly until `missing_targets=0`. The script is idempotent and writes through `distillery_upsert_memory_embeddings`.
 
 ## Reset pilot data
 
@@ -147,7 +173,7 @@ Manual check:
 3. Confirm memory items appear with `claimType`.
 4. Open the loop status drawer and verify `source_committed`, routed work, policy run, proposal, and commit activity are visible.
 5. Expand `Trace details` and verify entities, relations, schemas, and evidence.
-6. Ask a recall question.
+6. Ask a recall question and confirm `retrievalMetadata.strategy` is `hybrid-graph-ppr-rerank`.
 7. Open `/synthesis`.
 8. Select memory.
 9. Generate a brief draft. To test related-memory expansion through the API, call `POST /api/initiative-brief-drafts` with `expandRelatedMemory: true`.
@@ -217,7 +243,7 @@ Memory Generation and Recall:
 - `POST /api/ingestions` — stores text evidence, commits `source_committed`, routes pending work, and wakes the loop runner.
 - `GET /api/ingestions/{id}` — returns ingestion status, evidence, and memory items.
 - `GET /api/loop-status` — returns UI-safe loop stages, timeline, and recent activity. Optional query params: `ingestionId`, `limit`.
-- `POST /api/queries` — graph-grounded cited recall with deterministic lexical fallback.
+- `POST /api/queries` — graph-grounded hybrid retrieval plus grounded answer generation. This path does not use the legacy DB lexical answer fallback.
 
 Memory review:
 
@@ -227,7 +253,7 @@ Memory review:
 
 Memory Synthesis:
 
-- `POST /api/initiative-brief-drafts` — generate editable brief draft from selected memory. Optional body field: `expandRelatedMemory` defaults to `false`; when `true`, the endpoint expands through the shared synthesis bundle builder.
+- `POST /api/initiative-brief-drafts` — generate editable brief draft from selected memory. Optional body field: `expandRelatedMemory` defaults to `false`; when `true`, the endpoint expands through the shared hybrid graph retriever and synthesis bundle builder.
 - `POST /api/initiative-briefs` — save human-reviewed brief.
 - `GET /api/initiative-briefs` — list briefs.
 - `GET /api/initiative-briefs/{id}` — inspect one brief.
