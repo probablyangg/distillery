@@ -2,6 +2,14 @@
 
 This directory is organized so an implementation agent can quickly separate current product facts, implementation authority, operational runbooks, architecture rationale, and research notes.
 
+The code is the final source of truth. When docs and implementation disagree, inspect:
+
+- `packages/contracts/src/index.ts` for exported API/runtime contracts;
+- `apps/web/src/index.ts` for Worker routes, rendered surfaces, auth, and queue handling;
+- `packages/loop/src/index.ts` for event routes and policy behavior;
+- `packages/db/src/index.ts` for RPC bindings;
+- `packages/db/migrations/` for persistence invariants.
+
 ## Read Order For Coding Agents
 
 1. [Current status](./current/STATUS_AND_ROADMAP.md)
@@ -12,15 +20,15 @@ This directory is organized so an implementation agent can quickly separate curr
 6. [System design](./architecture/SYSTEM_DESIGN.md)
 7. [Loop system diagram](./architecture/loop-system.mermaid)
 
-The current status document is the source of truth for what is implemented today. The loop system PRD is the source of truth for the base loop contract. The memory synthesis policy PRD is the source of truth for the `synthesize_brief` worker. The claim graph memory upgrade plan is the implementation contract for durable memory connections, graph retrieval, conflicts, and graph review UI. If another doc conflicts with these on event routing, queue ownership, policy runner behavior, validation gates, required tables, or definition of success, follow the current status document for reality and the relevant implementation document for intended behavior.
+The current status document is the prose source of truth for what is implemented today. The loop system PRD is the source of truth for the base loop contract. The memory synthesis policy PRD is the source of truth for the `synthesize_brief` worker. The claim graph memory upgrade plan records the claim-graph implementation contract and should be read with the current status document because the graph pilot is now partially implemented. If another doc conflicts with these on event routing, queue ownership, policy runner behavior, validation gates, required tables, or definition of success, follow the code and migrations first, then the current status document for reality and the relevant implementation document for intended behavior.
 
-As of 2026-07-08, `synthesize_brief` is implemented as a first-class policy worker. See the current status and Memory Synthesis product docs for runtime behavior.
+As of 2026-07-09, `extract_memory`, `connect_memory`, `detect_contradiction`, and `synthesize_brief` are implemented policy workers. Candidate discovery, freshness, ranking, artifact gating, and revision remain placeholder policy runners.
 
 ## Implementation
 
 - [Loop system PRD](./implementation/LOOP_SYSTEM_PRD.md) — implementation contract for the event-driven loop system.
 - [Memory synthesis policy PRD](./implementation/MEMORY_SYNTHESIS_POLICY_PRD.md) — implementation contract for the `synthesize_brief` policy worker.
-- [Claim graph memory upgrade plan](./implementation/CLAIM_GRAPH_MEMORY_UPGRADE_PLAN.md) — implementation plan for durable memory connections, graph retrieval, conflicts, and graph review UI.
+- [Claim graph memory upgrade plan](./implementation/CLAIM_GRAPH_MEMORY_UPGRADE_PLAN.md) — implemented pilot plan and remaining hardening notes for durable memory connections, graph retrieval, conflicts, and graph review UI.
 
 ## Current State
 
@@ -35,7 +43,7 @@ As of 2026-07-08, `synthesize_brief` is implemented as a first-class policy work
 ## Architecture
 
 - [System design](./architecture/SYSTEM_DESIGN.md) — current architecture plus forward design principles.
-- [Loop system diagram](./architecture/loop-system.mermaid) — simplified event loop target.
+- [Loop system diagram](./architecture/loop-system.mermaid) — simplified current event loop plus intended downstream policies.
 - [North-star diagram](./architecture/system.mermaid) — future architecture reference, not current implementation.
 - [Memory architecture](./architecture/MEMORY_ARCHITECTURE.md) — memory-layer rationale and MemGraphRAG notes.
 

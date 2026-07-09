@@ -36,7 +36,7 @@ The reviewer chooses memory manually.
 
 The brief generator is optional. It drafts from selected memory and evidence only unless `expandRelatedMemory` is explicitly enabled. The human can edit before saving.
 
-Background synthesis also runs after `memory_committed`. It derives related active memory at runtime, checks readiness, generates a traceable draft through the existing OpenRouter model gateway, emits `artifact_draft_proposed`, and auto-commits `artifact_drafted` only when validation passes.
+Background synthesis also runs after `memory_committed`. It loads synthesis context from persistence, derives a selected bundle at runtime, checks readiness, generates a traceable draft through the existing OpenRouter model gateway, emits `artifact_draft_proposed`, and auto-commits `artifact_drafted` only when validation passes.
 
 Saved briefs bind to:
 
@@ -119,7 +119,7 @@ The `synthesize_brief` policy is routed from `memory_committed` events. It reads
 
 The policy builds a transient `SynthesisBundle`. Connection reasons can include shared entity, compatible relation, matching schema candidate, complementary claim type, shared evidence or source context, edit/supersession lineage, decision reference, contradiction warning, or blocking contradiction.
 
-Derived connections are not persisted as canonical memory links.
+The `SynthesisBundle` itself is not persisted as canonical memory links. The claim graph pilot separately persists durable claim connections and conflict groups used by graph review and retrieval.
 
 ## What is not implemented yet
 
@@ -127,7 +127,7 @@ Derived connections are not persisted as canonical memory links.
 - candidate maturity scoring;
 - evidence bundle freezing/versioning;
 - assertion-level trace tables;
-- contrary evidence display;
+- richer contrary evidence display in the synthesis UI;
 - stale-brief detection;
 - PRD generation.
 

@@ -34,13 +34,15 @@ end
 subgraph POLICIES["Atomic policies"]
   direction TB
   P1["extract_memory"]
-  P2["discover_candidate"]
-  P3["check_freshness"]
-  P4["detect_contradiction"]
-  P5["rank_candidate"]
-  P6["draft_artifact"]
-  P7["gate_output"]
-  P8["revise_artifact"]
+  P2["connect_memory"]
+  P3["detect_contradiction"]
+  P4["synthesize_brief"]
+  P5["discover_candidate"]
+  P6["check_freshness"]
+  P7["rank_candidate"]
+  P8["draft_artifact"]
+  P9["gate_output"]
+  P10["revise_artifact"]
 end
 
 subgraph GATE["Validation and approval"]
@@ -80,6 +82,8 @@ G --> P5
 G --> P6
 G --> P7
 G --> P8
+G --> P9
+G --> P10
 
 P1 --> H
 P2 --> H
@@ -89,6 +93,8 @@ P5 --> H
 P6 --> H
 P7 --> H
 P8 --> H
+P9 --> H
+P10 --> H
 
 H --> I
 I --> J

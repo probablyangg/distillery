@@ -1,8 +1,8 @@
 # Claim graph memory upgrade implementation plan
 
-Status: proposed implementation contract, written 2026-07-09.
+Status: implemented pilot contract plus remaining hardening notes, written 2026-07-09.
 
-This plan upgrades Distillery from v0 `memory_items` plus transient synthesis bundles to a pilot-grade claim graph inspired by MemGraphRAG. It is written for an implementation LLM. Follow this document as the source of truth for this upgrade, while using [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md) as the source of truth for what is implemented today.
+This plan upgraded Distillery from v0 `memory_items` plus transient synthesis bundles to a pilot-grade claim graph inspired by MemGraphRAG. It is written for implementation agents. Use it for claim-graph design intent, but use the code, migrations, and [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md) as the source of truth for what is implemented today.
 
 Related docs:
 
@@ -44,24 +44,24 @@ The implementation starts from the current repository, not a greenfield system.
 
 Current implemented behavior:
 
-- `apps/web/src/index.ts` is a Cloudflare Worker that renders HTML and exposes capture, recall, synthesis, memory review, and brief routes.
-- `extract_memory` and `synthesize_brief` are real policies in `packages/loop`.
-- Other policy names exist, but most are deterministic placeholders.
-- `packages/model-gateway` supports OpenRouter chat completions for memory generation and initiative brief drafting.
-- There is no embedding client in `packages/model-gateway` yet.
-- `packages/memory-synthesis` builds transient `SynthesisBundle` objects from active memory. These connections are not persisted.
+- `apps/web/src/index.ts` is a Cloudflare Worker that renders HTML and exposes capture, graph-grounded recall, synthesis, graph review, memory review, and brief routes.
+- `extract_memory`, `connect_memory`, `detect_contradiction`, and `synthesize_brief` are real policies in `packages/loop`.
+- `discover_candidate`, `check_freshness`, `rank_candidate`, `draft_artifact`, `gate_output`, and `revise_artifact` exist, but are deterministic placeholders.
+- `packages/model-gateway` supports OpenRouter chat completions for memory generation, initiative brief drafting, grounded answers, and embeddings.
+- `extract_memory` stores embeddings through `memory_embeddings` when embedding env vars are configured.
+- `packages/memory-synthesis` builds transient `SynthesisBundle` objects from active memory. Durable claim connections and conflict groups are persisted through the claim graph pilot, but synthesis still derives its selected bundle at runtime.
 - `memory_entities`, `memory_relations`, and `memory_schemas` exist and are populated from extraction output.
-- `claim_embeddings` and `evidence_span_embeddings` tables exist, but embedding generation and hybrid retrieval are not implemented.
-- `distillery_recall_memory_lexical` is deterministic lexical recall.
-- `distillery_get_memory_synthesis_context` returns recent active memory. It does not perform graph expansion.
+- `memory_embeddings` stores claim, evidence-span, entity, and schema-pattern embeddings. Historical backfill and vector-ranked retrieval are not implemented.
+- `distillery_graph_recall_context` provides graph retrieval context for Ask, with deterministic lexical recall as fallback.
+- `distillery_get_memory_synthesis_context` uses seed memory plus graph connection/conflict context for synthesis.
+- `/graph` exposes cluster review, connection accept/reject, conflict resolution, claim pinning/exclusion, and projection rebuild.
 
-Known current mismatch:
+Resolved model mismatch:
 
-- `docs/current/STATUS_AND_ROADMAP.md` says the embedding model is `qwen/qwen3-embedding-8b`.
-- `apps/web/wrangler.toml` currently sets `EMBEDDING_MODEL = "deepseek/deepseek-v4-flash"`.
-- The human confirmed OpenRouter embedding access for `qwen/qwen3-embedding-8b`.
-- This upgrade must standardize on `qwen/qwen3-embedding-8b` with `EMBEDDING_DIMENSIONS=1536` unless the human explicitly chooses another OpenRouter embedding model with 1536 output dimensions.
-- Update `apps/web/wrangler.toml`, local environment examples, and Worker vars so `EMBEDDING_MODEL` is not a chat-completion model.
+- `EMBEDDING_MODEL` must point at an OpenRouter embedding model, not a chat-completion model.
+- The selected production embedding model is `google/gemini-embedding-001`.
+- This upgrade must standardize on `google/gemini-embedding-001` with `EMBEDDING_DIMENSIONS=1536`.
+- `apps/web/wrangler.toml` now uses this embedding model. Local environment examples may still need cleanup if they drift from Worker vars.
 
 Current transient synthesis risk:
 
@@ -159,7 +159,7 @@ OPENROUTER_TIMEOUT_MS
 OPENROUTER_FALLBACK_TIMEOUT_MS
 EMBEDDING_PROVIDER=openrouter
 EMBEDDING_BASE_URL=https://openrouter.ai/api/v1
-EMBEDDING_MODEL=qwen/qwen3-embedding-8b
+EMBEDDING_MODEL=google/gemini-embedding-001
 EMBEDDING_DIMENSIONS=1536
 EMBEDDING_ENCODING_FORMAT=float
 DISTILLERY_APP_PASSWORD
@@ -197,7 +197,7 @@ New code dependency:
 - Do not use Cytoscape.js.
 - Do not use a CDN.
 
-OpenRouter embedding access for `qwen/qwen3-embedding-8b` is confirmed by the human. Stop and ask the human only if the selected embedding model is unavailable at implementation time or if a replacement model would change vector dimensions.
+OpenRouter embedding access for `google/gemini-embedding-001` is confirmed. Stop and ask the human only if the selected embedding model is unavailable at implementation time or if a replacement model would change vector dimensions.
 
 ## Data model
 
@@ -637,23 +637,22 @@ sequenceDiagram
   Synth->>Ledger: artifact_draft_proposed when ready
 ```
 
-Required changes:
+Implementation status:
 
-1. Add a real `connect_memory` policy.
-2. Replace placeholder `detect_contradiction` with real logic.
-3. Add graph projection rebuild behavior.
-4. Keep `synthesize_brief`, but change its input to use graph-expanded claims and blocking conflict checks.
+1. `connect_memory` is implemented as a deterministic policy.
+2. `detect_contradiction` is implemented as deterministic shared-subject polarity conflict detection.
+3. Graph projection rebuild behavior is implemented as a persistence/RPC operation, not a first-class policy.
+4. `synthesize_brief` remains implemented through runtime synthesis bundle construction and readiness checks.
 
-If adding `rebuild_graph_projection` as a policy name causes too much scope, implement it as a deterministic persistence method called after connection/conflict writes. Prefer a first-class policy if the loop contract can be kept clean.
+`rebuild_graph_projection` is not a policy name in the current code. It is exposed through persistence and Worker graph APIs.
 
-Contract updates required:
+Contract update status:
 
-- Add `connect_memory` to `POLICY_NAMES`, TypeScript policy registration, SQL `pending_work.policy` constraints, and event routing.
-- If `rebuild_graph_projection` is implemented as a policy, add it to the same policy contracts and SQL constraints. If it is implemented as a deterministic persistence method, do not add a policy enum.
-- Add `memory_connected` and, if using a first-class graph projection event, `graph_projection_rebuilt` to ledger event contracts and SQL event constraints.
-- Add proposed event types for connection proposals and graph projection proposals if those flows use `proposed_events`; otherwise document why the persistence method writes deterministic committed effects.
-- Update validation gates so every new event/proposed-event payload is Zod-validated and tenant scoped.
-- Update `eventRoutes` so `memory_committed` routes to `connect_memory`, `detect_contradiction`, and graph-expanded `synthesize_brief` in a deterministic order.
+- `connect_memory` is present in `POLICY_NAMES`, TypeScript policy registration, SQL `pending_work.policy` constraints, and event routing.
+- `memory_connected` is present in ledger event contracts and SQL event constraints.
+- `memory_connection_proposed` and `contradiction_proposed` are present in proposed-event contracts and SQL constraints.
+- Event routes map `memory_committed` to `connect_memory`, `detect_contradiction`, `discover_candidate`, `check_freshness`, and `synthesize_brief`.
+- Graph projection writes are deterministic derived effects through SQL/RPC rather than proposed events.
 
 ## Extraction and promotion
 

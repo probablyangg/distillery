@@ -18,21 +18,27 @@ For implementation work, read these in order:
 
 Do not treat older roadmap or research docs as implementation authority when they conflict with the current status document, loop system PRD, or memory synthesis policy PRD.
 
+For code-facing details, use the implementation as the final source of truth: exported contracts live in `packages/contracts/src/index.ts`, Worker routes in `apps/web/src/index.ts`, loop routing and policies in `packages/loop/src/index.ts`, persistence/RPC bindings in `packages/db/src/index.ts`, and database invariants in `packages/db/migrations/`.
+
 ## Current System
 
 Implemented and deployed:
 
 - password-gated capture/recall app at `/`;
 - password-gated synthesis surface at `/synthesis`;
+- password-gated graph review surface at `/graph`;
 - text-only ingestion;
 - immutable source versions and evidence spans;
 - OpenRouter memory generation;
 - evidence-backed memory with `claimType`, entities, relations, and schemas;
+- durable claim graph projection with claim connections, conflict groups, graph clusters, and reviewer preferences;
 - confirm/edit/remove memory actions with append-only history;
-- deterministic cited recall;
+- graph-grounded Ask answers with deterministic lexical fallback;
 - human-directed initiative brief draft, save, approve, and reject flow;
 - event-driven loop infrastructure with `ledger_events`, `event_outbox`, `pending_work`, `policy_runs`, and `proposed_events`;
 - `source_committed -> extract_memory -> memory_proposed -> validation -> memory_committed` loop path;
+- `memory_committed -> connect_memory -> memory_connection_proposed -> validation -> memory_connected` loop path;
+- `memory_committed -> detect_contradiction -> contradiction_proposed -> validation -> contradiction_recorded` loop path;
 - `memory_committed -> synthesize_brief -> artifact_draft_proposed -> validation -> artifact_drafted` loop path;
 - automatic initiative-brief draft creation when connected active memory passes synthesis readiness checks;
 - loop status endpoint and UI drawer for recent loop activity;
@@ -58,9 +64,9 @@ Vitest
 pnpm
 ```
 
-Canonical state is PostgreSQL. Queues, indexes, embeddings, and future graph projections are derived or transport mechanisms.
+Canonical state is PostgreSQL. Queues, indexes, embeddings, and graph projections are derived or transport mechanisms.
 
-Current loop limitation: `extract_memory` and `synthesize_brief` have real domain logic. Candidate, freshness, ranking, artifact gating, and revision policies are wired as placeholder runners until their product behavior is implemented.
+Current loop limitation: `extract_memory`, `connect_memory`, `detect_contradiction`, and `synthesize_brief` have real domain logic. Candidate, freshness, ranking, artifact gating, and revision policies are wired as placeholder runners until their product behavior is implemented.
 
 ## Quick Start
 
@@ -115,6 +121,14 @@ Copy `.env.example` to `.env.local` and populate:
   - `OPENROUTER_BASE_URL`;
   - `OPENROUTER_MODEL`;
   - `OPENROUTER_FALLBACK_MODELS`;
+  - `OPENROUTER_TIMEOUT_MS`;
+  - `OPENROUTER_FALLBACK_TIMEOUT_MS`;
+- embeddings:
+  - `EMBEDDING_PROVIDER`;
+  - `EMBEDDING_BASE_URL`;
+  - `EMBEDDING_MODEL`;
+  - `EMBEDDING_DIMENSIONS`;
+  - `EMBEDDING_ENCODING_FORMAT`;
 - app access:
   - `DISTILLERY_APP_PASSWORD`.
 

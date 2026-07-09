@@ -22,8 +22,10 @@ Queue consumer or inline fallback
   -> call OpenRouter
   -> parse structured JSON
   -> validate evidence and schema
+  -> optionally store embeddings when embedding env vars are configured
   -> create memory_proposed
   -> auto-commit valid memory_committed
+  -> route graph connection, contradiction, and synthesis work
 
 GET /api/ingestions/{id}
   -> return status, evidence spans, memory items, error if any
@@ -56,10 +58,17 @@ Memory Generation writes:
 - `memory_relations`;
 - `memory_schemas`;
 - `memory_item_events`;
+- `memory_embeddings`;
+- `ledger_events`;
+- `event_outbox`;
+- `pending_work`;
+- `policy_runs`;
+- `proposed_events`;
+- claim graph projection/review tables populated by migration `0010_claim_graph_memory_upgrade.sql`;
 - `audit_events`;
 - `outbox_events`.
 
-Source versions and evidence spans are immutable. Memory items are correctable through append-only events.
+Source versions and evidence spans are immutable. Memory items are correctable through append-only events. Claim graph rows, embeddings, and graph projection rows are derived from evidence-backed memory; they are not more authoritative than the underlying evidence and ledger.
 
 ## Memory item contract
 
@@ -135,7 +144,7 @@ OpenRouter
 Model chain:
 
 ```text
-moonshotai/kimi-k2.7-code
+deepseek/deepseek-v4-flash
   -> ~moonshotai/kimi-latest
   -> moonshotai/kimi-k2.6
 ```
@@ -154,7 +163,7 @@ Original evidence, original extraction output, and history remain inspectable.
 
 ## Recall
 
-Recall is deterministic lexical retrieval over active memory and evidence spans.
+Recall first tries graph retrieval plus a grounded OpenRouter answer. The grounded answer client validates that every cited claim and evidence span came from the graph retrieval context. If graph retrieval returns no claims, model generation fails, or citation validation fails, recall falls back to deterministic lexical retrieval over active memory and evidence spans.
 
 If memory supports an answer, Distillery returns:
 
@@ -167,11 +176,10 @@ If memory does not support an answer, Distillery returns an explicit gap instead
 
 ## Future work
 
-- embedding generation;
-- hybrid lexical/vector recall;
+- historical embedding backfill;
+- vector-ranked and hybrid lexical/vector graph recall;
 - duplicate detection;
-- contradiction detection;
+- broader contradiction detection;
 - memory quality evals by `claimType`;
 - source connectors beyond text;
-- canonical entity/schema promotion;
-- graph retrieval projection.
+- human-reviewed canonical entity/schema promotion.

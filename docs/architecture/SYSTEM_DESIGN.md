@@ -40,7 +40,7 @@ Cloudflare Queue
 - OpenRouter provides structured LLM calls.
 - PostgreSQL is authoritative.
 - Cloudflare Queue messages are wakeups only; PostgreSQL owns committed events, outbox state, pending work, policy runs, and proposals.
-- Full-text indexes, embeddings, and future graph projections are derived.
+- Full-text indexes, embeddings, and graph projections are derived.
 
 ### Access
 
@@ -66,6 +66,14 @@ source_version
   -> memory_relations
   -> memory_schemas
   -> memory_item_events
+
+memory_item
+  -> observations
+  -> claims
+  -> claim_evidence
+  -> claim_connections
+  -> conflict_groups
+  -> graph_nodes / graph_edges
 
 initiative_brief
   -> initiative_brief_memory
@@ -112,7 +120,7 @@ Capture and recall:
 - inspect recent loop activity;
 - show committed memory;
 - confirm/edit/remove memory;
-- ask cited recall questions.
+- ask graph-grounded cited recall questions with lexical fallback.
 
 ## Implemented loop
 
@@ -124,9 +132,27 @@ source_committed
   -> memory_proposed
   -> validation
   -> memory_committed
+
+memory_committed
+  -> connect_memory pending_work
+  -> memory_connection_proposed
+  -> validation
+  -> memory_connected
+
+memory_committed
+  -> detect_contradiction pending_work
+  -> contradiction_proposed
+  -> validation
+  -> contradiction_recorded
+
+memory_committed
+  -> synthesize_brief pending_work
+  -> artifact_draft_proposed
+  -> validation
+  -> artifact_drafted
 ```
 
-The loop runner and persistence scaffolding are installed for the full policy set. Current production logic is real for `extract_memory`; downstream policies are placeholders until their domain behavior is implemented.
+The loop runner and persistence scaffolding are installed for the full policy set. Current production logic is real for `extract_memory`, `connect_memory`, `detect_contradiction`, and `synthesize_brief`. Candidate discovery, freshness, ranking, artifact gating, and revision policies are placeholders until their domain behavior is implemented.
 
 ### `/synthesis`
 
@@ -138,6 +164,16 @@ Memory Synthesis:
 - generate optional draft;
 - save initiative brief;
 - approve/reject.
+
+### `/graph`
+
+Claim Graph:
+
+- inspect graph clusters and claim details;
+- review proposed claim connections;
+- resolve or dismiss conflict groups;
+- pin claims;
+- exclude claims from synthesis.
 
 ## What the current system deliberately avoids
 
@@ -178,8 +214,8 @@ Memory Synthesis:
 - add Slack/docs/meeting/ticket/metric connectors;
 - add currentness checks;
 - add source ACLs;
-- add contradiction workflows;
-- add graph retrieval only after simpler retrieval is benchmarked.
+- harden contradiction workflows;
+- add vector-ranked and PPR-style graph retrieval after the current lexical/neighborhood approach is benchmarked.
 
 ## Engineering rules
 

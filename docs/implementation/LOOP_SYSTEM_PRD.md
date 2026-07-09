@@ -2,11 +2,12 @@
 
 Status: implementation contract; initial loop infrastructure is implemented.
 
-Implementation note, 2026-07-08:
+Implementation note, 2026-07-09:
 
 - The canonical loop tables, queue wakeup shape, router, executor, proposal validation, memory auto-commit path, loop status API, and loop status UI are present in the repo.
-- `extract_memory` is implemented with real OpenRouter-backed memory generation.
-- Downstream policy runners are registered but currently placeholder implementations. Treat them as incomplete product behavior unless a later change replaces the placeholders.
+- `extract_memory` is implemented with OpenRouter-backed memory generation, deterministic fallback, and optional embedding storage.
+- `connect_memory`, `detect_contradiction`, and `synthesize_brief` are implemented as real policy workers.
+- `discover_candidate`, `check_freshness`, `rank_candidate`, `draft_artifact`, `gate_output`, and `revise_artifact` are registered placeholder implementations. Treat them as incomplete product behavior until their domain logic is implemented.
 - For exact current-state facts and known gaps, read [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md) before coding.
 
 Related docs:
@@ -84,9 +85,11 @@ The runner dispatches by `pending_work.policy`:
 ```ts
 const policies: Record<PolicyName, Policy<unknown, unknown>> = {
   extract_memory,
+  connect_memory,
   discover_candidate,
   check_freshness,
   detect_contradiction,
+  synthesize_brief,
   rank_candidate,
   draft_artifact,
   gate_output,
@@ -105,7 +108,7 @@ Existing runtime:
 ```text
 apps/web/src/index.ts
   Cloudflare Worker
-  HTTP routes for capture, recall, memory review, synthesis, and brief decisions
+  HTTP routes for capture, graph-grounded recall, memory review, synthesis, graph review, and brief decisions
   queue consumer accepts MEMORY_GENERATION_QUEUE messages shaped as { workItemId }
 
 apps/web/wrangler.toml
@@ -120,13 +123,13 @@ packages/validation
   Shared validation package
 
 packages/model-gateway
-  OpenRouter memory generation and initiative brief draft model calls
+  OpenRouter memory generation, initiative brief draft, embedding, and grounded answer model calls
 
 packages/memory-generation
   capture, evidence storage, memory generation workflow, recall, memory correction logic
 
 packages/memory-synthesis
-  initiative brief draft traceability validation
+  synthesis bundle construction and initiative brief draft traceability validation
 
 packages/db/migrations
   SQL migrations 0001 through 0008
@@ -180,10 +183,10 @@ Use OpenRouter as the provider.
 Required configured models:
 
 ```text
-primary generation/drafting model: moonshotai/kimi-k2.7-code
+primary generation/drafting model: deepseek/deepseek-v4-flash
 fallback generation/drafting model: ~moonshotai/kimi-latest
 fallback generation/drafting model: moonshotai/kimi-k2.6
-embedding model: qwen/qwen3-embedding-8b
+embedding model: google/gemini-embedding-001
 ```
 
 The embedding model is for retrieval/indexing only. It must not be treated as a reasoning policy model.
@@ -192,6 +195,7 @@ LLM-backed policies:
 
 ```text
 extract_memory
+synthesize_brief
 discover_candidate
 draft_artifact
 revise_artifact
@@ -201,6 +205,7 @@ Deterministic policies:
 
 ```text
 event_router
+connect_memory
 check_freshness
 detect_contradiction
 rank_candidate

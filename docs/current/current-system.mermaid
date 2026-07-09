@@ -1,13 +1,14 @@
 flowchart TB
 
 %% DISTILLERY CURRENT SYSTEM
-%% Status: implemented private pilot as of 2026-07-08.
+%% Status: implemented private pilot as of 2026-07-09.
 %% PostgreSQL is canonical. Cloudflare Queue messages are wakeups only.
 
 subgraph USER["Human user"]
   direction TB
   U1["/ capture + recall<br/>text braindump or cited question"]
   U2["/synthesis<br/>memory selection, draft review, approval"]
+  U3["/graph<br/>claim clusters, connection review, conflicts"]
 end
 
 subgraph CF["Cloudflare"]
@@ -19,18 +20,21 @@ end
 subgraph APP["Worker application modules"]
   direction TB
   A1["Capture API<br/>submitTextCapture"]
-  A2["Recall API<br/>deterministic cited answer"]
+  A2["Recall API<br/>graph-grounded answer with lexical fallback"]
   A3["Synthesis APIs<br/>draft, save, approve, reject"]
   A4["Event router<br/>ledger_events -> pending_work"]
   A5["Loop executor<br/>claim work, run policy, validate proposal"]
-  A6["Real policies<br/>extract_memory, synthesize_brief"]
-  A7["Placeholder policies<br/>candidate, freshness, contradiction, ranking, draft/gate/revise"]
+  A6["Real policies<br/>extract_memory, connect_memory,<br/>detect_contradiction, synthesize_brief"]
+  A7["Placeholder policies<br/>candidate, freshness, ranking,<br/>draft/gate/revise"]
+  A8["Graph APIs<br/>clusters, claims, rebuild,<br/>review, resolve, preferences"]
 end
 
 subgraph MODEL["OpenRouter"]
   direction TB
   M1["Memory generation model"]
   M2["Initiative brief draft model"]
+  M3["Grounded answer model"]
+  M4["Embedding model"]
 end
 
 subgraph DB["Supabase PostgreSQL via RPC"]
@@ -40,14 +44,17 @@ subgraph DB["Supabase PostgreSQL via RPC"]
   D3["Human review history<br/>memory_item_events"]
   D4["Brief store<br/>initiative_briefs, brief memory/evidence bindings,<br/>initiative_brief_decisions"]
   D5["Loop ledger<br/>ledger_events, event_outbox,<br/>pending_work, policy_runs, proposed_events"]
-  D6["Derived retrieval data<br/>full-text indexes, embedding tables"]
+  D6["Derived retrieval data<br/>full-text indexes, memory_embeddings"]
+  D7["Claim graph pilot<br/>observations, claims, claim_evidence,<br/>claim_connections, conflict groups,<br/>graph_nodes, graph_edges, preferences"]
 end
 
 U1 --> W
 U2 --> W
+U3 --> W
 W --> A1
 W --> A2
 W --> A3
+W --> A8
 W --> A4
 Q --> W
 W --> Q
@@ -65,15 +72,21 @@ A5 --> A6
 A5 --> A7
 A6 --> M1
 A6 --> M2
+A6 --> M4
 M1 --> A6
 M2 --> A6
+M4 --> A6
 A5 --> D2
 A5 --> D4
 A5 --> D5
+A5 --> D7
 
 A2 --> D2
 A2 --> D1
 A2 --> D6
+A2 --> D7
+A2 --> M3
+M3 --> A2
 
 A3 --> D2
 A3 --> D1
@@ -83,3 +96,7 @@ A3 --> D4
 
 D2 --> D3
 D2 --> D6
+D2 --> D7
+
+A8 --> D7
+A8 --> D2

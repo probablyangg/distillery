@@ -19,6 +19,11 @@ Synthesis app
   generate optional brief draft
   edit/save traceable brief
   approve or reject
+
+Graph review app
+  inspect claim clusters
+  review connections and conflicts
+  pin or exclude claims for synthesis
 ```
 
 Live Worker:
@@ -46,6 +51,7 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 - Logout.
 - `/` capture and recall screen.
 - `/synthesis` reviewer screen.
+- `/graph` claim graph reviewer screen.
 - Text-only braindump ingestion.
 - No initiative suggestions on the ingestion screen.
 - No formal auth, SSO, RBAC, or per-source ACLs.
@@ -76,7 +82,7 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 - Relation evidence validation: relation evidence must be valid and inside the parent memory item evidence set.
 - Append-only confirm/edit/remove memory actions.
 - Memory item history and replacements.
-- Deterministic cited recall.
+- Graph-grounded cited recall with deterministic lexical fallback.
 
 ### Memory Synthesis
 
@@ -120,6 +126,7 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 - Loop status drawer in the capture UI.
 - `pgvector` enabled.
 - OpenRouter model gateway.
+- OpenRouter embedding client.
 - Stable fixture validation.
 - Stable seed script.
 - Live smoke script.
@@ -147,6 +154,16 @@ Worker queue consumer or inline fallback
   -> ledger_events
 
 After memory commit
+  -> connect_memory
+  -> durable claim connection proposals
+  -> memory_connected
+
+After memory commit
+  -> detect_contradiction
+  -> conflict group proposals
+  -> contradiction_recorded
+
+After memory commit
   -> synthesize_brief
   -> derive active related memory bundle
   -> readiness checks
@@ -159,16 +176,25 @@ Synthesis page
   -> active memory
   -> optional brief draft model call
   -> human save/approval
+
+Ask
+  -> graph retrieval context
+  -> grounded OpenRouter answer with citation validation
+  -> deterministic lexical fallback
+
+Graph page
+  -> graph clusters and claim details
+  -> connection review, conflict resolution, claim pinning/exclusion
 ```
 
-Authoritative state is in PostgreSQL. Lexical indexes, embeddings, and future graph projections are derived.
+Authoritative state is in PostgreSQL. Lexical indexes, embeddings, and graph projections are derived.
 
 ## Current models
 
 Generation and brief drafting use OpenRouter.
 
 ```text
-primary:  moonshotai/kimi-k2.7-code
+primary:  deepseek/deepseek-v4-flash
 fallback: ~moonshotai/kimi-latest
 fallback: moonshotai/kimi-k2.6
 ```
@@ -176,21 +202,20 @@ fallback: moonshotai/kimi-k2.6
 Configured embedding model:
 
 ```text
-qwen/qwen3-embedding-8b
+google/gemini-embedding-001
 1536 dimensions
 ```
 
-Embedding storage exists, but asynchronous embedding generation and hybrid retrieval are not implemented yet.
+Embedding storage and inline extraction-time embedding generation exist when embedding env vars are configured. Historical embedding backfill, vector ranking in recall, and hybrid lexical/vector graph retrieval are not implemented yet.
 
 ## Current loop-system limitations
 
-- `extract_memory` and `synthesize_brief` have real domain logic.
 - `extract_memory`, `connect_memory`, `detect_contradiction`, and `synthesize_brief` have real domain logic.
 - `discover_candidate`, `check_freshness`, `rank_candidate`, `draft_artifact`, `gate_output`, and `revise_artifact` are registered policy runners but currently emit placeholder `not_enough_context` proposals.
 - After a worker auto-commits a proposed event, the newly inserted `event_outbox` row is not automatically drained by the same worker invocation. Multi-hop loops can therefore wait until another router invocation occurs.
 - SQL/RPC loop behavior has minimal automated coverage. Most loop tests run against `InMemoryLoopPersistence`.
-- The OpenRouter embedding client and `memory_embeddings` table exist, but automatic embedding generation/backfill is not yet wired into the policy executor.
-- Graph retrieval currently uses lexical seed expansion plus durable connection neighborhoods; bounded TypeScript PPR and vector ranking remain the next hardening step.
+- The OpenRouter embedding client and `memory_embeddings` table are wired into `extract_memory`, but historical backfill and vector ranking are not yet wired.
+- Graph retrieval currently uses lexical seed expansion plus durable connection neighborhoods; bounded TypeScript PPR and vector ranking remain future hardening.
 - The `/graph` page is Worker-rendered and operational, but it has not yet been checked with a browser automation screenshot pass.
 
 ## What is intentionally not done
@@ -206,9 +231,9 @@ Embedding storage exists, but asynchronous embedding generation and hybrid retri
 - PRD generation.
 - TDD generation.
 - Continuous freshness checks.
-- Conflict resolution workflow.
+- Production-grade contradiction adjudication workflow.
 - Production-grade observability, cost dashboards, or alerting.
-- Canonical entity/schema promotion.
+- Human-reviewed canonical entity/schema promotion workflow.
 - Production-grade graph retrieval / Personalized PageRank.
 
 ## Roadmap
@@ -245,7 +270,7 @@ Build:
 - precision/recall review by `claimType`;
 - stricter model prompt around entities/relations/schema candidates;
 - duplicate detection;
-- contradiction candidate detection;
+- broader contradiction coverage beyond the current deterministic shared-subject polarity checks;
 - semantic metadata quality review.
 
 ### Synthesis quality
@@ -296,7 +321,7 @@ Build:
 - currentness checks;
 - source permission model;
 - notifications for material changes;
-- derived graph retrieval.
+- production-grade hybrid graph retrieval.
 
 ## Agent handoff notes
 

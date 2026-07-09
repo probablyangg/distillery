@@ -6,7 +6,7 @@ For current status and roadmap, start with [STATUS_AND_ROADMAP.md](../current/ST
 
 ## Product outcome
 
-The initial build delivers two complete end-to-end systems:
+The initial build delivered memory generation and manual synthesis. The current private pilot also includes loop automation and a claim graph review surface.
 
 ```text
 Memory Generation
@@ -23,6 +23,13 @@ Memory Synthesis
   -> human-edited initiative brief
   -> evidence binding
   -> approve/reject decision
+
+Claim Graph Pilot
+  committed memory
+  -> durable claim projection
+  -> connection and conflict policies
+  -> graph-grounded recall
+  -> reviewer graph UI
 ```
 
 The release outcome is an approved initiative brief whose consequential claims can be traced to exact evidence spans, selected memory, or a human decision record.
@@ -52,6 +59,16 @@ Reviewer surface:
 - optionally generate a brief draft;
 - edit/save an initiative brief;
 - approve or reject the brief.
+
+### `/graph` Claim Graph
+
+Reviewer surface:
+
+- inspect claim clusters and details;
+- accept or reject proposed connections;
+- resolve or dismiss conflicts;
+- pin claims;
+- exclude claims from synthesis.
 
 ## Implemented slices
 
@@ -121,6 +138,17 @@ Implemented:
 - seed-data semantic metadata;
 - backfill migration for old rows.
 
+### Slice 7 — loop automation and claim graph pilot
+
+Implemented:
+
+- canonical loop tables and queue wakeup handling;
+- real `connect_memory`, `detect_contradiction`, and `synthesize_brief` policies;
+- `0010_claim_graph_memory_upgrade.sql` graph tables, triggers, projection, and RPCs;
+- graph-grounded Ask answers with deterministic lexical fallback;
+- `/graph` review surface;
+- OpenRouter embedding and grounded-answer clients.
+
 ## Core contracts
 
 Memory items use this shape conceptually:
@@ -178,7 +206,7 @@ packages/db/               Supabase RPC repository and SQL migrations
 packages/evidence/         text normalization, hashing, evidence spans
 packages/memory-generation/ capture, workflow, recall
 packages/memory-synthesis/ brief evidence and traceability validation
-packages/model-gateway/    OpenRouter structured calls
+packages/model-gateway/    OpenRouter structured calls, embeddings, grounded answers
 packages/validation/       memory validation
 evals/fixtures/            Stable labeled fixtures
 evals/runners/             fixture/live smoke runners
@@ -206,6 +234,8 @@ Current coverage:
 - cited recall;
 - brief traceability validation;
 - OpenRouter request/response parsing;
+- embedding dimension and grounded-answer citation validation;
+- loop routing and policy behavior through in-memory persistence;
 - Stable fixture schema validation.
 
 Recommended next coverage:
@@ -223,6 +253,7 @@ Recommended next coverage:
 - Add a safe `reset:stable` script for pilots.
 - Add automated deployed smoke coverage for both pages.
 - Add duplicate/contradiction candidate detection.
+- Broaden contradiction detection beyond deterministic shared-subject polarity checks.
 - Add basic observability for latency, fallback model use, and failure reasons.
 
 ## Deferred
@@ -235,6 +266,6 @@ Recommended next coverage:
 - source connectors;
 - SSO/RBAC;
 - source-level ACLs;
-- canonical entity/schema promotion workflow;
-- graph retrieval;
+- human-reviewed canonical entity/schema promotion workflow;
+- vector-ranked/PPR graph retrieval;
 - continuous freshness checks.

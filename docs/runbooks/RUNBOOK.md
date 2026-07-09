@@ -29,8 +29,15 @@ SUPABASE_URL=...
 SUPABASE_SECRET_KEY=...
 OPENROUTER_API_KEY=...
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-OPENROUTER_MODEL=moonshotai/kimi-k2.7-code
+OPENROUTER_MODEL=deepseek/deepseek-v4-flash
 OPENROUTER_FALLBACK_MODELS=~moonshotai/kimi-latest,moonshotai/kimi-k2.6
+OPENROUTER_TIMEOUT_MS=30000
+OPENROUTER_FALLBACK_TIMEOUT_MS=45000
+EMBEDDING_PROVIDER=openrouter
+EMBEDDING_BASE_URL=https://openrouter.ai/api/v1
+EMBEDDING_MODEL=google/gemini-embedding-001
+EMBEDDING_DIMENSIONS=1536
+EMBEDDING_ENCODING_FORMAT=float
 DISTILLERY_APP_PASSWORD=...
 ```
 
@@ -70,7 +77,7 @@ done
 Apply only the latest migration after pulling new code:
 
 ```bash
-psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0009_synthesize_brief_policy.sql
+psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0010_claim_graph_memory_upgrade.sql
 ```
 
 Do not run migrations from the Cloudflare Worker. Migrations require `DATABASE_DIRECT_URL` from local/CI.
@@ -86,6 +93,7 @@ Current migration set:
 - `0007_loop_system.sql` — canonical loop tables, router/executor RPCs, proposed event commit path, and text capture `source_committed` write.
 - `0008_loop_status_read_model.sql` — loop status read model for UI/API inspection.
 - `0009_synthesize_brief_policy.sql` — `synthesize_brief` policy constraint, synthesis context RPC, semantic memory JSON projection, and atomic artifact-draft-to-initiative-brief commit path.
+- `0010_claim_graph_memory_upgrade.sql` — claim graph pilot tables, memory-to-claim graph triggers, graph projection/retrieval RPCs, connection review, conflict resolution, claim preferences, generic `memory_embeddings`, and graph policy/event constraints.
 
 ## Seed Stable starter data
 
@@ -145,6 +153,8 @@ Manual check:
 9. Generate a brief draft. To test related-memory expansion through the API, call `POST /api/initiative-brief-drafts` with `expandRelatedMemory: true`.
 10. Edit/save a brief.
 11. Approve or reject it.
+12. Open `/graph`.
+13. Rebuild the graph if needed, inspect clusters, and test connection review, conflict resolution, pin, and exclude actions.
 
 ## Deploy to Cloudflare
 
@@ -193,6 +203,8 @@ App routes:
 
 - `GET /` — capture/recall UI.
 - `GET /synthesis` — synthesis/brief review UI.
+- `GET /graph` — claim graph review UI.
+- `GET /assets/d3-local.js` — locally vendored D3 asset for the graph UI.
 
 Session:
 
@@ -200,12 +212,12 @@ Session:
 - `POST /logout` — clears cookie.
 - `GET /api/session` — checks current session.
 
-Memory Generation:
+Memory Generation and Recall:
 
 - `POST /api/ingestions` — stores text evidence, commits `source_committed`, routes pending work, and wakes the loop runner.
 - `GET /api/ingestions/{id}` — returns ingestion status, evidence, and memory items.
 - `GET /api/loop-status` — returns UI-safe loop stages, timeline, and recent activity. Optional query params: `ingestionId`, `limit`.
-- `POST /api/queries` — deterministic cited recall.
+- `POST /api/queries` — graph-grounded cited recall with deterministic lexical fallback.
 
 Memory review:
 
@@ -220,3 +232,14 @@ Memory Synthesis:
 - `GET /api/initiative-briefs` — list briefs.
 - `GET /api/initiative-briefs/{id}` — inspect one brief.
 - `POST /api/initiative-briefs/{id}/decisions` — approve/reject.
+
+Claim Graph:
+
+- `GET /api/graph/clusters` — list graph clusters.
+- `GET /api/graph/clusters/{id}` — inspect one graph cluster with claims, connections, and conflicts.
+- `GET /api/graph/claims/{id}` — inspect one graph claim.
+- `POST /api/graph/rebuild` — rebuild graph projection rows from current memory/claim state.
+- `POST /api/graph/connections/{id}/review` — accept or reject a proposed claim connection.
+- `POST /api/graph/conflicts/{id}/resolve` — resolve or dismiss a conflict group.
+- `POST /api/graph/claims/{id}/pin` — pin or unpin a claim for review/synthesis.
+- `POST /api/graph/claims/{id}/exclude-from-synthesis` — include or exclude a claim from synthesis.

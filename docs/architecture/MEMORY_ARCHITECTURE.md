@@ -8,9 +8,12 @@ The current implementation borrows the MemGraphRAG separation partially:
 - memory items use `claimType`;
 - memory items include `entities`, `relations`, and `schemas`;
 - schema entries are candidates only;
-- there is no canonical entity/schema promotion workflow yet;
-- there is no graph retrieval or Personalized PageRank yet;
-- conflict detection/resolution is not implemented yet.
+- migration `0010_claim_graph_memory_upgrade.sql` projects memory into observations, claims, claim evidence, promoted entities/predicates/schema patterns, claim connections, conflict groups, graph nodes, and graph edges;
+- graph recall, graph clusters, connection review, conflict resolution, claim pinning, and synthesis exclusion are implemented as a pilot;
+- OpenRouter embeddings can be stored during extraction when embedding env vars are configured;
+- there is no human-reviewed canonical entity/schema promotion workflow yet;
+- graph retrieval is lexical/neighborhood based and does not use vector ranking or Personalized PageRank yet;
+- contradiction detection is deterministic and narrow, not a production-grade adjudication system.
 
 Use [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md) for current project state. Use this file for design rationale and future memory-layer direction.
 
