@@ -17,6 +17,7 @@
       "@distillery/contracts": ["packages/contracts/src/index.ts"],
       "@distillery/evidence": ["packages/evidence/src/index.ts"],
       "@distillery/validation": ["packages/validation/src/index.ts"],
+      "@distillery/prompts": ["packages/prompts/src/index.ts"],
       "@distillery/model-gateway": ["packages/model-gateway/src/index.ts"],
       "@distillery/loop": ["packages/loop/src/index.ts"],
       "@distillery/db": ["packages/db/src/index.ts"],

@@ -20,3 +20,6 @@ coverage/
 *.log
 tmp/
 .turbo/
+
+.pnpm-store/
+

@@ -8,6 +8,7 @@
     "@distillery/memory-generation": "workspace:*",
     "@distillery/memory-synthesis": "workspace:*",
     "@distillery/model-gateway": "workspace:*",
+    "@distillery/prompts": "workspace:*",
     "@distillery/validation": "workspace:*"
   },
   "exports": {

@@ -19,6 +19,14 @@ import {
   EPISTEMIC_STATUSES,
   MEMORY_SCHEMA_STATUSES,
 } from "@distillery/contracts";
+import {
+  groundedAnswerSystemPrompt,
+  initiativeBriefDraftSystemPrompt,
+  memoryGenerationSystemPrompt,
+  renderGroundedAnswerInputForModel,
+  renderInitiativeBriefDraftInputForModel,
+  renderMemoryGenerationInputForModel,
+} from "@distillery/prompts";
 import { jsonrepair } from "jsonrepair";
 
 export type MemoryGenerationRequest = {
@@ -286,7 +294,7 @@ export class OpenRouterMemoryGenerationModel implements MemoryGenerationModel {
               },
               {
                 role: "user",
-                content: renderEvidenceForModel(request.evidenceSpans),
+                content: renderMemoryGenerationInputForModel(request),
               },
             ],
             response_format: {
@@ -597,116 +605,6 @@ export class OpenRouterGroundedAnswerModel implements GroundedAnswerModel {
       clearTimeout(timeout);
     }
   }
-}
-
-export function memoryGenerationSystemPrompt(): string {
-  return [
-    "You are Distillery's Memory Generation step for Stable.",
-    "Extract only source-backed memory items from the provided text spans.",
-    "Do not create initiatives, PRDs, tasks, recommendations, or product priorities.",
-    "Do not hide uncertainty. If a statement is a decision report, use decision_reported.",
-    "If evidence is weak, use inferred or assumption only when the inference is clearly labeled and supported by supplied span IDs.",
-    "Every item must cite one or more supplied evidenceSpanIds exactly.",
-    `Allowed claim types: ${CLAIM_TYPES.join(", ")}.`,
-    `Allowed epistemic statuses: ${EPISTEMIC_STATUSES.join(", ")}.`,
-    "For each item, include entities, relations, and schema candidates as interpretation metadata only; they are not standalone evidence.",
-    "Every relation must cite one or more evidenceSpanIds already cited by its parent memory item.",
-    "Generated schemas must be abstract patterns with status candidate unless an existing reviewed schema is explicitly supplied.",
-    "Output must be a single minified JSON object.",
-    "Do not include markdown, comments, trailing commas, or unescaped line breaks inside strings.",
-    "Return valid JSON matching the requested schema.",
-  ].join("\n");
-}
-
-export function initiativeBriefDraftSystemPrompt(): string {
-  return [
-    "You are Distillery's Memory Synthesis drafting step for Stable.",
-    "Create a concise, reviewable initiative brief draft from only the selected memory and evidence.",
-    "Do not invent customers, metrics, approvals, owners, dependencies, or timelines.",
-    "If a claim is weak, unresolved, or only a reported signal, make that uncertainty visible.",
-    "The draft is not a PRD. Keep it short and suitable for executive review.",
-    "Use every selected memoryItemId and every selected evidenceSpanId exactly as supplied.",
-    "Output must be a single minified JSON object.",
-    "Do not include markdown, comments, trailing commas, or unescaped line breaks inside strings.",
-    "Return valid JSON matching the requested schema.",
-  ].join("\n");
-}
-
-export function groundedAnswerSystemPrompt(): string {
-  return [
-    "You are Distillery's grounded Ask answer writer.",
-    "Use only the supplied claims, evidence, and conflicts.",
-    "Every substantive answer sentence or bullet must be supported by the supplied evidence IDs.",
-    "Cite only supplied evidenceSpanIds and claim IDs.",
-    "Call out missing, partial, stale, or conflicted evidence. Do not resolve open conflicts as fact.",
-    "Do not invent owners, metrics, dates, decisions, dependencies, launch states, or causality.",
-    "Output must be a single minified JSON object matching the requested schema.",
-  ].join("\n");
-}
-
-export function renderEvidenceForModel(spans: EvidenceSpan[]): string {
-  return spans
-    .map((span) =>
-      [
-        `<evidence id="${span.id}" lines="${span.startLine}-${span.endLine}">`,
-        span.text,
-        "</evidence>",
-      ].join("\n"),
-    )
-    .join("\n\n");
-}
-
-export function renderInitiativeBriefDraftInputForModel(request: InitiativeBriefDraftRequest): string {
-  const intent = request.intent?.trim()
-    ? `<intent>${request.intent.trim()}</intent>\n\n`
-    : "";
-  const memory = request.memoryItems
-    .map((item) =>
-      [
-        `<memory id="${item.id}" claimType="${item.claimType}" epistemicStatus="${item.epistemicStatus}" evidenceSpanIds="${
-          item.evidenceSpanIds.join(",")
-        }">`,
-        item.statement,
-        `<entities>${JSON.stringify(item.entities)}</entities>`,
-        `<relations>${JSON.stringify(item.relations)}</relations>`,
-        `<schemas>${JSON.stringify(item.schemas)}</schemas>`,
-        "</memory>",
-      ].join("\n"),
-    )
-    .join("\n\n");
-  const evidence = renderEvidenceForModel(request.evidenceSpans);
-
-  return `${intent}<selected_memory>\n${memory}\n</selected_memory>\n\n<selected_evidence>\n${evidence}\n</selected_evidence>`;
-}
-
-export function renderGroundedAnswerInputForModel(request: GroundedAnswerRequest): string {
-  const claims = request.claims
-    .map((record) =>
-      [
-        `<claim id="${record.claim.id}" claimType="${record.claim.claimType}" epistemicStatus="${record.claim.epistemicStatus}" evidenceSpanIds="${record.claim.evidenceSpanIds.join(",")}">`,
-        record.claim.statement,
-        "</claim>",
-      ].join("\n"),
-    )
-    .join("\n\n");
-  const evidence = renderEvidenceForModel(request.evidenceSpans);
-  const conflicts = request.conflicts
-    .map((conflict) =>
-      [
-        `<conflict id="${conflict.id}" type="${conflict.conflictType}" severity="${conflict.severity}" status="${conflict.status}">`,
-        conflict.summary,
-        `<members>${JSON.stringify(conflict.members)}</members>`,
-        "</conflict>",
-      ].join("\n"),
-    )
-    .join("\n\n");
-
-  return [
-    `<question>${request.question}</question>`,
-    `<retrieved_claims>${claims}</retrieved_claims>`,
-    `<retrieved_evidence>${evidence}</retrieved_evidence>`,
-    `<conflicts>${conflicts}</conflicts>`,
-  ].join("\n\n");
 }
 
 export function validateGroundedAnswerCitations(

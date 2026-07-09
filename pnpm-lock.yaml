@@ -96,6 +96,9 @@ importers:
       '@distillery/model-gateway':
         specifier: workspace:*
         version: link:../model-gateway
+      '@distillery/prompts':
+        specifier: workspace:*
+        version: link:../prompts
       '@distillery/validation':
         specifier: workspace:*
         version: link:../validation
@@ -111,6 +114,9 @@ importers:
       '@distillery/model-gateway':
         specifier: workspace:*
         version: link:../model-gateway
+      '@distillery/prompts':
+        specifier: workspace:*
+        version: link:../prompts
       '@distillery/validation':
         specifier: workspace:*
         version: link:../validation
@@ -126,9 +132,18 @@ importers:
       '@distillery/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@distillery/prompts':
+        specifier: workspace:*
+        version: link:../prompts
       jsonrepair:
         specifier: ^3.15.0
         version: 3.15.0
+
+  packages/prompts:
+    dependencies:
+      '@distillery/contracts':
+        specifier: workspace:*
+        version: link:../contracts
 
   packages/validation:
     dependencies:

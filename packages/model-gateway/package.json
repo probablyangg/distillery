@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@distillery/contracts": "workspace:*",
+    "@distillery/prompts": "workspace:*",
     "jsonrepair": "^3.15.0"
   },
   "exports": {

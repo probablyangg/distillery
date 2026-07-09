@@ -12,10 +12,11 @@ import type {
 } from "@distillery/contracts";
 import { createTextEvidenceBundle } from "@distillery/evidence";
 import type { MemoryGenerationModel } from "@distillery/model-gateway";
+import { MEMORY_PROMPT_VERSION } from "@distillery/prompts";
 import { validateGeneratedMemory } from "@distillery/validation";
 
 export const MEMORY_GENERATION_VERSION = "memory-generation-v0.1";
-export const MEMORY_PROMPT_VERSION = "stable-memory-prompt-v0.1";
+export { MEMORY_PROMPT_VERSION };
 export const MEMORY_SCHEMA_VERSION = "generated-memory-batch-v0.2";
 export const DEFAULT_TENANT_ID = "stable";
 

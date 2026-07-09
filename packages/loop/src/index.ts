@@ -26,6 +26,7 @@ import {
 } from "@distillery/memory-generation";
 import type { InitiativeBriefDraftModel, MemoryGenerationModel } from "@distillery/model-gateway";
 import type { EmbeddingModel } from "@distillery/model-gateway";
+import { renderSynthesisIntent } from "@distillery/prompts";
 import {
   MEMORY_SYNTHESIS_VERSION,
   buildSynthesisBundle,
@@ -1843,17 +1844,6 @@ function uniqueEvidenceSpans(spans: EvidenceSpan[]): EvidenceSpan[] {
     seen.add(span.id);
     return true;
   });
-}
-
-function renderSynthesisIntent(bundle: SynthesisBundle): string {
-  return [
-    "Draft an initiative brief only from the selected memory and evidence.",
-    `Seed memory: ${bundle.seedMemoryItemIds.join(", ")}`,
-    `Connection reasons: ${bundle.connections.map((connection) => `${connection.reason}(${connection.fromMemoryItemId}->${connection.toMemoryItemId})`).join(", ")}`,
-    bundle.readiness.warningReasons.length > 0
-      ? `Warnings to surface: ${bundle.readiness.warningReasons.join("; ")}`
-      : "",
-  ].filter(Boolean).join("\n");
 }
 
 function defaultNewId(prefix: string): string {
