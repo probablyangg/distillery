@@ -6,6 +6,8 @@ import {
   type EventType,
   type EvidenceSpan,
   type GeneratedMemoryBatch,
+  type GraphEdge,
+  type GraphNode,
   type InitiativeBrief,
   type LedgerEvent,
   type MemoryEntity,
@@ -25,8 +27,14 @@ import {
   type CommittableMemoryItem,
   type IngestionContext,
 } from "@distillery/memory-generation";
-import type { InitiativeBriefDraftModel, MemoryGenerationModel } from "@distillery/model-gateway";
+import type { InitiativeBriefDraftModel, MemoryGenerationModel, RetrievalRerankerModel } from "@distillery/model-gateway";
 import type { EmbeddingModel } from "@distillery/model-gateway";
+import {
+  retrieveMemoryContext,
+  type MemoryRetrievalPersistence,
+  type RetrievalCandidate,
+  type RetrievalGraphSnapshot,
+} from "@distillery/memory-retrieval";
 import { renderSynthesisIntent } from "@distillery/prompts";
 import {
   MEMORY_SYNTHESIS_VERSION,
@@ -123,7 +131,7 @@ export type DetectContradictionInput = PolicyInputEnvelope<{
   memory: MemoryWithEvidence[];
 }>;
 
-export type LoopPersistence = {
+export type LoopPersistence = MemoryRetrievalPersistence & {
   commitLedgerEventWithOutbox(input: Omit<LedgerEvent, "createdAt"> & { createdAt?: string }): Promise<LedgerEvent>;
   claimEventOutboxRow(): Promise<EventOutboxRow | null>;
   loadLedgerEvent(id: string): Promise<LedgerEvent | null>;
@@ -276,6 +284,7 @@ export function createPolicies(args: {
   persistence: LoopPersistence;
   memoryModel: MemoryGenerationModel;
   embeddingModel?: EmbeddingModel;
+  retrievalRerankerModel?: RetrievalRerankerModel;
   initiativeBriefDraftModel?: InitiativeBriefDraftModel;
   newId?: (prefix: string) => string;
 }): Record<PolicyName, Policy<unknown, PolicyOutput>> {
@@ -390,12 +399,6 @@ export async function executeWorkItem(args: {
       }
     }
 
-    if (!validation.ok) {
-      await args.persistence.failPendingWork(workItem.id, renderIssues(validation.issues));
-    } else {
-      await args.persistence.completePendingWork(workItem.id);
-    }
-
     await args.persistence.completePolicyRun(policyRun.id, {
       provider: output.provider,
       model: output.model,
@@ -410,6 +413,12 @@ export async function executeWorkItem(args: {
       completedAt: now(),
       latencyMs: Date.now() - Date.parse(startedAt),
     });
+
+    if (!validation.ok) {
+      await args.persistence.failPendingWork(workItem.id, renderIssues(validation.issues));
+    } else {
+      await args.persistence.completePendingWork(workItem.id);
+    }
 
     return { workItem, proposedEvents };
   } catch (error) {
@@ -430,6 +439,8 @@ export class InMemoryLoopPersistence implements LoopPersistence {
   readonly conflictGroups = new Map<string, ConflictGroup>();
   readonly ingestionContextsBySourceVersionId = new Map<string, IngestionContext>();
   readonly memorySynthesisContext = new Map<string, MemoryWithEvidence>();
+  readonly retrievalGraphNodes = new Map<string, GraphNode>();
+  readonly retrievalGraphEdges = new Map<string, GraphEdge>();
   readonly initiativeBriefs = new Map<string, InitiativeBrief>();
   readonly committedMemory: CommittableMemoryItem[] = [];
   readonly extractionRuns: unknown[] = [];
@@ -791,6 +802,133 @@ export class InMemoryLoopPersistence implements LoopPersistence {
       .slice(0, input.limit);
   }
 
+  async getRetrievalVectorCandidates(input: {
+    tenantId: string;
+    queryEmbedding: number[];
+    targetTypes: Array<"claim" | "evidence_span" | "entity" | "schema_pattern">;
+    limit: number;
+    embeddingModel?: string;
+  }): Promise<RetrievalCandidate[]> {
+    const candidates = this.memoryEmbeddings
+      .filter((embedding) =>
+        embedding.tenantId === input.tenantId &&
+        input.targetTypes.includes(embedding.targetType) &&
+        (!input.embeddingModel || embedding.embeddingModel === input.embeddingModel)
+      )
+      .map((embedding): RetrievalCandidate => ({
+        source: "vector",
+        targetType: embedding.targetType,
+        targetId: embedding.targetId,
+        nodeId: nodeIdForEmbeddingTarget(embedding.targetType, embedding.targetId),
+        ...(embedding.targetType === "claim" ? { claimId: embedding.targetId } : {}),
+        score: cosineSimilarity(input.queryEmbedding, embedding.embedding),
+      }))
+      .sort((left, right) => right.score - left.score || left.nodeId.localeCompare(right.nodeId))
+      .slice(0, input.limit);
+    return candidates;
+  }
+
+  async getRetrievalSparseCandidates(input: {
+    tenantId: string;
+    queryText: string;
+    limit: number;
+  }): Promise<RetrievalCandidate[]> {
+    const tokens = tokenize(input.queryText);
+    return [...this.memorySynthesisContext.values()]
+      .filter((record) => record.memoryItem.reviewState !== "removed" && record.memoryItem.reviewState !== "superseded")
+      .map((record): RetrievalCandidate => {
+        const haystack = normalizeText([
+          record.memoryItem.statement,
+          ...record.evidenceSpans.map((span) => span.text),
+          ...record.memoryItem.entities.map((entity) => entity.canonicalName ?? entity.name),
+          ...record.memoryItem.schemas.map((schema) => schema.predicate),
+        ].join(" "));
+        const score = tokens.reduce((sum, token) => sum + (haystack.includes(token) ? 1 : 0), 0);
+        return {
+          source: "sparse",
+          targetType: "claim",
+          targetId: record.memoryItem.id,
+          nodeId: `claim:${record.memoryItem.id}`,
+          claimId: record.memoryItem.id,
+          score,
+        };
+      })
+      .filter((candidate) => candidate.score > 0)
+      .sort((left, right) => right.score - left.score || left.targetId.localeCompare(right.targetId))
+      .slice(0, input.limit);
+  }
+
+  async getRetrievalGraphSnapshot(input: {
+    tenantId: string;
+    seedNodeIds: string[];
+    maxNodes: number;
+    maxEdges: number;
+  }): Promise<RetrievalGraphSnapshot> {
+    this.ensureDefaultRetrievalGraph(input.tenantId);
+    const selected = new Set(input.seedNodeIds);
+    for (let depth = 0; depth < 2; depth += 1) {
+      for (const edge of this.retrievalGraphEdges.values()) {
+        if (edge.tenantId !== input.tenantId) continue;
+        if (selected.has(edge.fromNodeId)) selected.add(edge.toNodeId);
+        if (selected.has(edge.toNodeId)) selected.add(edge.fromNodeId);
+        if (selected.size >= input.maxNodes) break;
+      }
+    }
+    const nodes = [...selected]
+      .map((id) => this.retrievalGraphNodes.get(id))
+      .filter((node): node is GraphNode => Boolean(node))
+      .slice(0, input.maxNodes);
+    const nodeSet = new Set(nodes.map((node) => node.id));
+    const edges = [...this.retrievalGraphEdges.values()]
+      .filter((edge) => edge.tenantId === input.tenantId && nodeSet.has(edge.fromNodeId) && nodeSet.has(edge.toNodeId))
+      .slice(0, input.maxEdges);
+    return { nodes, edges };
+  }
+
+  async hydrateRetrievalClaims(input: {
+    tenantId: string;
+    rankedClaims: Array<{
+      claimId: string;
+      rank: number;
+      graphScore: number;
+      vectorScore: number;
+      lexicalScore: number;
+    }>;
+  }): Promise<{ claims: Array<{
+    claim: MemoryWithEvidence["memoryItem"];
+    evidenceSpans: EvidenceSpan[];
+    rank: number;
+    graphScore: number;
+    lexicalScore: number;
+    vectorScore: number;
+    connectionIds: string[];
+  }>; conflicts: ConflictGroup[] }> {
+    const claims = input.rankedClaims
+      .map((ranked) => {
+        const record = this.memorySynthesisContext.get(ranked.claimId);
+        if (!record) return null;
+        return {
+          claim: record.memoryItem,
+          evidenceSpans: record.evidenceSpans,
+          rank: ranked.rank,
+          graphScore: ranked.graphScore,
+          lexicalScore: ranked.lexicalScore,
+          vectorScore: ranked.vectorScore,
+          connectionIds: [...this.claimConnections.values()]
+            .filter((connection) => connection.fromClaimId === ranked.claimId || connection.toClaimId === ranked.claimId)
+            .map((connection) => connection.id),
+        };
+      })
+      .filter((claim): claim is NonNullable<typeof claim> => Boolean(claim));
+    const claimIds = new Set(claims.map((claim) => claim.claim.id));
+    return {
+      claims,
+      conflicts: [...this.conflictGroups.values()].filter((conflict) =>
+        conflict.status === "open" && conflict.members.some((member) => claimIds.has(member.claimId))
+      ),
+    };
+  }
+
   seedIngestionContext(context: IngestionContext): void {
     this.ingestionContextsBySourceVersionId.set(context.sourceVersionId, context);
   }
@@ -799,6 +937,11 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     for (const record of records) {
       this.memorySynthesisContext.set(record.memoryItem.id, record);
     }
+  }
+
+  seedRetrievalGraph(input: { nodes: GraphNode[]; edges: GraphEdge[] }): void {
+    for (const node of input.nodes) this.retrievalGraphNodes.set(node.id, node);
+    for (const edge of input.edges) this.retrievalGraphEdges.set(edge.id, edge);
   }
 
   nextId(prefix: string): string {
@@ -810,6 +953,98 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     const value = map.get(id);
     if (!value) throw new Error(`${label} not found: ${id}`);
     return value;
+  }
+
+  private ensureDefaultRetrievalGraph(tenantId: string): void {
+    for (const record of this.memorySynthesisContext.values()) {
+      const claimNodeId = `claim:${record.memoryItem.id}`;
+      if (!this.retrievalGraphNodes.has(claimNodeId)) {
+        this.retrievalGraphNodes.set(claimNodeId, {
+          id: claimNodeId,
+          tenantId,
+          nodeType: "claim",
+          refId: record.memoryItem.id,
+          label: record.memoryItem.statement.slice(0, 120),
+          properties: { claimType: record.memoryItem.claimType },
+        });
+      }
+
+      for (const span of record.evidenceSpans) {
+        const evidenceNodeId = `evidence:${span.id}`;
+        this.retrievalGraphNodes.set(evidenceNodeId, {
+          id: evidenceNodeId,
+          tenantId,
+          nodeType: "evidence",
+          refId: span.id,
+          label: span.id,
+          properties: {},
+        });
+        this.retrievalGraphEdges.set(`edge:${record.memoryItem.id}:evidence:${span.id}`, {
+          id: `edge:${record.memoryItem.id}:evidence:${span.id}`,
+          tenantId,
+          fromNodeId: claimNodeId,
+          toNodeId: evidenceNodeId,
+          edgeType: "supported_by",
+          weight: 1,
+          properties: {},
+        });
+      }
+
+      for (const entity of record.memoryItem.entities) {
+        const entityNodeId = `entity:${normalizeText(entity.canonicalName ?? entity.name).replaceAll(" ", "_")}`;
+        this.retrievalGraphNodes.set(entityNodeId, {
+          id: entityNodeId,
+          tenantId,
+          nodeType: "entity",
+          refId: entity.canonicalName ?? entity.name,
+          label: entity.canonicalName ?? entity.name,
+          properties: { entityType: entity.entityType },
+        });
+        this.retrievalGraphEdges.set(`edge:${record.memoryItem.id}:entity:${entityNodeId}`, {
+          id: `edge:${record.memoryItem.id}:entity:${entityNodeId}`,
+          tenantId,
+          fromNodeId: claimNodeId,
+          toNodeId: entityNodeId,
+          edgeType: "mentions",
+          weight: 0.8,
+          properties: {},
+        });
+      }
+
+      for (const schema of record.memoryItem.schemas) {
+        const schemaNodeId = `schema:${normalizeText(`${schema.subjectType}:${schema.predicate}:${schema.objectType}`).replaceAll(" ", "_")}`;
+        this.retrievalGraphNodes.set(schemaNodeId, {
+          id: schemaNodeId,
+          tenantId,
+          nodeType: "schema",
+          refId: `${schema.subjectType}:${schema.predicate}:${schema.objectType}`,
+          label: `${schema.subjectType} ${schema.predicate} ${schema.objectType}`,
+          properties: { status: schema.status },
+        });
+        this.retrievalGraphEdges.set(`edge:${record.memoryItem.id}:schema:${schemaNodeId}`, {
+          id: `edge:${record.memoryItem.id}:schema:${schemaNodeId}`,
+          tenantId,
+          fromNodeId: claimNodeId,
+          toNodeId: schemaNodeId,
+          edgeType: "matches_schema",
+          weight: 0.65,
+          properties: {},
+        });
+      }
+    }
+
+    for (const connection of this.claimConnections.values()) {
+      if (connection.tenantId !== tenantId || connection.status === "rejected") continue;
+      this.retrievalGraphEdges.set(`edge:connection:${connection.id}`, {
+        id: `edge:connection:${connection.id}`,
+        tenantId,
+        fromNodeId: `claim:${connection.fromClaimId}`,
+        toNodeId: `claim:${connection.toClaimId}`,
+        edgeType: connection.connectionType,
+        weight: Math.max(0.1, connection.confidence),
+        properties: { connectionId: connection.id, status: connection.status },
+      });
+    }
   }
 
   private createInitiativeBriefDraftFromProposal(proposal: ProposedEvent): void {
@@ -1190,6 +1425,8 @@ function createDetectContradictionPolicy(args: {
 
 function createSynthesizeBriefPolicy(args: {
   persistence: LoopPersistence;
+  embeddingModel?: EmbeddingModel;
+  retrievalRerankerModel?: RetrievalRerankerModel;
   initiativeBriefDraftModel?: InitiativeBriefDraftModel;
   newId?: (prefix: string) => string;
 }): Policy<SynthesizeBriefInput, PolicyOutput> {
@@ -1202,15 +1439,25 @@ function createSynthesizeBriefPolicy(args: {
       if (!ledgerEvent) throw new Error(`causing ledger event not found: ${workItem.causedByEventId}`);
 
       const seedMemoryItemIds = extractSeedMemoryItemIds(ledgerEvent.payload);
-      const context = await args.persistence.getMemorySynthesisContext({
+      const retrievalContext = await retrieveMemoryContext({
         tenantId: ledgerEvent.tenantId,
+        profile: "synthesis",
+        queryText: seedMemoryItemIds.length > 0
+          ? `Synthesize initiative context around memory ${seedMemoryItemIds.join(", ")}.`
+          : "Synthesize initiative context from recently committed memory.",
         seedMemoryItemIds,
-        limit: 100,
+        ...(args.embeddingModel ? { embeddingModel: args.embeddingModel } : {}),
+        ...(args.retrievalRerankerModel ? { rerankerModel: args.retrievalRerankerModel } : {}),
+        persistence: args.persistence,
       });
+      const context = retrievalContext.claims.map((claim) => ({
+        memoryItem: claim.claim,
+        evidenceSpans: claim.evidenceSpans,
+      }));
       const { bundle, selectedMemory } = buildSynthesisBundle({
         seedMemoryItemIds,
         memory: context,
-        maxMemoryItems: 8,
+        maxMemoryItems: 32,
       });
       const input = {
         tenantId: ledgerEvent.tenantId,
@@ -1235,6 +1482,7 @@ function createSynthesizeBriefPolicy(args: {
           selectedEvidenceSpanIds: bundle.selectedEvidenceSpanIds,
           connectionReasons: bundle.connections.map((connection) => connection.reason),
           readiness: bundle.readiness,
+          retrievalMetadata: retrievalContext.metadata,
         },
       };
     },
@@ -1524,23 +1772,23 @@ async function generateAndStoreEmbeddings(args: {
       targetId: span.id,
       content: span.text,
     })),
-    ...args.items.flatMap((item) =>
-      item.entities.map((entity) => {
-        const canonicalName = entity.canonicalName ?? entity.name;
-        return {
-          targetType: "entity" as const,
-          targetId: stableEntityId(args.tenantId, canonicalName, entity.entityType),
-          content: `${canonicalName} (${entity.entityType})`,
-        };
-      })
-    ),
-    ...args.items.flatMap((item) =>
-      item.schemas.map((schema) => ({
-        targetType: "schema_pattern" as const,
-        targetId: stableSchemaId(args.tenantId, schema.subjectType, schema.predicate, schema.objectType),
-        content: `${schema.subjectType} ${schema.predicate} ${schema.objectType}`,
-      }))
-    ),
+	    ...args.items.flatMap((item) =>
+	      item.entities.map((entity) => {
+	        const canonicalName = entity.canonicalName ?? entity.name;
+	        return {
+	          targetType: "entity" as const,
+	          targetId: canonicalName,
+	          content: `${canonicalName} (${entity.entityType})`,
+	        };
+	      })
+	    ),
+	    ...args.items.flatMap((item) =>
+	      item.schemas.map((schema) => ({
+	        targetType: "schema_pattern" as const,
+	        targetId: `${schema.subjectType}:${schema.predicate}:${schema.objectType}`,
+	        content: `${schema.subjectType} ${schema.predicate} ${schema.objectType}`,
+	      }))
+	    ),
   ]);
 
   const embeddings: Array<{
@@ -1727,23 +1975,6 @@ function uniqueEmbeddingTargets<T extends {
     seen.add(key);
     return true;
   });
-}
-
-function stableEntityId(tenantId: string, canonicalName: string, entityType: string): string {
-  return `entity_${syncHash(`${tenantId}:${canonicalName.toLowerCase()}:${entityType.toLowerCase()}`)}`;
-}
-
-function stableSchemaId(tenantId: string, subjectType: string, predicate: string, objectType: string): string {
-  return `schema_${syncHash(`${tenantId}:${subjectType.toLowerCase()}:${predicate.toLowerCase()}:${objectType.toLowerCase()}`)}`;
-}
-
-function syncHash(input: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 function scoreConnection(
@@ -1958,6 +2189,33 @@ function jaccard(left: string[], right: string[]): number {
     if (rightSet.has(value)) intersection += 1;
   }
   return intersection / (leftSet.size + rightSet.size - intersection);
+}
+
+function cosineSimilarity(left: number[], right: number[]): number {
+  const length = Math.min(left.length, right.length);
+  if (length === 0) return 0;
+  let dot = 0;
+  let leftNorm = 0;
+  let rightNorm = 0;
+  for (let index = 0; index < length; index += 1) {
+    const leftValue = left[index] ?? 0;
+    const rightValue = right[index] ?? 0;
+    dot += leftValue * rightValue;
+    leftNorm += leftValue * leftValue;
+    rightNorm += rightValue * rightValue;
+  }
+  if (leftNorm === 0 || rightNorm === 0) return 0;
+  return Math.max(0, dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm)));
+}
+
+function nodeIdForEmbeddingTarget(
+  targetType: "claim" | "evidence_span" | "entity" | "schema_pattern",
+  targetId: string,
+): string {
+  if (targetType === "claim") return `claim:${targetId}`;
+  if (targetType === "evidence_span") return `evidence:${targetId}`;
+  if (targetType === "entity") return `entity:${targetId}`;
+  return `schema:${targetId}`;
 }
 
 function uniqueStrings(values: string[]): string[] {

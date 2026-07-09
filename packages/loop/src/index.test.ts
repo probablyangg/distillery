@@ -378,6 +378,30 @@ describe("loop system", () => {
     expect(store.pendingWorkItems.get(workItem.id)?.startedAt).toBeTruthy();
   });
 
+  it("finalizes policy run metadata before completing pending work", async () => {
+    const store = new OrderedLoopPersistence();
+    store.seedIngestionContext({
+      ingestionId: "ing_1",
+      tenantId: "stable",
+      sourceVersionId: "srcv_1",
+      evidenceSpans: [evidenceSpan],
+    });
+    const workItem = await routeSourceToWork(store);
+
+    await executeWorkItem({
+      persistence: store,
+      policies: createPolicies({
+        persistence: store,
+        memoryModel: modelWithValidMemory(),
+        newId: deterministicId(),
+      }),
+      workItemId: workItem.id,
+      newId: deterministicId(),
+    });
+
+    expect(store.calls.indexOf("completePolicyRun")).toBeLessThan(store.calls.indexOf("completePendingWork"));
+  });
+
   it("policy output creates proposed_events before auto-commit domain writes", async () => {
     const store = seededStore();
     const workItem = await routeSourceToWork(store);
@@ -778,6 +802,23 @@ function seededStore(): InMemoryLoopPersistence {
     evidenceSpans: [evidenceSpan],
   });
   return store;
+}
+
+class OrderedLoopPersistence extends InMemoryLoopPersistence {
+  readonly calls: string[] = [];
+
+  override async completePolicyRun(
+    id: string,
+    input: Parameters<InMemoryLoopPersistence["completePolicyRun"]>[1],
+  ): Promise<void> {
+    this.calls.push("completePolicyRun");
+    await super.completePolicyRun(id, input);
+  }
+
+  override async completePendingWork(id: string): Promise<void> {
+    this.calls.push("completePendingWork");
+    await super.completePendingWork(id);
+  }
 }
 
 async function commitSource(store: InMemoryLoopPersistence) {

@@ -6,6 +6,7 @@
   "dependencies": {
     "@distillery/contracts": "workspace:*",
     "@distillery/memory-generation": "workspace:*",
+    "@distillery/memory-retrieval": "workspace:*",
     "@distillery/memory-synthesis": "workspace:*",
     "@distillery/model-gateway": "workspace:*",
     "@distillery/prompts": "workspace:*",
