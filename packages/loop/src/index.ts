@@ -935,11 +935,19 @@ function createExtractMemoryPolicy(args: {
       };
     },
     async run(envelope) {
-      const generated = await args.memoryModel.generateMemory({
-        ingestionId: envelope.input.ingestionId,
-        sourceVersionId: envelope.input.sourceVersionId,
-        evidenceSpans: envelope.input.evidenceSpans,
-      });
+      let generated;
+      try {
+        generated = await args.memoryModel.generateMemory({
+          ingestionId: envelope.input.ingestionId,
+          sourceVersionId: envelope.input.sourceVersionId,
+          evidenceSpans: envelope.input.evidenceSpans,
+        });
+      } catch (error) {
+        generated = deterministicMemoryGenerationFallback({
+          evidenceSpans: envelope.input.evidenceSpans,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       const extractionRunId = newId("extr");
       await args.persistence.recordExtractionRun({
         id: extractionRunId,
@@ -971,14 +979,21 @@ function createExtractMemoryPolicy(args: {
 
       let embeddingMetadata: Record<string, unknown> | undefined;
       if (args.embeddingModel) {
-        embeddingMetadata = await generateAndStoreEmbeddings({
-          persistence: args.persistence,
-          embeddingModel: args.embeddingModel,
-          tenantId: envelope.input.tenantId,
-          items,
-          evidenceSpans: envelope.input.evidenceSpans,
-          newId,
-        });
+        try {
+          embeddingMetadata = await generateAndStoreEmbeddings({
+            persistence: args.persistence,
+            embeddingModel: args.embeddingModel,
+            tenantId: envelope.input.tenantId,
+            items,
+            evidenceSpans: envelope.input.evidenceSpans,
+            newId,
+          });
+        } catch (error) {
+          embeddingMetadata = {
+            embeddingStatus: "failed",
+            embeddingError: error instanceof Error ? error.message : String(error),
+          };
+        }
       }
 
       return {
@@ -1566,6 +1581,47 @@ async function generateAndStoreEmbeddings(args: {
     embeddingCount: embeddings.length,
     targetTypes: uniqueStrings(embeddings.map((embedding) => embedding.targetType)),
     models: uniqueStrings(embeddings.map((embedding) => embedding.embeddingModel)),
+  };
+}
+
+function deterministicMemoryGenerationFallback(args: {
+  evidenceSpans: EvidenceSpan[];
+  error: string;
+}): {
+  parsed: GeneratedMemoryBatch;
+  raw: unknown;
+  model: string;
+} {
+  const evidenceSpanIds = args.evidenceSpans.map((span) => span.id);
+  const statement = args.evidenceSpans
+    .map((span) => span.text.trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .slice(0, 2_000)
+    .trim();
+
+  return {
+    model: "deterministic-fallback",
+    raw: {
+      fallbackReason: args.error,
+      strategy: "evidence_text_as_user_signal",
+    },
+    parsed: {
+      items: statement && evidenceSpanIds.length > 0
+        ? [{
+          temporaryId: "fallback_1",
+          claimType: "user_signal",
+          statement,
+          evidenceSpanIds,
+          epistemicStatus: "reported",
+          qualifiers: { extractionFallback: true, fallbackReason: args.error },
+          stableDomainTags: [],
+          entities: [],
+          relations: [],
+          schemas: [],
+        }]
+        : [],
+    },
   };
 }
 

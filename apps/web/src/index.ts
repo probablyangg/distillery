@@ -609,7 +609,11 @@ async function processWorkItem(workItemId: string, env: Env): Promise<void> {
     persistence,
     policies: createPolicies({
       persistence,
-      memoryModel: new OpenRouterMemoryGenerationModel(openRouterConfig(env)),
+      memoryModel: new OpenRouterMemoryGenerationModel(openRouterConfig(env, {
+        maxPrimaryTimeoutMs: 18_000,
+        maxFallbackTimeoutMs: 10_000,
+        maxFallbackModels: 1,
+      })),
       ...(embeddingModel ? { embeddingModel } : {}),
       initiativeBriefDraftModel: new OpenRouterInitiativeBriefDraftModel(openRouterConfig(env, {
         maxPrimaryTimeoutMs: 25_000,

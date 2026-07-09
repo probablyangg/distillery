@@ -314,7 +314,7 @@ export class OpenRouterMemoryGenerationModel implements MemoryGenerationModel {
         throw error;
       }
 
-      const rawText = await response.text();
+      const rawText = await readModelResponseText(response, abortController.signal, didTimeout, timeoutMs, "OpenRouter memory generation", model);
       if (!response.ok) {
         throw new Error(`OpenRouter memory generation failed: ${response.status} ${rawText.slice(0, 500)}`);
       }
@@ -418,7 +418,7 @@ export class OpenRouterInitiativeBriefDraftModel implements InitiativeBriefDraft
         throw error;
       }
 
-      const rawText = await response.text();
+      const rawText = await readModelResponseText(response, abortController.signal, didTimeout, timeoutMs, "OpenRouter initiative brief drafting", model);
       if (!response.ok) {
         throw new Error(`OpenRouter initiative brief drafting failed: ${response.status} ${rawText.slice(0, 500)}`);
       }
@@ -484,7 +484,7 @@ export class OpenRouterEmbeddingModel implements EmbeddingModel {
         throw error;
       }
 
-      const rawText = await response.text();
+      const rawText = await readModelResponseText(response, abortController.signal, didTimeout, timeoutMs, "OpenRouter embedding", this.config.model);
       if (!response.ok) {
         throw new Error(`OpenRouter embedding failed: ${response.status} ${rawText.slice(0, 500)}`);
       }
@@ -587,7 +587,7 @@ export class OpenRouterGroundedAnswerModel implements GroundedAnswerModel {
         throw error;
       }
 
-      const rawText = await response.text();
+      const rawText = await readModelResponseText(response, abortController.signal, didTimeout, timeoutMs, "OpenRouter grounded answer", model);
       if (!response.ok) {
         throw new Error(`OpenRouter grounded answer failed: ${response.status} ${rawText.slice(0, 500)}`);
       }
@@ -662,6 +662,24 @@ function extractJsonCandidate(content: string): string {
   }
 
   return trimmed;
+}
+
+async function readModelResponseText(
+  response: Response,
+  signal: AbortSignal,
+  didTimeout: boolean,
+  timeoutMs: number,
+  operation: string,
+  model: string,
+): Promise<string> {
+  try {
+    return await response.text();
+  } catch (error) {
+    if (didTimeout || signal.aborted) {
+      throw new Error(`${operation} timed out after ${timeoutMs}ms for model ${model}.`);
+    }
+    throw error;
+  }
 }
 
 function unique(values: string[]): string[] {

@@ -430,7 +430,7 @@ describe("loop system", () => {
         embeddingModel: {
           async embed(request) {
             return {
-              model: "qwen/qwen3-embedding-8b",
+              model: "google/gemini-embedding-001",
               vectors: request.input.map(() => [0.1, 0.2, 0.3]),
             };
           },
@@ -449,7 +449,69 @@ describe("loop system", () => {
     ]);
     expect([...store.proposedEvents.values()][0]?.payload.embeddingMetadata).toMatchObject({
       embeddingCount: 4,
-      models: ["qwen/qwen3-embedding-8b"],
+      models: ["google/gemini-embedding-001"],
+    });
+  });
+
+  it("extract_memory still commits memory when embedding generation fails", async () => {
+    const store = seededStore();
+    const workItem = await routeSourceToWork(store);
+
+    await executeWorkItem({
+      persistence: store,
+      policies: createPolicies({
+        persistence: store,
+        memoryModel: modelWithValidMemory(),
+        embeddingModel: {
+          async embed() {
+            throw new Error("embedding provider timed out");
+          },
+        },
+        newId: deterministicId(),
+      }),
+      workItemId: workItem.id,
+      newId: deterministicId(),
+    });
+
+    expect(store.pendingWorkItems.get(workItem.id)?.status).toBe("completed");
+    expect(store.committedMemory).toHaveLength(1);
+    expect(store.memoryEmbeddings).toHaveLength(0);
+    expect([...store.proposedEvents.values()][0]?.payload.embeddingMetadata).toMatchObject({
+      embeddingStatus: "failed",
+      embeddingError: "embedding provider timed out",
+    });
+  });
+
+  it("extract_memory commits a conservative fallback memory when model generation fails", async () => {
+    const store = seededStore();
+    const workItem = await routeSourceToWork(store);
+
+    await executeWorkItem({
+      persistence: store,
+      policies: createPolicies({
+        persistence: store,
+        memoryModel: {
+          async generateMemory() {
+            throw new Error("memory model timed out");
+          },
+        },
+        newId: deterministicId(),
+      }),
+      workItemId: workItem.id,
+      newId: deterministicId(),
+    });
+
+    expect(store.pendingWorkItems.get(workItem.id)?.status).toBe("completed");
+    expect(store.committedMemory).toHaveLength(1);
+    expect(store.committedMemory[0]).toMatchObject({
+      claimType: "user_signal",
+      statement: "Dev docs need to be updated before the API launch.",
+      evidenceSpanIds: ["ev_1"],
+      epistemicStatus: "reported",
+      qualifiers: {
+        extractionFallback: true,
+        fallbackReason: "memory model timed out",
+      },
     });
   });
 

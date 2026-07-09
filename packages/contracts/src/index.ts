@@ -233,7 +233,7 @@ export type ClaimType = z.infer<typeof ClaimTypeSchema>;
 export const MemoryEntitySchema = z.object({
   name: z.string().trim().min(1).max(200),
   entityType: z.string().trim().min(1).max(80),
-  canonicalName: z.string().trim().min(1).max(200).optional(),
+  canonicalName: z.string().trim().min(1).max(200).nullable().optional(),
 });
 export type MemoryEntity = z.infer<typeof MemoryEntitySchema>;
 
