@@ -119,14 +119,15 @@ describe("OpenRouterEmbeddingModel", () => {
     const model = new OpenRouterEmbeddingModel({
       apiKey: "test-key",
       baseUrl: "https://openrouter.test/api/v1",
-      model: "qwen/qwen3-embedding-8b",
+      model: "google/gemini-embedding-001",
       dimensions: 3,
       fetchImpl: async (_url, init) => {
-        const body = JSON.parse(String(init?.body)) as { model: string; input: string[] };
-        expect(body.model).toBe("qwen/qwen3-embedding-8b");
+        const body = JSON.parse(String(init?.body)) as { model: string; input: string[]; dimensions: number };
+        expect(body.model).toBe("google/gemini-embedding-001");
         expect(body.input).toEqual(["Docs block launch."]);
+        expect(body.dimensions).toBe(3);
         return Response.json({
-          model: "qwen/qwen3-embedding-8b",
+          model: "google/gemini-embedding-001",
           data: [{ embedding: [0.1, 0.2, 0.3] }],
         });
       },
@@ -144,7 +145,7 @@ describe("OpenRouterEmbeddingModel", () => {
     const model = new OpenRouterEmbeddingModel({
       apiKey: "test-key",
       baseUrl: "https://openrouter.test/api/v1",
-      model: "qwen/qwen3-embedding-8b",
+      model: "google/gemini-embedding-001",
       dimensions: 3,
       fetchImpl: async () =>
         Response.json({

@@ -4,13 +4,13 @@ compatibility_date = "2026-07-06"
 
 [vars]
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_MODEL = "moonshotai/kimi-k2.7-code"
+OPENROUTER_MODEL = "deepseek/deepseek-v4-flash"
 OPENROUTER_FALLBACK_MODELS = "~moonshotai/kimi-latest,moonshotai/kimi-k2.6"
 OPENROUTER_TIMEOUT_MS = "30000"
 OPENROUTER_FALLBACK_TIMEOUT_MS = "45000"
 EMBEDDING_PROVIDER = "openrouter"
 EMBEDDING_BASE_URL = "https://openrouter.ai/api/v1"
-EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
+EMBEDDING_MODEL = "google/gemini-embedding-001"
 EMBEDDING_DIMENSIONS = "1536"
 EMBEDDING_ENCODING_FORMAT = "float"
 

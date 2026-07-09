@@ -474,6 +474,7 @@ export class OpenRouterEmbeddingModel implements EmbeddingModel {
             model: this.config.model,
             input: parsedRequest.input,
             encoding_format: this.config.encodingFormat ?? "float",
+            dimensions: this.config.dimensions,
           }),
         });
       } catch (error) {
