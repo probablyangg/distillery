@@ -1126,10 +1126,34 @@ as $$
     select
       'entity:' || lower(regexp_replace(coalesce(me.canonical_name, me.name), '[^a-zA-Z0-9]+', '_', 'g')) as id,
       coalesce(me.canonical_name, me.name) as label,
-      count(distinct me.memory_item_id) as claim_count
+      count(distinct me.memory_item_id) as claim_count,
+      max(mi.created_at) as latest_claim_at,
+      0 as cluster_sort
     from memory_entities me
+    join memory_items mi on mi.id = me.memory_item_id
     where me.tenant_id = p_tenant_id
     group by 1, 2
+  ),
+  singleton_claim_clusters as (
+    select
+      'claim:' || mi.id as id,
+      left(mi.statement, 96) as label,
+      1 as claim_count,
+      mi.created_at as latest_claim_at,
+      1 as cluster_sort
+    from memory_items mi
+    where mi.tenant_id = p_tenant_id
+      and not exists (
+        select 1
+        from memory_entities me
+        where me.tenant_id = mi.tenant_id
+          and me.memory_item_id = mi.id
+      )
+  ),
+  graph_clusters as (
+    select * from entity_clusters
+    union all
+    select * from singleton_claim_clusters
   )
   select coalesce(jsonb_agg(jsonb_build_object(
     'id', id,
@@ -1140,8 +1164,24 @@ as $$
       from claim_connections cc
       where cc.tenant_id = p_tenant_id
         and (
-          cc.from_claim_id in (select memory_item_id from memory_entities where tenant_id = p_tenant_id and 'entity:' || lower(regexp_replace(coalesce(canonical_name, name), '[^a-zA-Z0-9]+', '_', 'g')) = entity_clusters.id)
-          or cc.to_claim_id in (select memory_item_id from memory_entities where tenant_id = p_tenant_id and 'entity:' || lower(regexp_replace(coalesce(canonical_name, name), '[^a-zA-Z0-9]+', '_', 'g')) = entity_clusters.id)
+          cc.from_claim_id in (
+            select me.memory_item_id
+            from memory_entities me
+            where me.tenant_id = p_tenant_id
+              and 'entity:' || lower(regexp_replace(coalesce(me.canonical_name, me.name), '[^a-zA-Z0-9]+', '_', 'g')) = graph_clusters.id
+            union all
+            select replace(graph_clusters.id, 'claim:', '')
+            where graph_clusters.id like 'claim:%'
+          )
+          or cc.to_claim_id in (
+            select me.memory_item_id
+            from memory_entities me
+            where me.tenant_id = p_tenant_id
+              and 'entity:' || lower(regexp_replace(coalesce(me.canonical_name, me.name), '[^a-zA-Z0-9]+', '_', 'g')) = graph_clusters.id
+            union all
+            select replace(graph_clusters.id, 'claim:', '')
+            where graph_clusters.id like 'claim:%'
+          )
         )
     ),
     'openConflictCount', (
@@ -1150,10 +1190,23 @@ as $$
       join conflict_members cm on cm.conflict_group_id = cg.id
       where cg.tenant_id = p_tenant_id
         and cg.status = 'open'
-        and cm.claim_id in (select memory_item_id from memory_entities where tenant_id = p_tenant_id and 'entity:' || lower(regexp_replace(coalesce(canonical_name, name), '[^a-zA-Z0-9]+', '_', 'g')) = entity_clusters.id)
+        and cm.claim_id in (
+          select me.memory_item_id
+          from memory_entities me
+          where me.tenant_id = p_tenant_id
+            and 'entity:' || lower(regexp_replace(coalesce(me.canonical_name, me.name), '[^a-zA-Z0-9]+', '_', 'g')) = graph_clusters.id
+          union all
+          select replace(graph_clusters.id, 'claim:', '')
+          where graph_clusters.id like 'claim:%'
+        )
     )
-  ) order by claim_count desc, label), '[]'::jsonb)
-  from (select * from entity_clusters order by claim_count desc, label limit p_limit) entity_clusters;
+  ) order by cluster_sort, claim_count desc, latest_claim_at desc, label), '[]'::jsonb)
+  from (
+    select *
+    from graph_clusters
+    order by cluster_sort, claim_count desc, latest_claim_at desc, label
+    limit p_limit
+  ) graph_clusters;
 $$;
 
 create or replace function distillery_get_graph_cluster(
@@ -1174,6 +1227,11 @@ begin
     from memory_entities me
     where me.tenant_id = p_tenant_id
       and 'entity:' || lower(regexp_replace(coalesce(me.canonical_name, me.name), '[^a-zA-Z0-9]+', '_', 'g')) = p_cluster_id
+    union
+    select mi.id
+    from memory_items mi
+    where mi.tenant_id = p_tenant_id
+      and p_cluster_id = 'claim:' || mi.id
   )
   select jsonb_build_object(
     'id', p_cluster_id,
