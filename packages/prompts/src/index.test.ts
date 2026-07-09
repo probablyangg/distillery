@@ -17,6 +17,8 @@ describe("@distillery/prompts", () => {
   it("exports non-empty system prompts with core guardrails", () => {
     expect(memoryGenerationSystemPrompt()).toContain("Extract only source-backed memory items");
     expect(memoryGenerationSystemPrompt()).toContain("Every item must cite one or more supplied evidenceSpanIds exactly.");
+    expect(memoryGenerationSystemPrompt()).toContain("Never emit entities like: the, a, an, in, no, yes");
+    expect(memoryGenerationSystemPrompt()).toContain("If no meaningful entity exists, return an empty entities array.");
     expect(initiativeBriefDraftSystemPrompt()).toContain("Do not invent customers, metrics, approvals, owners, dependencies, or timelines.");
     expect(initiativeBriefDraftSystemPrompt()).toContain("Use every selected memoryItemId and every selected evidenceSpanId exactly as supplied.");
     expect(groundedAnswerSystemPrompt()).toContain("Use only the supplied claims, evidence, and conflicts.");

@@ -9,7 +9,7 @@ import {
   EPISTEMIC_STATUSES,
 } from "@distillery/contracts";
 
-export const MEMORY_PROMPT_VERSION = "stable-memory-prompt-v0.1";
+export const MEMORY_PROMPT_VERSION = "stable-memory-prompt-v0.2";
 
 export type MemoryGenerationPromptInput = {
   evidenceSpans: EvidenceSpan[];
@@ -51,6 +51,11 @@ export function memoryGenerationSystemPrompt(): string {
     `Allowed claim types: ${CLAIM_TYPES.join(", ")}.`,
     `Allowed epistemic statuses: ${EPISTEMIC_STATUSES.join(", ")}.`,
     "For each item, include entities, relations, and schema candidates as interpretation metadata only; they are not standalone evidence.",
+    "Entities must be specific business or domain objects, products, user groups, systems, docs, APIs, workflows, merchants, partners, protocols, or named concepts.",
+    "Do not emit determiners, pronouns, generic quantifiers, sentence-leading function words, standalone adjectives, or standalone adverbs as entities.",
+    "Never emit entities like: the, a, an, in, no, yes, this, that, there, here, one, two, three, four, many, some.",
+    "Prefer concrete multi-word entities when available, such as node installation tutorial instead of node or tutorial.",
+    "If no meaningful entity exists, return an empty entities array.",
     "Every relation must cite one or more evidenceSpanIds already cited by its parent memory item.",
     "Generated schemas must be abstract patterns with status candidate unless an existing reviewed schema is explicitly supplied.",
     "Output must be a single minified JSON object.",

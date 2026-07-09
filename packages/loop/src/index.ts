@@ -8,6 +8,7 @@ import {
   type GeneratedMemoryBatch,
   type InitiativeBrief,
   type LedgerEvent,
+  type MemoryEntity,
   type MemoryWithEvidence,
   type PendingWorkItem,
   type PolicyName,
@@ -972,7 +973,7 @@ function createExtractMemoryPolicy(args: {
         epistemicStatus: item.epistemicStatus,
         qualifiers: item.qualifiers,
         stableDomainTags: item.stableDomainTags,
-        entities: item.entities,
+        entities: sanitizeMemoryEntities(item.entities),
         relations: item.relations,
         schemas: item.schemas,
       }));
@@ -1623,6 +1624,95 @@ function deterministicMemoryGenerationFallback(args: {
         : [],
     },
   };
+}
+
+const GENERIC_ENTITY_NAMES = new Set([
+  "a",
+  "an",
+  "and",
+  "any",
+  "are",
+  "be",
+  "but",
+  "four",
+  "here",
+  "in",
+  "it",
+  "many",
+  "no",
+  "of",
+  "one",
+  "or",
+  "some",
+  "that",
+  "the",
+  "there",
+  "this",
+  "three",
+  "to",
+  "two",
+  "yes",
+]);
+
+const SHORT_ENTITY_ALLOWLIST = new Set([
+  "api",
+  "rpc",
+  "sdk",
+  "ux",
+  "ui",
+  "usdc",
+  "usdt",
+  "defi",
+]);
+
+function sanitizeMemoryEntities(entities: MemoryEntity[]): MemoryEntity[] {
+  const seen = new Set<string>();
+  const sanitized: MemoryEntity[] = [];
+
+  for (const entity of entities) {
+    const name = entity.name.trim();
+    const canonicalName = entity.canonicalName?.trim() || null;
+    const entityType = entity.entityType.trim();
+    const label = canonicalName ?? name;
+    const normalizedLabel = normalizeEntityLabel(label);
+
+    if (!name || !entityType || isGenericEntityLabel(normalizedLabel)) continue;
+
+    const normalizedName = normalizeEntityLabel(name);
+    if (isGenericEntityLabel(normalizedName)) continue;
+
+    const key = `${normalizedLabel}:${entityType.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    sanitized.push({
+      name,
+      entityType,
+      ...(canonicalName ? { canonicalName } : {}),
+    });
+  }
+
+  return sanitized;
+}
+
+function normalizeEntityLabel(value: string): string {
+  return normalizeText(value).replace(/\s+/g, " ").trim();
+}
+
+function isGenericEntityLabel(label: string): boolean {
+  if (!label) return true;
+  if (GENERIC_ENTITY_NAMES.has(label)) return true;
+
+  const tokens = label.split(" ").filter(Boolean);
+  if (tokens.length === 0) return true;
+  if (tokens.every((token) => GENERIC_ENTITY_NAMES.has(token))) return true;
+  if (tokens.length === 1) {
+    const token = tokens[0] ?? "";
+    if (token.length <= 1) return true;
+    if (token.length <= 3 && !SHORT_ENTITY_ALLOWLIST.has(token)) return true;
+  }
+
+  return false;
 }
 
 function uniqueEmbeddingTargets<T extends {

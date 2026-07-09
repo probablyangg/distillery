@@ -400,6 +400,48 @@ describe("loop system", () => {
     expect([...store.ledgerEvents.values()].some((event) => event.eventType === "memory_committed")).toBe(true);
   });
 
+  it("extract_memory drops generic entity tokens before commit", async () => {
+    const store = seededStore();
+    const workItem = await routeSourceToWork(store);
+
+    await executeWorkItem({
+      persistence: store,
+      policies: createPolicies({
+        persistence: store,
+        memoryModel: new StaticMemoryGenerationModel({
+          items: [{
+            temporaryId: "m1",
+            claimType: "user_signal",
+            statement: "Users are unable to find the correct node installation tutorial.",
+            evidenceSpanIds: ["ev_1"],
+            epistemicStatus: "observed",
+            qualifiers: {},
+            stableDomainTags: ["docs"],
+            entities: [
+              { name: "The", entityType: "concept" },
+              { name: "In", entityType: "concept" },
+              { name: "No", entityType: "concept" },
+              { name: "Four", entityType: "concept" },
+              { name: "API", entityType: "system" },
+              { name: "node installation tutorial", entityType: "artifact" },
+              { name: "Node installation tutorial", canonicalName: "node installation tutorial", entityType: "artifact" },
+            ],
+            relations: [],
+            schemas: [],
+          }],
+        }),
+        newId: deterministicId(),
+      }),
+      workItemId: workItem.id,
+      newId: deterministicId(),
+    });
+
+    expect(store.committedMemory[0]?.entities).toEqual([
+      { name: "API", entityType: "system" },
+      { name: "node installation tutorial", entityType: "artifact" },
+    ]);
+  });
+
   it("extract_memory stores embeddings for claims, evidence, entities, and schemas when configured", async () => {
     const store = seededStore();
     const workItem = await routeSourceToWork(store);
