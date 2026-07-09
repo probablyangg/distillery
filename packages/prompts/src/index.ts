@@ -11,6 +11,10 @@ import {
 
 export const MEMORY_PROMPT_VERSION = "stable-memory-prompt-v0.2";
 
+const RERANK_STATEMENT_MAX_CHARS = 400;
+const RERANK_EVIDENCE_MAX_ITEMS = 2;
+const RERANK_EVIDENCE_MAX_CHARS = 250;
+
 export type MemoryGenerationPromptInput = {
   evidenceSpans: EvidenceSpan[];
 };
@@ -26,6 +30,20 @@ export type GroundedAnswerPromptInput = {
   claims: GraphRetrievalClaim[];
   evidenceSpans: EvidenceSpan[];
   conflicts: ConflictGroup[];
+};
+
+export type RetrievalRerankPromptInput = {
+  question: string;
+  profile: "ask" | "synthesis";
+  candidates: Array<{
+    claimId: string;
+    statement: string;
+    evidenceSpanTexts: string[];
+    graphScore: number;
+    vectorScore: number;
+    sparseScore: number;
+    conflictWarningCount: number;
+  }>;
 };
 
 export type SynthesisIntentInput = {
@@ -86,6 +104,18 @@ export function groundedAnswerSystemPrompt(): string {
     "Cite only supplied evidenceSpanIds and claim IDs.",
     "Call out missing, partial, stale, or conflicted evidence. Do not resolve open conflicts as fact.",
     "Do not invent owners, metrics, dates, decisions, dependencies, launch states, or causality.",
+    "Output must be a single minified JSON object matching the requested schema.",
+  ].join("\n");
+}
+
+export function retrievalRerankSystemPrompt(): string {
+  return [
+    "You are Distillery's retrieval reranker.",
+    "Rank only the supplied claim IDs for relevance, evidence usefulness, and retrieval profile fit.",
+    "For Ask, prefer precise answer evidence over broad context.",
+    "For synthesis, prefer useful breadth, risks, dependencies, conflicts, and diverse context.",
+    "Do not add, remove, rewrite, or invent claim IDs.",
+    "Return only rankedClaimIds unless a short rationale is essential.",
     "Output must be a single minified JSON object matching the requested schema.",
   ].join("\n");
 }
@@ -157,6 +187,31 @@ export function renderGroundedAnswerInputForModel(input: GroundedAnswerPromptInp
     `<retrieved_evidence>${evidence}</retrieved_evidence>`,
     `<conflicts>${conflicts}</conflicts>`,
   ].join("\n\n");
+}
+
+export function renderRetrievalRerankInputForModel(input: RetrievalRerankPromptInput): string {
+  const candidates = input.candidates
+    .map((candidate) =>
+      [
+        `<candidate claimId="${candidate.claimId}" graphScore="${candidate.graphScore}" vectorScore="${candidate.vectorScore}" sparseScore="${candidate.sparseScore}" conflicts="${candidate.conflictWarningCount}">`,
+        truncateText(candidate.statement, RERANK_STATEMENT_MAX_CHARS),
+        `<evidence>${JSON.stringify(candidate.evidenceSpanTexts.slice(0, RERANK_EVIDENCE_MAX_ITEMS).map((text) => truncateText(text, RERANK_EVIDENCE_MAX_CHARS)))}</evidence>`,
+        "</candidate>",
+      ].join("\n"),
+    )
+    .join("\n\n");
+
+  return [
+    `<question>${input.question}</question>`,
+    `<profile>${input.profile}</profile>`,
+    `<candidates>${candidates}</candidates>`,
+  ].join("\n\n");
+}
+
+function truncateText(input: string, maxChars: number): string {
+  const normalized = input.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, maxChars - 15).trimEnd()} [truncated]`;
 }
 
 export function renderSynthesisIntent(input: SynthesisIntentInput): string {

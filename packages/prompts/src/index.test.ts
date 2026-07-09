@@ -10,6 +10,7 @@ import {
   renderGroundedAnswerInputForModel,
   renderInitiativeBriefDraftInputForModel,
   renderMemoryGenerationInputForModel,
+  renderRetrievalRerankInputForModel,
   renderSynthesisIntent,
 } from "./index";
 
@@ -160,5 +161,28 @@ describe("@distillery/prompts", () => {
     expect(intent).toContain("Seed memory: mem_1");
     expect(intent).toContain("shared_entity(mem_1->mem_2)");
     expect(intent).toContain("Warnings to surface: conflict_open");
+  });
+
+  it("compacts retrieval rerank input to keep model latency bounded", () => {
+    const longStatement = "Statement detail ".repeat(100);
+    const longEvidence = "Evidence detail ".repeat(100);
+    const rendered = renderRetrievalRerankInputForModel({
+      question: "What blocks launch?",
+      profile: "ask",
+      candidates: [{
+        claimId: "mem_1",
+        statement: longStatement,
+        evidenceSpanTexts: [longEvidence, longEvidence, "third evidence should not be sent"],
+        graphScore: 0.8,
+        vectorScore: 0.7,
+        sparseScore: 0.2,
+        conflictWarningCount: 0,
+      }],
+    });
+
+    expect(rendered).toContain('<candidate claimId="mem_1"');
+    expect(rendered).toContain("[truncated]");
+    expect(rendered).not.toContain("third evidence should not be sent");
+    expect(rendered.length).toBeLessThan(1_500);
   });
 });
