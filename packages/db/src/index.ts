@@ -12,6 +12,9 @@ import {
   ConflictGroupSchema,
   GraphClusterSchema,
   GraphClusterSummarySchema,
+  GraphEdgeSchema,
+  GraphNodeSchema,
+  GraphRetrievalClaimSchema,
   GraphRecallContextSchema,
   LedgerEventSchema,
   LoopStatusResponseSchema,
@@ -30,6 +33,8 @@ import {
   type CreateInitiativeBriefInput,
   type GraphCluster,
   type GraphClusterSummary,
+  type GraphEdge,
+  type GraphNode,
   type GraphRecallContext,
   type InitiativeBrief,
   type InitiativeBriefDecisionInput,
@@ -47,6 +52,11 @@ import {
   type WorkSubjectType,
 } from "@distillery/contracts";
 import type { LoopPersistence } from "@distillery/loop";
+import type {
+  HydratedRetrievalClaims,
+  RetrievalCandidate,
+  RetrievalGraphSnapshot,
+} from "@distillery/memory-retrieval";
 import { buildDeterministicCitedAnswer } from "@distillery/memory-generation";
 import { validateInitiativeBriefTraceability } from "@distillery/memory-synthesis";
 import { z } from "zod";
@@ -509,6 +519,68 @@ export class SupabaseLoopPersistence implements LoopPersistence {
     return MemoryWithEvidenceSchema.array().parse(result);
   }
 
+  async getRetrievalVectorCandidates(input: {
+    tenantId: string;
+    queryEmbedding: number[];
+    targetTypes: Array<"claim" | "evidence_span" | "entity" | "schema_pattern">;
+    limit: number;
+    embeddingModel?: string;
+  }): Promise<RetrievalCandidate[]> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_retrieval_vector_candidates", {
+      p_tenant_id: input.tenantId,
+      p_query_embedding: input.queryEmbedding,
+      p_target_types: input.targetTypes,
+      p_limit: input.limit,
+      p_embedding_model: input.embeddingModel ?? null,
+    });
+    return RetrievalCandidateSchema.array().parse(result);
+  }
+
+  async getRetrievalSparseCandidates(input: {
+    tenantId: string;
+    queryText: string;
+    limit: number;
+  }): Promise<RetrievalCandidate[]> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_retrieval_sparse_candidates", {
+      p_tenant_id: input.tenantId,
+      p_query: input.queryText,
+      p_limit: input.limit,
+    });
+    return RetrievalCandidateSchema.array().parse(result);
+  }
+
+  async getRetrievalGraphSnapshot(input: {
+    tenantId: string;
+    seedNodeIds: string[];
+    maxNodes: number;
+    maxEdges: number;
+  }): Promise<RetrievalGraphSnapshot> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_retrieval_graph_snapshot", {
+      p_tenant_id: input.tenantId,
+      p_seed_node_ids: input.seedNodeIds,
+      p_max_nodes: input.maxNodes,
+      p_max_edges: input.maxEdges,
+    });
+    return RetrievalGraphSnapshotSchema.parse(result);
+  }
+
+  async hydrateRetrievalClaims(input: {
+    tenantId: string;
+    rankedClaims: Array<{
+      claimId: string;
+      rank: number;
+      graphScore: number;
+      vectorScore: number;
+      lexicalScore: number;
+    }>;
+  }): Promise<HydratedRetrievalClaims> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_hydrate_retrieval_claims", {
+      p_tenant_id: input.tenantId,
+      p_ranked_claims: input.rankedClaims,
+    });
+    return HydratedRetrievalClaimsSchema.parse(result);
+  }
+
   async getLoopStatus(input: {
     tenantId?: string;
     ingestionId?: string;
@@ -659,4 +731,24 @@ const IngestionContextResponseSchema = IngestionResultSchema.pick({
 const PendingWorkEnqueueResponseSchema = z.object({
   workItem: PendingWorkItemSchema,
   inserted: z.boolean(),
+});
+
+const RetrievalCandidateSchema = z.object({
+  source: z.enum(["vector", "sparse", "seed"]),
+  targetType: z.enum(["claim", "evidence_span", "entity", "schema_pattern"]),
+  targetId: z.string().min(1),
+  nodeId: z.string().min(1),
+  claimId: z.string().min(1).nullable().optional().transform((value) => value ?? undefined),
+  score: z.number(),
+  label: z.string().optional(),
+});
+
+const RetrievalGraphSnapshotSchema = z.object({
+  nodes: GraphNodeSchema.array(),
+  edges: GraphEdgeSchema.array(),
+});
+
+const HydratedRetrievalClaimsSchema = z.object({
+  claims: GraphRetrievalClaimSchema.array(),
+  conflicts: ConflictGroupSchema.array().default([]),
 });
