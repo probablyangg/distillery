@@ -7,7 +7,12 @@
     "@distillery/contracts": "workspace:*",
     "@distillery/db": "workspace:*",
     "@distillery/loop": "workspace:*",
+    "@distillery/memory-generation": "workspace:*",
+    "@distillery/memory-synthesis": "workspace:*",
     "@distillery/model-gateway": "workspace:*",
-    "@distillery/memory-generation": "workspace:*"
+    "d3": "^7.9.0"
+  },
+  "devDependencies": {
+    "@types/d3": "^7.4.3"
   }
 }

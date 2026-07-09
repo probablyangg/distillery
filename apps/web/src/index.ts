@@ -1,10 +1,14 @@
 import {
   CaptureInputSchema,
   CreateInitiativeBriefInputSchema,
+  GraphRecallContextSchema,
   InitiativeBriefDraftInputSchema,
   InitiativeBriefDecisionInputSchema,
   MemoryItemActionInputSchema,
   RecallQueryInputSchema,
+  type CitedAnswer,
+  type EvidenceSpan,
+  type GraphRecallContext,
   type MemoryWithEvidence,
 } from "@distillery/contracts";
 import { SupabaseMemoryGenerationRepository, SupabaseRpcClient } from "@distillery/db";
@@ -16,9 +20,12 @@ import {
 } from "@distillery/loop";
 import {
   OpenRouterInitiativeBriefDraftModel,
+  OpenRouterEmbeddingModel,
+  OpenRouterGroundedAnswerModel,
   OpenRouterMemoryGenerationModel,
   type OpenRouterModelConfig,
 } from "@distillery/model-gateway";
+import d3LocalSource from "./vendor/d3.min.txt";
 import {
   DEFAULT_TENANT_ID,
   applyMemoryItemAction,
@@ -43,6 +50,11 @@ export type Env = {
   OPENROUTER_FALLBACK_MODELS?: string;
   OPENROUTER_TIMEOUT_MS?: string;
   OPENROUTER_FALLBACK_TIMEOUT_MS?: string;
+  EMBEDDING_PROVIDER?: string;
+  EMBEDDING_BASE_URL?: string;
+  EMBEDDING_MODEL?: string;
+  EMBEDDING_DIMENSIONS?: string;
+  EMBEDDING_ENCODING_FORMAT?: string;
   MEMORY_GENERATION_QUEUE?: Queue<{ workItemId: string }>;
 };
 
@@ -60,6 +72,14 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/synthesis") {
       return html(renderSynthesisShell());
+    }
+
+    if (request.method === "GET" && url.pathname === "/graph") {
+      return html(renderGraphShell());
+    }
+
+    if (request.method === "GET" && url.pathname === "/assets/d3-local.js") {
+      return javascript(d3LocalSource);
     }
 
     if (request.method === "POST" && url.pathname === "/login") {
@@ -80,6 +100,14 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/api/loop-status") {
       return handleLoopStatus(url, env);
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/graph/clusters") {
+      return handleListGraphClusters(url, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/graph/rebuild") {
+      return handleGraphRebuild(env);
     }
 
     if (request.method === "POST" && url.pathname === "/api/ingestions") {
@@ -108,27 +136,57 @@ export default {
 
     const initiativeBriefMatch = url.pathname.match(/^\/api\/initiative-briefs\/([^/]+)$/);
     if (request.method === "GET" && initiativeBriefMatch?.[1]) {
-      return handleGetInitiativeBrief(initiativeBriefMatch[1], env);
+      return handleGetInitiativeBrief(decodeRouteParam(initiativeBriefMatch[1]), env);
     }
 
     const initiativeBriefDecisionMatch = url.pathname.match(/^\/api\/initiative-briefs\/([^/]+)\/decisions$/);
     if (request.method === "POST" && initiativeBriefDecisionMatch?.[1]) {
-      return handleInitiativeBriefDecision(initiativeBriefDecisionMatch[1], request, env);
+      return handleInitiativeBriefDecision(decodeRouteParam(initiativeBriefDecisionMatch[1]), request, env);
     }
 
     const ingestionMatch = url.pathname.match(/^\/api\/ingestions\/([^/]+)$/);
     if (request.method === "GET" && ingestionMatch?.[1]) {
-      return handleGetIngestion(ingestionMatch[1], env);
+      return handleGetIngestion(decodeRouteParam(ingestionMatch[1]), env);
     }
 
     const memoryActionMatch = url.pathname.match(/^\/api\/memory-items\/([^/]+)\/actions$/);
     if (request.method === "POST" && memoryActionMatch?.[1]) {
-      return handleMemoryItemAction(memoryActionMatch[1], request, env);
+      return handleMemoryItemAction(decodeRouteParam(memoryActionMatch[1]), request, env);
     }
 
     const memoryHistoryMatch = url.pathname.match(/^\/api\/memory-items\/([^/]+)\/history$/);
     if (request.method === "GET" && memoryHistoryMatch?.[1]) {
-      return handleMemoryItemHistory(memoryHistoryMatch[1], env);
+      return handleMemoryItemHistory(decodeRouteParam(memoryHistoryMatch[1]), env);
+    }
+
+    const graphClusterMatch = url.pathname.match(/^\/api\/graph\/clusters\/([^/]+)$/);
+    if (request.method === "GET" && graphClusterMatch?.[1]) {
+      return handleGetGraphCluster(decodeRouteParam(graphClusterMatch[1]), env);
+    }
+
+    const graphClaimMatch = url.pathname.match(/^\/api\/graph\/claims\/([^/]+)$/);
+    if (request.method === "GET" && graphClaimMatch?.[1]) {
+      return handleGetGraphClaim(decodeRouteParam(graphClaimMatch[1]), env);
+    }
+
+    const graphConnectionReviewMatch = url.pathname.match(/^\/api\/graph\/connections\/([^/]+)\/review$/);
+    if (request.method === "POST" && graphConnectionReviewMatch?.[1]) {
+      return handleReviewGraphConnection(decodeRouteParam(graphConnectionReviewMatch[1]), request, env);
+    }
+
+    const graphConflictResolveMatch = url.pathname.match(/^\/api\/graph\/conflicts\/([^/]+)\/resolve$/);
+    if (request.method === "POST" && graphConflictResolveMatch?.[1]) {
+      return handleResolveGraphConflict(decodeRouteParam(graphConflictResolveMatch[1]), request, env);
+    }
+
+    const graphClaimPinMatch = url.pathname.match(/^\/api\/graph\/claims\/([^/]+)\/pin$/);
+    if (request.method === "POST" && graphClaimPinMatch?.[1]) {
+      return handleSetGraphClaimPreference(decodeRouteParam(graphClaimPinMatch[1]), request, env, "pin");
+    }
+
+    const graphClaimExcludeMatch = url.pathname.match(/^\/api\/graph\/claims\/([^/]+)\/exclude-from-synthesis$/);
+    if (request.method === "POST" && graphClaimExcludeMatch?.[1]) {
+      return handleSetGraphClaimPreference(decodeRouteParam(graphClaimExcludeMatch[1]), request, env, "exclude");
     }
 
     return json({ error: "Not found" }, 404);
@@ -219,8 +277,51 @@ async function handleGetIngestion(ingestionId: string, env: Env): Promise<Respon
 
 async function handleRecallQuery(request: Request, env: Env): Promise<Response> {
   const query = RecallQueryInputSchema.parse(await request.json());
-  const answer = await createRepository(env).recallMemory(query);
-  return json(answer);
+  const fallback = async (reason: string) => {
+    const answer = await createRepository(env).recallMemory(query);
+    return {
+      ...answer,
+      warnings: [...(answer.warnings ?? []), `Graph recall fallback: ${reason}`],
+      retrievalMetadata: {
+        ...(answer.retrievalMetadata ?? {}),
+        strategy: "lexical-fallback",
+        fallbackReason: reason,
+      },
+    };
+  };
+
+  try {
+    const graphContext = await createLoopPersistence(env).getGraphRecallContext({
+      tenantId: DEFAULT_TENANT_ID,
+      question: query.question,
+      limit: query.limit,
+    });
+    const parsedGraphContext = GraphRecallContextSchema.parse(graphContext);
+    if (parsedGraphContext.claims.length === 0) {
+      return json(await fallback("No graph retrieval claims matched the question."));
+    }
+
+    const evidenceSpans = uniqueEvidenceSpans(parsedGraphContext.claims.flatMap((claim) => claim.evidenceSpans));
+    const grounded = await new OpenRouterGroundedAnswerModel(openRouterConfig(env, {
+      maxPrimaryTimeoutMs: 20_000,
+      maxFallbackTimeoutMs: 12_000,
+      maxFallbackModels: 1,
+    })).generateGroundedAnswer({
+      question: query.question,
+      claims: parsedGraphContext.claims,
+      evidenceSpans,
+      conflicts: parsedGraphContext.conflicts,
+    });
+
+    return json(graphAnswerToCitedAnswer({
+      question: query.question,
+      graphContext: parsedGraphContext,
+      evidenceSpans,
+      answer: grounded,
+    }));
+  } catch (error) {
+    return json(await fallback(error instanceof Error ? error.message : String(error)));
+  }
 }
 
 async function handleListActiveMemory(env: Env): Promise<Response> {
@@ -238,6 +339,102 @@ async function handleLoopStatus(url: URL, env: Env): Promise<Response> {
     limit,
   });
   return json(status);
+}
+
+async function handleListGraphClusters(url: URL, env: Env): Promise<Response> {
+  const requestedLimit = Number.parseInt(url.searchParams.get("limit") ?? "50", 10);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50;
+  const clusters = await createLoopPersistence(env).listGraphClusters({
+    tenantId: DEFAULT_TENANT_ID,
+    limit,
+  });
+  return json(clusters);
+}
+
+async function handleGetGraphCluster(clusterId: string, env: Env): Promise<Response> {
+  const cluster = await createLoopPersistence(env).getGraphCluster({
+    tenantId: DEFAULT_TENANT_ID,
+    clusterId,
+  });
+  return json(cluster);
+}
+
+async function handleGetGraphClaim(claimId: string, env: Env): Promise<Response> {
+  const claim = await createLoopPersistence(env).getGraphClaim({
+    tenantId: DEFAULT_TENANT_ID,
+    claimId,
+  });
+  return json(claim);
+}
+
+async function handleReviewGraphConnection(connectionId: string, request: Request, env: Env): Promise<Response> {
+  const body = await request.json() as {
+    status?: "accepted" | "rejected";
+    reviewerLabel?: string;
+    rationale?: string;
+  };
+  if (body.status !== "accepted" && body.status !== "rejected") {
+    return json({ error: "Connection review status must be accepted or rejected." }, 422);
+  }
+  const result = await createLoopPersistence(env).reviewClaimConnection({
+    tenantId: DEFAULT_TENANT_ID,
+    connectionId,
+    status: body.status,
+    reviewerLabel: body.reviewerLabel?.trim() || "graph-reviewer",
+    ...(body.rationale ? { rationale: body.rationale } : {}),
+  });
+  return json(result);
+}
+
+async function handleResolveGraphConflict(conflictGroupId: string, request: Request, env: Env): Promise<Response> {
+  const body = await request.json() as {
+    resolutionType?: string;
+    winningClaimId?: string;
+    reviewerLabel?: string;
+    rationale?: string;
+  };
+  if (!body.resolutionType?.trim() || !body.rationale?.trim()) {
+    return json({ error: "Conflict resolution requires resolutionType and rationale." }, 422);
+  }
+  const result = await createLoopPersistence(env).resolveConflict({
+    tenantId: DEFAULT_TENANT_ID,
+    conflictGroupId,
+    resolutionId: newId("cres"),
+    resolutionType: body.resolutionType,
+    ...(body.winningClaimId ? { winningClaimId: body.winningClaimId } : {}),
+    reviewerLabel: body.reviewerLabel?.trim() || "graph-reviewer",
+    rationale: body.rationale,
+  });
+  return json(result);
+}
+
+async function handleSetGraphClaimPreference(
+  claimId: string,
+  request: Request,
+  env: Env,
+  mode: "pin" | "exclude",
+): Promise<Response> {
+  const body = await request.json() as {
+    value?: boolean;
+    reviewerLabel?: string;
+    rationale?: string;
+  };
+  const value = body.value ?? true;
+  const result = await createLoopPersistence(env).setGraphClaimPreference({
+    tenantId: DEFAULT_TENANT_ID,
+    claimId,
+    ...(mode === "pin" ? { pinned: value } : { excludeFromSynthesis: value }),
+    reviewerLabel: body.reviewerLabel?.trim() || "graph-reviewer",
+    ...(body.rationale ? { rationale: body.rationale } : {}),
+  });
+  return json(result);
+}
+
+async function handleGraphRebuild(env: Env): Promise<Response> {
+  const result = await createLoopPersistence(env).rebuildGraphProjection({
+    tenantId: DEFAULT_TENANT_ID,
+  });
+  return json(result);
 }
 
 async function handleListInitiativeBriefs(env: Env): Promise<Response> {
@@ -407,11 +604,13 @@ async function routeAndMaybeExecuteLoop(env: Env): Promise<void> {
 
 async function processWorkItem(workItemId: string, env: Env): Promise<void> {
   const persistence = createLoopPersistence(env);
+  const embeddingModel = createEmbeddingModel(env);
   await executeWorkItem({
     persistence,
     policies: createPolicies({
       persistence,
       memoryModel: new OpenRouterMemoryGenerationModel(openRouterConfig(env)),
+      ...(embeddingModel ? { embeddingModel } : {}),
       initiativeBriefDraftModel: new OpenRouterInitiativeBriefDraftModel(openRouterConfig(env, {
         maxPrimaryTimeoutMs: 25_000,
         maxFallbackTimeoutMs: 15_000,
@@ -419,6 +618,23 @@ async function processWorkItem(workItemId: string, env: Env): Promise<void> {
       })),
     }),
     workItemId,
+  });
+}
+
+function createEmbeddingModel(env: Env): OpenRouterEmbeddingModel | undefined {
+  if ((env.EMBEDDING_PROVIDER ?? "openrouter") !== "openrouter") return undefined;
+  const model = env.EMBEDDING_MODEL?.trim();
+  const baseUrl = env.EMBEDDING_BASE_URL?.trim() || env.OPENROUTER_BASE_URL;
+  const dimensions = parsePositiveInteger(env.EMBEDDING_DIMENSIONS) ?? 1536;
+  if (!model || !baseUrl) return undefined;
+
+  return new OpenRouterEmbeddingModel({
+    apiKey: env.OPENROUTER_API_KEY,
+    baseUrl,
+    model,
+    dimensions,
+    ...(env.EMBEDDING_ENCODING_FORMAT === "float" ? { encodingFormat: "float" as const } : {}),
+    timeoutMs: 30_000,
   });
 }
 
@@ -442,6 +658,14 @@ function createLoopPersistence(env: Env): SupabaseLoopPersistence {
 
 function newId(prefix: string): string {
   return `${prefix}_${globalThis.crypto.randomUUID()}`;
+}
+
+function decodeRouteParam(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 function parseCommaSeparatedList(input: string | undefined): string[] {
@@ -500,6 +724,54 @@ function uniqueEvidenceSpans<T extends { id: string }>(spans: T[]): T[] {
     seen.add(span.id);
     return true;
   });
+}
+
+function graphAnswerToCitedAnswer(args: {
+  question: string;
+  graphContext: GraphRecallContext;
+  evidenceSpans: EvidenceSpan[];
+  answer: {
+    answer: string;
+    citations: Array<{ evidenceSpanId: string; claimIds: string[] }>;
+    usedEvidenceSpanIds: string[];
+    warnings: string[];
+    gap?: string | undefined;
+    model: string;
+  };
+}): CitedAnswer {
+  const citationEvidenceIds = uniqueStrings([
+    ...args.answer.usedEvidenceSpanIds,
+    ...args.answer.citations.map((citation) => citation.evidenceSpanId),
+  ]);
+  const citations = citationEvidenceIds
+    .map((evidenceSpanId) => args.evidenceSpans.find((span) => span.id === evidenceSpanId))
+    .filter((span): span is EvidenceSpan => Boolean(span))
+    .map((span) => ({
+      evidenceSpanId: span.id,
+      sourceVersionId: span.sourceVersionId,
+      lineRange: `${span.startLine}-${span.endLine}`,
+      text: span.text,
+    }));
+
+  return {
+    question: args.question,
+    answer: args.answer.answer,
+    evidenceSpanIds: citations.map((citation) => citation.evidenceSpanId),
+    citations,
+    matches: args.graphContext.claims.map((claim) => ({
+      rank: claim.rank,
+      memoryItem: claim.claim,
+      evidenceSpans: claim.evidenceSpans,
+    })),
+    ...(args.answer.gap ? { gap: args.answer.gap } : {}),
+    conflicts: args.graphContext.conflicts,
+    warnings: args.answer.warnings,
+    retrievalMetadata: args.graphContext.metadata,
+    answerMetadata: {
+      model: args.answer.model,
+      strategy: "grounded-answer",
+    },
+  };
 }
 
 function buildDeterministicInitiativeBriefDraft(args: {
@@ -641,6 +913,15 @@ function html(markup: string): Response {
   return new Response(markup, {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+function javascript(source: string): Response {
+  return new Response(source, {
+    headers: {
+      "Content-Type": "text/javascript; charset=utf-8",
       "Cache-Control": "no-store",
     },
   });
@@ -954,6 +1235,1015 @@ function renderAppShell(): string {
     }
 
     ${loopDrawerScript()}
+  </script>
+</body>
+</html>`;
+}
+
+function renderGraphShell(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Distillery Graph</title>
+  <script src="/assets/d3-local.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --bg: #070b12;
+      --pane: #0d1421;
+      --pane-2: #111a2a;
+      --line: #253044;
+      --line-strong: #3a4b67;
+      --text: #f8fafc;
+      --soft: #cbd5e1;
+      --muted: #8ea0b8;
+      --cyan: #38bdf8;
+      --green: #34d399;
+      --violet: #a78bfa;
+      --amber: #fbbf24;
+      --rose: #fb7185;
+      --ink: #04111f;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; overflow: hidden; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); }
+    a { color: #7dd3fc; text-decoration: none; }
+    button, input, textarea { font: inherit; }
+    button { border: 0; border-radius: 8px; padding: 8px 10px; background: var(--cyan); color: #082f49; font-weight: 800; cursor: pointer; transition: transform .12s ease, border-color .12s ease, background .12s ease, opacity .12s ease; }
+    button:hover { transform: translateY(-1px); }
+    button.secondary { background: #243247; color: #e2e8f0; border: 1px solid #334155; }
+    button.ghost { background: transparent; color: #cbd5e1; border: 1px solid #334155; }
+    button.danger { background: #fda4af; color: #450a0a; }
+    button:disabled { opacity: .55; cursor: wait; transform: none; }
+    input, textarea { width: 100%; border: 1px solid #334155; border-radius: 8px; background: #080f1c; color: var(--text); padding: 9px 10px; }
+    textarea { min-height: 84px; resize: vertical; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 2px; font-size: 20px; }
+    h2 { margin: 18px 0 9px; color: #dbeafe; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+    h3 { margin-bottom: 7px; font-size: 15px; }
+    pre { white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; background: #050914; border: 1px solid #1f2a3c; border-radius: 8px; padding: 10px; overflow: auto; color: #dbeafe; }
+    .shell { display: grid; grid-template-columns: minmax(260px, 330px) minmax(420px, 1fr) minmax(320px, 410px); height: 100vh; min-height: 0; overflow: hidden; }
+    .sidebar, .inspector { background: var(--pane); min-width: 0; height: 100vh; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
+    .sidebar { border-right: 1px solid var(--line); padding: 16px; }
+    .inspector { border-left: 1px solid var(--line); padding: 16px; }
+    .topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .subtitle { color: var(--muted); font-size: 13px; line-height: 1.4; }
+    .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .stack { display: grid; gap: 8px; }
+    .muted { color: var(--muted); }
+    .fine { color: var(--muted); font-size: 12px; line-height: 1.4; }
+    .pill { display: inline-flex; align-items: center; gap: 5px; min-height: 22px; padding: 3px 7px; border-radius: 999px; border: 1px solid #334155; background: #121c2d; color: #dbeafe; font-size: 12px; font-weight: 750; white-space: nowrap; }
+    .pill.conflict { border-color: rgba(251,113,133,.55); color: #fecdd3; background: rgba(251,113,133,.12); }
+    .pill.good { border-color: rgba(52,211,153,.48); color: #bbf7d0; background: rgba(52,211,153,.12); }
+    .pill.warn { border-color: rgba(251,191,36,.5); color: #fde68a; background: rgba(251,191,36,.1); }
+    .filterbar { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 10px; }
+    .filterbar button { padding: 7px 8px; color: #cbd5e1; background: #121c2d; border: 1px solid #263244; font-weight: 750; }
+    .filterbar button[aria-pressed="true"] { color: #082f49; background: var(--cyan); border-color: var(--cyan); }
+    .cluster-list { display: grid; gap: 8px; margin-top: 10px; }
+    .cluster { width: 100%; display: grid; gap: 8px; text-align: left; background: #101928; color: #e2e8f0; border: 1px solid #263244; border-radius: 8px; padding: 11px; position: relative; }
+    .cluster[aria-selected="true"] { background: #11263b; border-color: #38bdf8; box-shadow: inset 3px 0 0 #38bdf8, 0 12px 34px rgba(56,189,248,.12); }
+    .cluster-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+    .cluster-title strong { min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+    .cluster-index { color: #93c5fd; font-size: 11px; font-weight: 850; }
+    .canvas { position: relative; min-width: 0; height: 100vh; overflow: hidden; background:
+      radial-gradient(circle at 28% 18%, rgba(56,189,248,.09), transparent 24%),
+      radial-gradient(circle at 78% 70%, rgba(52,211,153,.07), transparent 22%),
+      #070b12; }
+    .canvas-header { position: absolute; top: 14px; left: 14px; right: 14px; z-index: 3; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; pointer-events: none; }
+    .canvas-title { max-width: min(620px, 68%); padding: 12px; border: 1px solid rgba(51,65,85,.85); border-radius: 8px; background: rgba(8,15,28,.88); box-shadow: 0 18px 46px rgba(0,0,0,.22); backdrop-filter: blur(14px); pointer-events: auto; }
+    .canvas-title h2 { margin: 0 0 4px; color: #f8fafc; font-size: 16px; text-transform: none; letter-spacing: 0; }
+    .canvas-title p { margin: 0; }
+    .toolbar { display: flex; gap: 8px; pointer-events: auto; }
+    .legend { position: absolute; left: 14px; bottom: 14px; z-index: 3; display: flex; flex-wrap: wrap; gap: 8px; max-width: calc(100% - 28px); padding: 9px; border: 1px solid rgba(51,65,85,.78); border-radius: 8px; background: rgba(8,15,28,.88); backdrop-filter: blur(14px); }
+    .legend-item { display: inline-flex; align-items: center; gap: 6px; color: #cbd5e1; font-size: 12px; white-space: nowrap; }
+    .swatch { width: 13px; height: 13px; border-radius: 4px; border: 1px solid rgba(255,255,255,.35); display: inline-block; }
+    .swatch.claim { border-radius: 999px; background: var(--cyan); }
+    .swatch.entity { background: var(--green); }
+    .swatch.evidence { background: var(--amber); transform: rotate(45deg); }
+    .swatch.schema { background: var(--violet); }
+    .edge-swatch { width: 24px; height: 0; border-top: 3px solid #64748b; display: inline-block; }
+    .edge-swatch.accepted { border-color: var(--green); }
+    .edge-swatch.rejected { border-color: var(--rose); border-top-style: dashed; }
+    svg { width: 100%; height: 100vh; display: block; touch-action: none; }
+    .graph-bg { fill: transparent; cursor: grab; }
+    .edge { stroke: #64748b; stroke-linecap: round; opacity: .74; cursor: pointer; transition: opacity .12s ease, stroke .12s ease; }
+    .edge.accepted { stroke: var(--green); }
+    .edge.rejected { stroke: var(--rose); stroke-dasharray: 7 5; }
+    .edge.proposed { stroke: var(--amber); }
+    .edge.supported_by { stroke: #5b6f91; stroke-dasharray: 3 5; }
+    .edge.mentions { stroke: #38bdf8; opacity: .54; }
+    .edge.selected { stroke: #f8fafc; opacity: 1; filter: drop-shadow(0 0 8px rgba(248,250,252,.55)); }
+    .edge.faded { opacity: .11; }
+    .edge-label { fill: #dbeafe; paint-order: stroke; stroke: #070b12; stroke-width: 4px; font-size: 10px; pointer-events: none; opacity: 0; }
+    .edge-label.visible { opacity: .9; }
+    .node { cursor: pointer; }
+    .node text { fill: #e2e8f0; paint-order: stroke; stroke: #070b12; stroke-width: 4px; font-size: 11px; pointer-events: none; }
+    .node .halo { fill: rgba(255,255,255,.001); stroke: transparent; stroke-width: 10; pointer-events: all; }
+    .node.selected .halo { stroke: rgba(56,189,248,.34); }
+    .node.neighbor .halo { stroke: rgba(52,211,153,.18); }
+    .node.faded { opacity: .2; }
+    .node-shape { stroke: #06111f; stroke-width: 2; filter: drop-shadow(0 8px 13px rgba(0,0,0,.28)); }
+    .node.claim .node-shape { fill: var(--cyan); }
+    .node.entity .node-shape { fill: var(--green); }
+    .node.evidence .node-shape { fill: var(--amber); }
+    .node.schema .node-shape { fill: var(--violet); }
+    .tooltip { position: absolute; z-index: 5; max-width: 320px; padding: 8px 10px; border: 1px solid #334155; border-radius: 8px; background: rgba(5,9,20,.94); color: #e2e8f0; box-shadow: 0 18px 50px rgba(0,0,0,.38); pointer-events: none; opacity: 0; transform: translate(10px, 10px); font-size: 12px; line-height: 1.35; }
+    .inspector-tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; margin: 10px 0 12px; }
+    .inspector-tabs button { padding: 7px 4px; color: #cbd5e1; background: #121c2d; border: 1px solid #263244; font-size: 12px; }
+    .inspector-tabs button[aria-selected="true"] { color: #082f49; background: var(--cyan); border-color: var(--cyan); }
+    .panel { border: 1px solid #2d3b52; border-radius: 8px; padding: 12px; margin: 8px 0; background: #101928; }
+    .panel.selected { border-color: #38bdf8; box-shadow: inset 3px 0 0 #38bdf8; }
+    .panel.conflict { border-color: rgba(251,113,133,.45); }
+    .panel-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .metric { padding: 10px; border: 1px solid #263244; border-radius: 8px; background: #0a1220; }
+    .metric strong { display: block; font-size: 20px; }
+    .metric span { color: var(--muted); font-size: 12px; }
+    .connection-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: start; }
+    .scorebar { height: 6px; overflow: hidden; border-radius: 999px; background: #1e293b; margin-top: 8px; }
+    .scorebar span { display: block; height: 100%; background: linear-gradient(90deg, var(--cyan), var(--green)); }
+    .claim-line { display: block; color: #dbeafe; overflow-wrap: anywhere; }
+    .claim-line small { display: block; color: var(--muted); margin-top: 3px; }
+    .empty { border: 1px dashed #334155; border-radius: 8px; padding: 13px; color: #cbd5e1; background: #0a1220; }
+    .statusline { min-height: 20px; color: var(--muted); font-size: 12px; }
+    .statusline.error { color: #fecdd3; }
+    @media (max-width: 1120px) {
+      .shell { grid-template-columns: minmax(230px, 300px) minmax(360px, 1fr); grid-template-rows: minmax(0, 1fr) minmax(220px, 34vh); }
+      .sidebar, .canvas, .inspector { height: 100%; min-height: 0; }
+      .inspector { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); max-height: none; }
+      svg { height: 100%; }
+    }
+    @media (max-width: 760px) {
+      html, body { height: auto; overflow: auto; }
+      .shell { grid-template-columns: 1fr; height: auto; min-height: 100vh; overflow: visible; }
+      .sidebar, .inspector { height: auto; max-height: 62vh; border: 0; border-bottom: 1px solid var(--line); }
+      .canvas { height: auto; }
+      .canvas-header { position: static; padding: 12px; display: grid; background: #070b12; }
+      .canvas-title { max-width: none; width: 100%; }
+      .toolbar { flex-wrap: wrap; }
+      .legend { position: static; margin: 0 12px 12px; }
+      svg { height: 62vh; }
+      .panel-grid { grid-template-columns: 1fr; }
+      .inspector-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <aside class="sidebar" aria-label="Graph clusters">
+      <div class="topbar">
+        <div>
+          <h1>Claim Graph</h1>
+          <div class="subtitle">Review memory clusters, links, evidence, and conflicts.</div>
+        </div>
+        <a href="/">Home</a>
+      </div>
+      <div class="row">
+        <button id="rebuild" type="button" class="secondary" title="Rebuild graph projection">Rebuild</button>
+        <span id="cluster-status" class="statusline"></span>
+      </div>
+      <h2>Explore</h2>
+      <input id="cluster-search" type="search" placeholder="Search clusters" autocomplete="off" />
+      <div class="filterbar" role="group" aria-label="Cluster filters">
+        <button type="button" data-cluster-filter="all" aria-pressed="true">All</button>
+        <button type="button" data-cluster-filter="conflicts" aria-pressed="false">Conflicts</button>
+        <button type="button" data-cluster-filter="connections" aria-pressed="false">Linked</button>
+      </div>
+      <h2>Clusters</h2>
+      <div id="clusters" class="cluster-list"></div>
+    </aside>
+    <section class="canvas">
+      <div class="canvas-header">
+        <div class="canvas-title">
+          <h2 id="graph-title">Select a cluster</h2>
+          <p id="graph-subtitle" class="fine">The graph focuses on the active entity cluster and its memory connections.</p>
+          <div id="graph-metrics" class="row" style="margin-top: 8px;"></div>
+        </div>
+        <div class="toolbar" aria-label="Graph controls">
+          <button id="zoom-in" type="button" class="secondary" title="Zoom in">+</button>
+          <button id="zoom-out" type="button" class="secondary" title="Zoom out">-</button>
+          <button id="focus" type="button" class="secondary" title="Center active graph">Focus</button>
+          <button id="reset" type="button" class="secondary" title="Reset selection">Reset</button>
+        </div>
+      </div>
+      <svg id="graph" role="img" aria-label="Claim graph"></svg>
+      <div id="graph-tooltip" class="tooltip"></div>
+      <div class="legend" aria-label="Graph legend">
+        <span class="legend-item"><span class="swatch claim"></span>Claim</span>
+        <span class="legend-item"><span class="swatch entity"></span>Entity</span>
+        <span class="legend-item"><span class="swatch evidence"></span>Evidence</span>
+        <span class="legend-item"><span class="swatch schema"></span>Schema</span>
+        <span class="legend-item"><span class="edge-swatch accepted"></span>Accepted</span>
+        <span class="legend-item"><span class="edge-swatch"></span>Proposed</span>
+        <span class="legend-item"><span class="edge-swatch rejected"></span>Rejected</span>
+      </div>
+    </section>
+    <aside class="inspector" aria-label="Graph inspector">
+      <div class="topbar">
+        <div>
+          <h1 id="inspector-title">Inspector</h1>
+          <div id="inspector-subtitle" class="subtitle">Select a cluster, node, or edge.</div>
+        </div>
+      </div>
+      <div class="inspector-tabs" role="tablist" aria-label="Inspector sections">
+        <button type="button" data-tab="overview" aria-selected="true">Overview</button>
+        <button type="button" data-tab="connections" aria-selected="false">Links</button>
+        <button type="button" data-tab="evidence" aria-selected="false">Evidence</button>
+        <button type="button" data-tab="conflicts" aria-selected="false">Conflicts</button>
+        <button type="button" data-tab="actions" aria-selected="false">Actions</button>
+      </div>
+      <div id="details"></div>
+    </aside>
+  </main>
+  <script>
+    const state = {
+      clusters: [],
+      cluster: null,
+      selectedClusterId: null,
+      selectedNodeId: null,
+      selectedEdgeId: null,
+      activeTab: "overview",
+      clusterFilter: "all",
+      search: "",
+      graph: { nodes: [], edges: [], simulation: null, zoom: null, transform: null }
+    };
+    const clustersEl = document.querySelector("#clusters");
+    const detailsEl = document.querySelector("#details");
+    const clusterStatusEl = document.querySelector("#cluster-status");
+    const searchEl = document.querySelector("#cluster-search");
+    const graphTitleEl = document.querySelector("#graph-title");
+    const graphSubtitleEl = document.querySelector("#graph-subtitle");
+    const graphMetricsEl = document.querySelector("#graph-metrics");
+    const inspectorTitleEl = document.querySelector("#inspector-title");
+    const inspectorSubtitleEl = document.querySelector("#inspector-subtitle");
+    const tooltipEl = document.querySelector("#graph-tooltip");
+    const svg = document.querySelector("#graph");
+    const d3Graph = window.d3;
+
+    loadClusters();
+
+    document.querySelector("#rebuild").addEventListener("click", async () => {
+      const button = document.querySelector("#rebuild");
+      button.disabled = true;
+      setStatus("Rebuilding...");
+      try {
+        await fetch("/api/graph/rebuild", { method: "POST" });
+        await loadClusters(state.selectedClusterId);
+        setStatus("Rebuilt");
+      } catch (error) {
+        setStatus("Rebuild failed", true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+    document.querySelector("#zoom-in").addEventListener("click", () => zoomBy(1.18));
+    document.querySelector("#zoom-out").addEventListener("click", () => zoomBy(.84));
+    document.querySelector("#focus").addEventListener("click", () => centerGraph(true));
+    document.querySelector("#reset").addEventListener("click", () => {
+      state.selectedNodeId = null;
+      state.selectedEdgeId = null;
+      updateFocusStyles();
+      renderInspector();
+      centerGraph(true);
+    });
+    searchEl.addEventListener("input", () => {
+      state.search = searchEl.value.trim().toLowerCase();
+      renderClusters();
+    });
+    document.querySelectorAll("[data-cluster-filter]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.clusterFilter = button.dataset.clusterFilter;
+        document.querySelectorAll("[data-cluster-filter]").forEach((candidate) => {
+          candidate.setAttribute("aria-pressed", String(candidate === button));
+        });
+        renderClusters();
+      });
+    });
+    document.querySelectorAll("[data-tab]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.activeTab = button.dataset.tab;
+        renderInspector();
+      });
+    });
+
+    async function loadClusters(preferredId) {
+      setStatus("Loading...");
+      const response = await fetch("/api/graph/clusters");
+      if (response.status === 401) {
+        location.href = "/";
+        return;
+      }
+      if (!response.ok) {
+        setStatus("Failed to load clusters", true);
+        return;
+      }
+      state.clusters = await response.json();
+      renderClusters();
+      const selected = preferredId && state.clusters.some((cluster) => cluster.id === preferredId) ? preferredId : state.clusters[0]?.id;
+      if (selected) await loadCluster(selected, { selectEntity: Boolean(preferredId) });
+      setStatus(state.clusters.length + " clusters");
+    }
+
+    function renderClusters() {
+      const query = state.search;
+      const filtered = state.clusters.filter((cluster) => {
+        const matchesQuery = !query || cluster.label.toLowerCase().includes(query) || cluster.id.toLowerCase().includes(query);
+        const matchesFilter = state.clusterFilter === "all"
+          || (state.clusterFilter === "conflicts" && cluster.openConflictCount > 0)
+          || (state.clusterFilter === "connections" && cluster.connectionCount > 0);
+        return matchesQuery && matchesFilter;
+      });
+      clustersEl.innerHTML = "";
+      if (filtered.length === 0) {
+        clustersEl.innerHTML = "<div class='empty'>No clusters match this filter.</div>";
+        return;
+      }
+      filtered.forEach((cluster, index) => {
+        const button = document.createElement("button");
+        button.className = "cluster";
+        button.type = "button";
+        button.dataset.clusterId = cluster.id;
+        button.setAttribute("aria-selected", String(cluster.id === state.selectedClusterId));
+        button.innerHTML =
+          "<span class='cluster-title'><strong>" + escapeHtml(cluster.label) + "</strong><span class='cluster-index'>#" + String(index + 1).padStart(2, "0") + "</span></span>" +
+          "<span class='row'>" +
+          "<span class='pill'>" + cluster.claimCount + " claims</span>" +
+          "<span class='pill good'>" + cluster.connectionCount + " links</span>" +
+          "<span class='pill " + (cluster.openConflictCount > 0 ? "conflict" : "") + "'>" + cluster.openConflictCount + " conflicts</span>" +
+          "</span>";
+        button.addEventListener("click", () => loadCluster(cluster.id));
+        clustersEl.append(button);
+      });
+      markSelectedCluster();
+    }
+
+    async function loadCluster(id, options = { selectEntity: true }) {
+      state.selectedClusterId = id;
+      state.selectedNodeId = null;
+      state.selectedEdgeId = null;
+      state.activeTab = "overview";
+      markSelectedCluster();
+      renderTabs();
+      graphTitleEl.textContent = "Loading " + labelForClusterId(id);
+      graphSubtitleEl.textContent = "Fetching cluster neighborhood...";
+      detailsEl.innerHTML = "<div class='panel'>Loading cluster connections...</div>";
+      const response = await fetch("/api/graph/clusters/" + encodeURIComponent(id));
+      if (response.status === 401) {
+        location.href = "/";
+        return;
+      }
+      if (!response.ok) {
+        detailsEl.innerHTML = "<div class='panel conflict'>Cluster failed to load.</div>";
+        return;
+      }
+      state.cluster = await response.json();
+      state.selectedNodeId = options.selectEntity && state.cluster.nodes.some((node) => node.id === id) ? id : null;
+      drawGraph();
+      renderInspector();
+    }
+
+    function drawGraph() {
+      const cluster = state.cluster;
+      if (!cluster || !d3Graph) return;
+      if (state.graph.simulation) state.graph.simulation.stop();
+      const width = Math.max(360, svg.clientWidth || 720);
+      const height = Math.max(360, svg.clientHeight || 640);
+      const model = buildGraphModel(cluster, width, height);
+      state.graph.nodes = model.nodes;
+      state.graph.edges = model.edges;
+      graphTitleEl.textContent = cluster.label;
+      graphSubtitleEl.textContent = "Click clusters, nodes, and edges to inspect how memory is connected.";
+      graphMetricsEl.innerHTML =
+        "<span class='pill'>" + cluster.claims.length + " claims</span>" +
+        "<span class='pill good'>" + cluster.connections.length + " connections</span>" +
+        "<span class='pill " + (cluster.conflicts.length ? "conflict" : "") + "'>" + cluster.conflicts.length + " conflicts</span>" +
+        "<span class='pill'>" + model.nodes.length + " nodes</span>" +
+        "<span class='pill'>" + model.edges.length + " graph links</span>";
+
+      const root = d3Graph.select(svg);
+      root.selectAll("*").remove();
+      root.append("rect")
+        .attr("class", "graph-bg")
+        .attr("width", width)
+        .attr("height", height)
+        .on("click", () => {
+          state.selectedNodeId = null;
+          state.selectedEdgeId = null;
+          hideTooltip();
+          updateFocusStyles();
+          renderInspector();
+        });
+      const zoomLayer = root.append("g").attr("class", "zoom-layer");
+      const edgeLayer = zoomLayer.append("g").attr("class", "edge-layer");
+      const labelLayer = zoomLayer.append("g").attr("class", "edge-label-layer");
+      const nodeLayer = zoomLayer.append("g").attr("class", "node-layer");
+
+      state.graph.zoom = d3Graph.zoom()
+        .scaleExtent([.42, 2.8])
+        .on("zoom", (event) => {
+          state.graph.transform = event.transform;
+          zoomLayer.attr("transform", event.transform);
+        });
+      root.call(state.graph.zoom);
+
+      const link = edgeLayer.selectAll("line")
+        .data(model.edges, (edge) => edge.id)
+        .join("line")
+        .attr("class", (edge) => "edge " + edgeClass(edge))
+        .attr("stroke-width", (edge) => Math.max(1.2, Math.min(5.5, Number(edge.weight || 1) * 3)))
+        .on("click", (event, edge) => {
+          event.stopPropagation();
+          state.selectedEdgeId = edge.id;
+          state.selectedNodeId = null;
+          state.activeTab = "overview";
+          hideTooltip();
+          updateFocusStyles();
+          renderInspector();
+        })
+        .on("pointermove", (event, edge) => showTooltip(event, edgeTooltip(edge)))
+        .on("pointerleave", hideTooltip);
+
+      const edgeLabel = labelLayer.selectAll("text")
+        .data(model.edges.filter((edge) => edge.properties?.connectionId), (edge) => edge.id)
+        .join("text")
+        .attr("class", "edge-label")
+        .text((edge) => edge.edgeType.replaceAll("_", " "));
+
+      const node = nodeLayer.selectAll("g")
+        .data(model.nodes, (item) => item.id)
+        .join("g")
+        .attr("class", (item) => "node " + item.nodeType)
+        .call(d3Graph.drag()
+          .on("start", (event, item) => {
+            if (!event.active) state.graph.simulation.alphaTarget(.25).restart();
+            item.fx = item.x;
+            item.fy = item.y;
+          })
+          .on("drag", (event, item) => {
+            item.fx = event.x;
+            item.fy = event.y;
+          })
+          .on("end", (event, item) => {
+            if (!event.active) state.graph.simulation.alphaTarget(0);
+            item.fx = null;
+            item.fy = null;
+          }))
+        .on("click", (event, item) => {
+          event.stopPropagation();
+          state.selectedNodeId = item.id;
+          state.selectedEdgeId = null;
+          state.activeTab = "overview";
+          hideTooltip();
+          updateFocusStyles();
+          renderInspector();
+        })
+        .on("pointermove", (event, item) => showTooltip(event, nodeTooltip(item)))
+        .on("pointerleave", hideTooltip);
+
+      node.append("circle")
+        .attr("class", "halo")
+        .attr("r", (item) => nodeRadius(item) + 7);
+      node.each(function(item) {
+        const selection = d3Graph.select(this);
+        if (item.nodeType === "entity") {
+          selection.append("rect")
+            .attr("class", "node-shape")
+            .attr("x", -nodeRadius(item))
+            .attr("y", -nodeRadius(item))
+            .attr("rx", 6)
+            .attr("width", nodeRadius(item) * 2)
+            .attr("height", nodeRadius(item) * 2);
+        } else if (item.nodeType === "evidence" || item.nodeType === "schema") {
+          const radius = nodeRadius(item);
+          selection.append("path")
+            .attr("class", "node-shape")
+            .attr("d", "M 0 " + (-radius) + " L " + radius + " 0 L 0 " + radius + " L " + (-radius) + " 0 Z");
+        } else {
+          selection.append("circle")
+            .attr("class", "node-shape")
+            .attr("r", nodeRadius(item));
+        }
+      });
+      node.append("text")
+        .attr("x", (item) => nodeRadius(item) + 7)
+        .attr("y", 4)
+        .text((item) => truncate(item.label, item.nodeType === "claim" ? 48 : 32));
+
+      state.graph.simulation = d3Graph.forceSimulation(model.nodes)
+        .force("link", d3Graph.forceLink(model.edges).id((item) => item.id).distance((edge) => edgeDistance(edge)).strength((edge) => edgeStrength(edge)))
+        .force("charge", d3Graph.forceManyBody().strength(-360))
+        .force("collide", d3Graph.forceCollide().radius((item) => nodeRadius(item) + 36))
+        .force("center", d3Graph.forceCenter(width / 2, height / 2))
+        .force("x", d3Graph.forceX(width / 2).strength(.04))
+        .force("y", d3Graph.forceY(height / 2).strength(.04))
+        .on("tick", () => {
+          link
+            .attr("x1", (edge) => edge.source.x)
+            .attr("y1", (edge) => edge.source.y)
+            .attr("x2", (edge) => edge.target.x)
+            .attr("y2", (edge) => edge.target.y);
+          edgeLabel
+            .attr("x", (edge) => (edge.source.x + edge.target.x) / 2)
+            .attr("y", (edge) => (edge.source.y + edge.target.y) / 2);
+          node.attr("transform", (item) => "translate(" + item.x + "," + item.y + ")");
+        });
+      centerGraph(false);
+      updateFocusStyles();
+    }
+
+    function buildGraphModel(cluster, width, height) {
+      const seen = new Set();
+      const nodes = cluster.nodes.map((node, index) => {
+        const angle = index * 2.399;
+        const radius = Math.min(width, height) * (node.nodeType === "claim" ? .22 : .31);
+        return {
+          ...node,
+          x: width / 2 + Math.cos(angle) * radius,
+          y: height / 2 + Math.sin(angle) * radius
+        };
+      });
+      const nodeIds = new Set(nodes.map((node) => node.id));
+      const edges = [];
+      for (const edge of cluster.edges) {
+        if (!nodeIds.has(edge.fromNodeId) || !nodeIds.has(edge.toNodeId)) continue;
+        seen.add(edge.properties?.connectionId || edge.id);
+        edges.push({ ...edge, source: edge.fromNodeId, target: edge.toNodeId });
+      }
+      for (const connection of cluster.connections) {
+        const connectionKey = connection.id;
+        const fromNodeId = "claim:" + connection.fromClaimId;
+        const toNodeId = "claim:" + connection.toClaimId;
+        if (seen.has(connectionKey) || !nodeIds.has(fromNodeId) || !nodeIds.has(toNodeId)) continue;
+        edges.push({
+          id: "edge:connection:" + connection.id,
+          tenantId: connection.tenantId,
+          fromNodeId,
+          toNodeId,
+          source: fromNodeId,
+          target: toNodeId,
+          edgeType: connection.connectionType,
+          weight: connection.confidence,
+          properties: { connectionId: connection.id, status: connection.status }
+        });
+      }
+      return { nodes, edges };
+    }
+
+    function renderInspector() {
+      renderTabs();
+      const cluster = state.cluster;
+      if (!cluster) {
+        inspectorTitleEl.textContent = "Inspector";
+        inspectorSubtitleEl.textContent = "Select a cluster, node, or edge.";
+        detailsEl.innerHTML = "<div class='empty'>No cluster selected.</div>";
+        return;
+      }
+      const node = state.selectedNodeId ? findNode(state.selectedNodeId) : null;
+      const edge = state.selectedEdgeId ? findEdge(state.selectedEdgeId) : null;
+      const connection = edge ? connectionForEdge(edge) : null;
+      const title = connection ? connection.connectionType.replaceAll("_", " ") : edge ? edge.edgeType.replaceAll("_", " ") : node ? node.label : cluster.label;
+      inspectorTitleEl.textContent = truncate(title, 44);
+      inspectorSubtitleEl.textContent = connection
+        ? "Connection edge"
+        : edge
+          ? "Graph edge"
+        : node
+          ? node.nodeType + " node"
+          : "Cluster overview";
+      if (state.activeTab === "overview") {
+        detailsEl.innerHTML = renderOverview(node, edge, connection);
+      } else if (state.activeTab === "connections") {
+        detailsEl.innerHTML = renderConnectionsPanel(node, edge);
+      } else if (state.activeTab === "evidence") {
+        detailsEl.innerHTML = renderEvidencePanel(node);
+      } else if (state.activeTab === "conflicts") {
+        detailsEl.innerHTML = renderConflictsPanel(node);
+      } else {
+        detailsEl.innerHTML = renderActionsPanel(node, edge, connection);
+      }
+    }
+
+    function renderOverview(node, edge, connection) {
+      const cluster = state.cluster;
+      if (connection) return renderConnectionDetail(connection, true);
+      if (edge) {
+        return "<div class='panel selected'><h3>" + escapeHtml(edge.edgeType.replaceAll("_", " ")) + "</h3>" +
+          "<p class='fine'>" + escapeHtml(edge.fromNodeId) + " -> " + escapeHtml(edge.toNodeId) + "</p>" +
+          "<span class='pill'>" + Number(edge.weight || 0).toFixed(2) + " weight</span></div>";
+      }
+      if (node) return renderNodeOverview(node);
+      return "<div class='panel selected'><h3>" + escapeHtml(cluster.label) + "</h3><p class='fine'>Focused entity cluster. Select a node or edge to narrow the inspector.</p>" +
+        "<div class='panel-grid'>" +
+        metric("Claims", cluster.claims.length) +
+        metric("Connections", cluster.connections.length) +
+        metric("Conflicts", cluster.conflicts.length) +
+        "</div></div>" +
+        renderConnectionsPanel(null, null, 5) +
+        renderConflictsPanel(null, 2);
+    }
+
+    function renderNodeOverview(node) {
+      const claim = claimForNode(node);
+      if (claim) {
+        const related = connectionsForClaim(claim.claim.id);
+        return "<div class='panel selected'><h3>" + escapeHtml(claim.claim.claimType) + "</h3><pre>" + escapeHtml(claim.claim.statement) + "</pre>" +
+          "<div class='row'><span class='pill'>rank " + Number(claim.rank || 0).toFixed(2) + "</span><span class='pill'>graph " + Number(claim.graphScore || 0).toFixed(2) + "</span><span class='pill'>lexical " + Number(claim.lexicalScore || 0).toFixed(2) + "</span><span class='pill'>vector " + Number(claim.vectorScore || 0).toFixed(2) + "</span></div></div>" +
+          "<h2>Connected claims</h2>" + (related.length ? related.slice(0, 6).map((connection) => renderConnectionDetail(connection, false)).join("") : "<div class='empty'>No claim-to-claim connections for this claim.</div>");
+      }
+      if (node.nodeType === "entity") {
+        const claims = claimsConnectedToNode(node.id);
+        const claimIds = new Set(claims.map((item) => item.claim.id));
+        const related = state.cluster.connections.filter((connection) => claimIds.has(connection.fromClaimId) || claimIds.has(connection.toClaimId));
+        return "<div class='panel selected'><h3>" + escapeHtml(node.label) + "</h3><p class='fine'>Entity node. These claims mention this entity.</p>" +
+          "<div class='row'><span class='pill'>" + claims.length + " claims</span><span class='pill good'>" + related.length + " related links</span></div></div>" +
+          claims.slice(0, 8).map((item) => claimSummary(item)).join("") +
+          (related.length ? "<h2>Connection reasons</h2>" + related.slice(0, 5).map((connection) => renderConnectionDetail(connection, false)).join("") : "");
+      }
+      if (node.nodeType === "evidence") {
+        const evidence = evidenceById(node.refId);
+        const claims = claimsConnectedToNode(node.id);
+        return "<div class='panel selected'><h3>" + escapeHtml(node.label) + "</h3><p class='fine'>Evidence node cited by " + claims.length + " claims.</p>" +
+          (evidence ? "<pre>" + escapeHtml(evidence.text) + "</pre><p class='fine'>Lines " + evidence.startLine + "-" + evidence.endLine + "</p>" : "") +
+          "</div>" + claims.map((item) => claimSummary(item)).join("");
+      }
+      return "<div class='panel selected'><h3>" + escapeHtml(node.label) + "</h3><p class='fine'>" + escapeHtml(node.nodeType) + " node</p><pre>" + escapeHtml(JSON.stringify(node.properties || {}, null, 2)) + "</pre></div>";
+    }
+
+    function renderConnectionsPanel(node, edge, limit) {
+      const cluster = state.cluster;
+      let connections = cluster.connections;
+      let graphEdges = state.graph.edges;
+      if (edge?.properties?.connectionId) connections = connections.filter((connection) => connection.id === edge.properties.connectionId);
+      if (edge) graphEdges = graphEdges.filter((candidate) => candidate.id === edge.id);
+      if (node?.nodeType === "claim") {
+        const claimId = node.refId;
+        connections = connections.filter((connection) => connection.fromClaimId === claimId || connection.toClaimId === claimId);
+        graphEdges = graphEdges.filter((candidate) => edgeTouchesNode(candidate, node.id));
+      } else if (node && node.nodeType !== "claim") {
+        const claimIds = new Set(claimsConnectedToNode(node.id).map((item) => item.claim.id));
+        connections = connections.filter((connection) => claimIds.has(connection.fromClaimId) || claimIds.has(connection.toClaimId));
+        graphEdges = graphEdges.filter((candidate) => edgeTouchesNode(candidate, node.id));
+      }
+      if (typeof limit === "number") connections = connections.slice(0, limit);
+      const connectionIds = new Set(connections.map((connection) => connection.id));
+      const visibleGraphEdges = graphEdges.filter((candidate) => !candidate.properties?.connectionId || !connectionIds.has(candidate.properties.connectionId));
+      if (connections.length === 0 && visibleGraphEdges.length === 0) return "<h2>Connections</h2><div class='empty'>No connections in this view.</div>";
+      const groups = ["proposed", "accepted", "rejected"].map((status) => ({
+        status,
+        items: connections.filter((connection) => connection.status === status)
+      })).filter((group) => group.items.length > 0);
+      const claimConnectionHtml = groups.map((group) =>
+        "<div class='row' style='margin-top: 10px;'><span class='pill " + (group.status === "accepted" ? "good" : group.status === "rejected" ? "conflict" : "warn") + "'>" + escapeHtml(group.status) + "</span><span class='fine'>" + group.items.length + " links</span></div>" +
+        group.items.map((connection) => renderConnectionDetail(connection, state.selectedEdgeId === "edge:connection:" + connection.id)).join("")
+      ).join("");
+      const graphEdgeHtml = visibleGraphEdges.length
+        ? "<h2>Graph links</h2>" + visibleGraphEdges.slice(0, typeof limit === "number" ? limit : 80).map((candidate) => renderGraphEdgeDetail(candidate, candidate.id === state.selectedEdgeId)).join("")
+        : "";
+      return "<h2>Connections</h2>" + (claimConnectionHtml || "<div class='empty'>No claim-to-claim connections in this view.</div>") + graphEdgeHtml;
+    }
+
+    function renderConnectionDetail(connection, selected) {
+      const from = claimById(connection.fromClaimId);
+      const to = claimById(connection.toClaimId);
+      const scoreWidth = Math.round(Number(connection.confidence || 0) * 100);
+      return "<div class='panel " + (selected ? "selected" : "") + "'>" +
+        "<div class='connection-row'><div><h3>" + escapeHtml(connection.connectionType.replaceAll("_", " ")) + "</h3>" +
+        "<div class='row'><span class='pill " + statusClass(connection.status) + "'>" + escapeHtml(connection.status) + "</span><span class='pill'>" + Number(connection.confidence || 0).toFixed(2) + " confidence</span></div></div>" +
+        "<button type='button' class='ghost' data-select-connection='" + escapeHtml(connection.id) + "'>Inspect</button></div>" +
+        "<div class='scorebar'><span style='width:" + scoreWidth + "%'></span></div>" +
+        "<p class='claim-line'><small>From</small>" + escapeHtml(from?.claim.statement || connection.fromClaimId) + "</p>" +
+        "<p class='claim-line'><small>To</small>" + escapeHtml(to?.claim.statement || connection.toClaimId) + "</p>" +
+        (connection.rationale ? "<p class='fine'>" + escapeHtml(connection.rationale) + "</p>" : "") +
+        "<details><summary>Score components</summary><pre>" + escapeHtml(JSON.stringify(connection.scoreComponents || {}, null, 2)) + "</pre></details>" +
+        "<div class='row'><button data-connection='" + escapeHtml(connection.id) + "' data-status='accepted'>Accept</button>" +
+        "<button class='danger' data-connection='" + escapeHtml(connection.id) + "' data-status='rejected'>Reject</button></div></div>";
+    }
+
+    function renderGraphEdgeDetail(edge, selected) {
+      const source = findNode(edge.source?.id || edge.fromNodeId);
+      const target = findNode(edge.target?.id || edge.toNodeId);
+      const connection = connectionForEdge(edge);
+      if (connection) return renderConnectionDetail(connection, selected);
+      return "<div class='panel " + (selected ? "selected" : "") + "'>" +
+        "<div class='connection-row'><div><h3>" + escapeHtml(edge.edgeType.replaceAll("_", " ")) + "</h3>" +
+        "<div class='row'><span class='pill'>" + Number(edge.weight || 0).toFixed(2) + " weight</span></div></div>" +
+        "<button type='button' class='ghost' data-select-edge='" + escapeHtml(edge.id) + "'>Inspect</button></div>" +
+        "<p class='claim-line'><small>From</small>" + escapeHtml(source?.label || edge.fromNodeId) + "</p>" +
+        "<p class='claim-line'><small>To</small>" + escapeHtml(target?.label || edge.toNodeId) + "</p></div>";
+    }
+
+    function renderEvidencePanel(node) {
+      let claims = state.cluster.claims;
+      if (node?.nodeType === "claim") claims = claims.filter((item) => "claim:" + item.claim.id === node.id);
+      if (node && node.nodeType !== "claim") claims = claimsConnectedToNode(node.id);
+      const seen = new Set();
+      const evidence = [];
+      for (const item of claims) {
+        for (const span of item.evidenceSpans || []) {
+          if (seen.has(span.id)) continue;
+          seen.add(span.id);
+          evidence.push({ span, claim: item.claim });
+        }
+      }
+      if (evidence.length === 0) return "<h2>Evidence</h2><div class='empty'>No evidence spans in this view.</div>";
+      return "<h2>Evidence</h2>" + evidence.map(({ span, claim }) =>
+        "<div class='panel'><div class='row'><span class='pill'>lines " + span.startLine + "-" + span.endLine + "</span><span class='pill'>" + escapeHtml(span.sourceVersionId) + "</span></div>" +
+        "<pre>" + escapeHtml(span.text) + "</pre><p class='fine'>Supports: " + escapeHtml(truncate(claim.statement, 140)) + "</p></div>"
+      ).join("");
+    }
+
+    function renderConflictsPanel(node, limit) {
+      let conflicts = state.cluster.conflicts;
+      if (node?.nodeType === "claim") {
+        conflicts = conflicts.filter((conflict) => conflict.members.some((member) => member.claimId === node.refId));
+      } else if (node && node.nodeType !== "claim") {
+        const claimIds = new Set(claimsConnectedToNode(node.id).map((item) => item.claim.id));
+        conflicts = conflicts.filter((conflict) => conflict.members.some((member) => claimIds.has(member.claimId)));
+      }
+      if (typeof limit === "number") conflicts = conflicts.slice(0, limit);
+      if (conflicts.length === 0) return "<h2>Conflicts</h2><div class='empty'>No conflicts in this view.</div>";
+      return "<h2>Conflicts</h2>" + conflicts.map((conflict) => {
+        const members = conflict.members.map((member) => {
+          const claim = claimById(member.claimId);
+          return "<div class='panel'><span class='pill conflict'>" + escapeHtml(member.role) + "</span><p>" + escapeHtml(claim?.claim.statement || member.claimId) + "</p><p class='fine'>Evidence: " + escapeHtml(member.evidenceSpanIds.join(", ")) + "</p></div>";
+        }).join("");
+        return "<div class='panel conflict'><div class='row'><span class='pill conflict'>" + escapeHtml(conflict.severity) + "</span><span class='pill'>" + escapeHtml(conflict.status) + "</span><span class='pill'>" + escapeHtml(conflict.conflictType) + "</span></div>" +
+          "<p>" + escapeHtml(conflict.summary) + "</p>" + members +
+          (conflict.status === "open" ? "<textarea data-resolution-id='" + escapeHtml(conflict.id) + "' placeholder='Resolution rationale'></textarea><div class='row'><button data-resolve='" + escapeHtml(conflict.id) + "'>Resolve conflict</button></div>" : "") +
+          "</div>";
+      }).join("");
+    }
+
+    function renderActionsPanel(node, edge, connection) {
+      const claim = node?.nodeType === "claim" ? claimForNode(node) : null;
+      const selectedConnection = connection || (edge ? connectionForEdge(edge) : null);
+      let html = "<h2>Actions</h2>";
+      if (claim) html += "<div class='panel selected'><h3>Claim actions</h3><p class='fine'>" + escapeHtml(truncate(claim.claim.statement, 170)) + "</p>" + preferenceButtons(claim.claim.id) + "</div>";
+      if (selectedConnection) html += renderConnectionDetail(selectedConnection, true);
+      html += "<div class='panel'><h3>Projection</h3><p class='fine'>Refresh the graph projection after reviewing links or conflicts.</p><button type='button' class='secondary' id='inspector-rebuild'>Rebuild graph</button></div>";
+      if (!claim && !selectedConnection) html += "<div class='empty'>Select a claim or connection for targeted review actions.</div>";
+      return html;
+    }
+
+    function preferenceButtons(claimId) {
+      return "<div class='row'><button data-pin='" + escapeHtml(claimId) + "'>Pin to initiative</button><button class='secondary' data-exclude='" + escapeHtml(claimId) + "'>Exclude from synthesis</button></div>";
+    }
+
+    detailsEl.addEventListener("click", async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const inspectConnectionId = target.dataset.selectConnection;
+      if (inspectConnectionId) {
+        const edge = state.graph.edges.find((candidate) => candidate.properties?.connectionId === inspectConnectionId);
+        if (edge) {
+          state.selectedEdgeId = edge.id;
+          state.selectedNodeId = null;
+          state.activeTab = "overview";
+          updateFocusStyles();
+          renderInspector();
+        }
+        return;
+      }
+      const inspectEdgeId = target.dataset.selectEdge;
+      if (inspectEdgeId) {
+        const edge = findEdge(inspectEdgeId);
+        if (edge) {
+          state.selectedEdgeId = edge.id;
+          state.selectedNodeId = null;
+          state.activeTab = "overview";
+          updateFocusStyles();
+          renderInspector();
+        }
+        return;
+      }
+      const connectionId = target.dataset.connection;
+      if (connectionId) {
+        target.disabled = true;
+        await fetch("/api/graph/connections/" + encodeURIComponent(connectionId) + "/review", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ status: target.dataset.status, reviewerLabel: "graph-reviewer" })
+        });
+        await loadCluster(state.cluster.id);
+        return;
+      }
+      const conflictId = target.dataset.resolve;
+      if (conflictId) {
+        target.disabled = true;
+        const textarea = Array.from(detailsEl.querySelectorAll("textarea[data-resolution-id]")).find((item) => item.dataset.resolutionId === conflictId);
+        await fetch("/api/graph/conflicts/" + encodeURIComponent(conflictId) + "/resolve", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ resolutionType: "reviewed", rationale: textarea?.value || "Resolved in graph review.", reviewerLabel: "graph-reviewer" })
+        });
+        await loadCluster(state.cluster.id);
+        return;
+      }
+      if (target.dataset.pin) {
+        target.disabled = true;
+        await fetch("/api/graph/claims/" + encodeURIComponent(target.dataset.pin) + "/pin", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ value: true, reviewerLabel: "graph-reviewer" }) });
+        target.textContent = "Pinned";
+        return;
+      }
+      if (target.dataset.exclude) {
+        target.disabled = true;
+        await fetch("/api/graph/claims/" + encodeURIComponent(target.dataset.exclude) + "/exclude-from-synthesis", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ value: true, reviewerLabel: "graph-reviewer" }) });
+        target.textContent = "Excluded";
+        return;
+      }
+      if (target.id === "inspector-rebuild") {
+        document.querySelector("#rebuild").click();
+      }
+    });
+
+    function updateFocusStyles() {
+      if (!d3Graph) return;
+      const selectedNodeId = state.selectedNodeId;
+      const selectedEdgeId = state.selectedEdgeId;
+      const connectedIds = new Set();
+      if (selectedNodeId) {
+        connectedIds.add(selectedNodeId);
+        for (const edge of state.graph.edges) {
+          const sourceId = edge.source?.id || edge.fromNodeId;
+          const targetId = edge.target?.id || edge.toNodeId;
+          if (sourceId === selectedNodeId || targetId === selectedNodeId) {
+            connectedIds.add(sourceId);
+            connectedIds.add(targetId);
+          }
+        }
+      }
+      if (selectedEdgeId) {
+        const edge = findEdge(selectedEdgeId);
+        if (edge) {
+          connectedIds.add(edge.source?.id || edge.fromNodeId);
+          connectedIds.add(edge.target?.id || edge.toNodeId);
+        }
+      }
+      const hasSelection = Boolean(selectedNodeId || selectedEdgeId);
+      d3Graph.select(svg).selectAll(".node")
+        .classed("selected", (item) => item.id === selectedNodeId)
+        .classed("neighbor", (item) => connectedIds.has(item.id) && item.id !== selectedNodeId)
+        .classed("faded", (item) => hasSelection && !connectedIds.has(item.id));
+      d3Graph.select(svg).selectAll(".edge")
+        .classed("selected", (edge) => edge.id === selectedEdgeId)
+        .classed("faded", (edge) => {
+          if (!hasSelection) return false;
+          const sourceId = edge.source?.id || edge.fromNodeId;
+          const targetId = edge.target?.id || edge.toNodeId;
+          if (edge.id === selectedEdgeId) return false;
+          return !(connectedIds.has(sourceId) && connectedIds.has(targetId));
+        });
+      d3Graph.select(svg).selectAll(".edge-label")
+        .classed("visible", (edge) => edge.id === selectedEdgeId || Boolean(selectedNodeId && (edge.source?.id === selectedNodeId || edge.target?.id === selectedNodeId)));
+    }
+
+    function centerGraph(animated) {
+      if (!state.graph.zoom || !d3Graph) return;
+      const width = Math.max(360, svg.clientWidth || 720);
+      const height = Math.max(360, svg.clientHeight || 640);
+      const transform = d3Graph.zoomIdentity.translate(width * .04, height * .04).scale(.92);
+      const selection = d3Graph.select(svg);
+      if (animated) selection.transition().duration(260).call(state.graph.zoom.transform, transform);
+      else selection.call(state.graph.zoom.transform, transform);
+    }
+
+    function zoomBy(amount) {
+      if (!state.graph.zoom || !d3Graph) return;
+      d3Graph.select(svg).transition().duration(180).call(state.graph.zoom.scaleBy, amount);
+    }
+
+    function markSelectedCluster() {
+      clustersEl.querySelectorAll(".cluster").forEach((button) => {
+        button.setAttribute("aria-selected", String(button.dataset.clusterId === state.selectedClusterId));
+      });
+    }
+
+    function renderTabs() {
+      document.querySelectorAll("[data-tab]").forEach((button) => {
+        button.setAttribute("aria-selected", String(button.dataset.tab === state.activeTab));
+      });
+    }
+
+    function metric(label, value) {
+      return "<div class='metric'><strong>" + escapeHtml(value) + "</strong><span>" + escapeHtml(label) + "</span></div>";
+    }
+
+    function nodeRadius(node) {
+      if (node.nodeType === "claim") return 18;
+      if (node.nodeType === "entity") return 15;
+      if (node.nodeType === "evidence") return 11;
+      return 12;
+    }
+
+    function edgeDistance(edge) {
+      if (edge.edgeType === "mentions") return 108;
+      if (edge.edgeType === "supported_by") return 96;
+      return 164;
+    }
+
+    function edgeStrength(edge) {
+      if (edge.edgeType === "mentions") return .55;
+      if (edge.edgeType === "supported_by") return .32;
+      return .68;
+    }
+
+    function edgeClass(edge) {
+      const status = edge.properties?.status || "";
+      return [edge.edgeType, status].filter(Boolean).join(" ");
+    }
+
+    function statusClass(status) {
+      return status === "accepted" ? "good" : status === "rejected" ? "conflict" : "warn";
+    }
+
+    function claimForNode(node) {
+      return state.cluster.claims.find((candidate) => "claim:" + candidate.claim.id === node.id);
+    }
+
+    function claimById(id) {
+      return state.cluster.claims.find((candidate) => candidate.claim.id === id);
+    }
+
+    function evidenceById(id) {
+      for (const claim of state.cluster.claims) {
+        const evidence = (claim.evidenceSpans || []).find((span) => span.id === id);
+        if (evidence) return evidence;
+      }
+      return null;
+    }
+
+    function findNode(id) {
+      return state.graph.nodes.find((node) => node.id === id) || null;
+    }
+
+    function findEdge(id) {
+      return state.graph.edges.find((edge) => edge.id === id) || null;
+    }
+
+    function connectionForEdge(edge) {
+      const id = edge?.properties?.connectionId;
+      if (!id) return null;
+      return state.cluster.connections.find((connection) => connection.id === id) || null;
+    }
+
+    function connectionsForClaim(claimId) {
+      return state.cluster.connections.filter((connection) => connection.fromClaimId === claimId || connection.toClaimId === claimId);
+    }
+
+    function edgeTouchesNode(edge, nodeId) {
+      return (edge.source?.id || edge.fromNodeId) === nodeId || (edge.target?.id || edge.toNodeId) === nodeId;
+    }
+
+    function claimsConnectedToNode(nodeId) {
+      const claimIds = new Set();
+      for (const edge of state.graph.edges) {
+        const sourceId = edge.source?.id || edge.fromNodeId;
+        const targetId = edge.target?.id || edge.toNodeId;
+        if (sourceId === nodeId && String(targetId).startsWith("claim:")) claimIds.add(String(targetId).slice(6));
+        if (targetId === nodeId && String(sourceId).startsWith("claim:")) claimIds.add(String(sourceId).slice(6));
+      }
+      return state.cluster.claims.filter((item) => claimIds.has(item.claim.id));
+    }
+
+    function claimSummary(item) {
+      return "<div class='panel'><span class='pill'>" + escapeHtml(item.claim.claimType) + "</span><p>" + escapeHtml(item.claim.statement) + "</p><p class='fine'>Evidence: " + escapeHtml(item.claim.evidenceSpanIds.join(", ")) + "</p></div>";
+    }
+
+    function labelForClusterId(id) {
+      return state.clusters.find((cluster) => cluster.id === id)?.label || id;
+    }
+
+    function nodeTooltip(node) {
+      return "<strong>" + escapeHtml(node.label) + "</strong><br><span class='fine'>" + escapeHtml(node.nodeType) + "</span>";
+    }
+
+    function edgeTooltip(edge) {
+      const connection = connectionForEdge(edge);
+      if (connection) return "<strong>" + escapeHtml(connection.connectionType.replaceAll("_", " ")) + "</strong><br>" + escapeHtml(connection.status) + " · " + Number(connection.confidence || 0).toFixed(2);
+      return "<strong>" + escapeHtml(edge.edgeType.replaceAll("_", " ")) + "</strong><br>weight " + Number(edge.weight || 0).toFixed(2);
+    }
+
+    function showTooltip(event, html) {
+      tooltipEl.innerHTML = html;
+      tooltipEl.style.left = event.clientX + "px";
+      tooltipEl.style.top = event.clientY + "px";
+      tooltipEl.style.opacity = "1";
+    }
+
+    function hideTooltip() {
+      tooltipEl.style.opacity = "0";
+    }
+
+    function setStatus(message, isError) {
+      clusterStatusEl.textContent = message || "";
+      clusterStatusEl.classList.toggle("error", Boolean(isError));
+    }
+    function truncate(value, max) { return String(value).length > max ? String(value).slice(0, max - 3) + "..." : String(value); }
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+    }
   </script>
 </body>
 </html>`;
