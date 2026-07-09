@@ -63,6 +63,7 @@ export const INITIATIVE_BRIEF_DECISIONS = [
 
 export const POLICY_NAMES = [
   "extract_memory",
+  "connect_memory",
   "discover_candidate",
   "check_freshness",
   "detect_contradiction",
@@ -76,6 +77,7 @@ export const POLICY_NAMES = [
 export const EVENT_TYPES = [
   "source_committed",
   "memory_committed",
+  "memory_connected",
   "memory_confirmed",
   "memory_edited",
   "memory_removed",
@@ -94,6 +96,7 @@ export const EVENT_TYPES = [
 
 export const PROPOSED_EVENT_TYPES = [
   "memory_proposed",
+  "memory_connection_proposed",
   "candidate_proposed",
   "artifact_draft_proposed",
   "freshness_warning_proposed",
@@ -189,6 +192,38 @@ export const LOOP_TIMELINE_SEVERITIES = [
   "error",
 ] as const;
 
+export const CLAIM_CONNECTION_TYPES = [
+  "same_initiative_signal",
+  "supports",
+  "depends_on",
+  "blocks",
+  "duplicates",
+  "refines",
+  "motivates",
+  "related_context",
+] as const;
+
+export const CLAIM_CONNECTION_STATUSES = [
+  "proposed",
+  "accepted",
+  "rejected",
+] as const;
+
+export const CONFLICT_TYPES = [
+  "mutual",
+  "temporal",
+  "granularity",
+  "scope",
+  "decision",
+  "ownership",
+  "dependency",
+  "metric_definition",
+] as const;
+
+export const CONFLICT_SEVERITIES = ["blocking", "warning"] as const;
+export const CONFLICT_STATUSES = ["open", "resolved", "dismissed"] as const;
+export const GRAPH_NODE_TYPES = ["claim", "entity", "schema", "evidence", "conflict"] as const;
+
 export const CaptureModeSchema = z.enum(["remember", "ask"]);
 export type CaptureMode = z.infer<typeof CaptureModeSchema>;
 
@@ -280,6 +315,24 @@ export type LoopTimelineItemKind = z.infer<typeof LoopTimelineItemKindSchema>;
 
 export const LoopTimelineSeveritySchema = z.enum(LOOP_TIMELINE_SEVERITIES);
 export type LoopTimelineSeverity = z.infer<typeof LoopTimelineSeveritySchema>;
+
+export const ClaimConnectionTypeSchema = z.enum(CLAIM_CONNECTION_TYPES);
+export type ClaimConnectionType = z.infer<typeof ClaimConnectionTypeSchema>;
+
+export const ClaimConnectionStatusSchema = z.enum(CLAIM_CONNECTION_STATUSES);
+export type ClaimConnectionStatus = z.infer<typeof ClaimConnectionStatusSchema>;
+
+export const ConflictTypeSchema = z.enum(CONFLICT_TYPES);
+export type ConflictType = z.infer<typeof ConflictTypeSchema>;
+
+export const ConflictSeveritySchema = z.enum(CONFLICT_SEVERITIES);
+export type ConflictSeverity = z.infer<typeof ConflictSeveritySchema>;
+
+export const ConflictStatusSchema = z.enum(CONFLICT_STATUSES);
+export type ConflictStatus = z.infer<typeof ConflictStatusSchema>;
+
+export const GraphNodeTypeSchema = z.enum(GRAPH_NODE_TYPES);
+export type GraphNodeType = z.infer<typeof GraphNodeTypeSchema>;
 
 export const IsoDateTimeStringSchema = z.string().min(1);
 
@@ -606,6 +659,139 @@ export const MemoryWithEvidenceSchema = z.object({
 });
 export type MemoryWithEvidence = z.infer<typeof MemoryWithEvidenceSchema>;
 
+export const GraphRetrievalClaimSchema = z.object({
+  claim: MemoryItemSchema,
+  evidenceSpans: z.array(EvidenceSpanSchema),
+  rank: z.number().default(0),
+  graphScore: z.number().default(0),
+  lexicalScore: z.number().default(0),
+  vectorScore: z.number().default(0),
+  connectionIds: z.array(z.string().min(1)).default([]),
+});
+export type GraphRetrievalClaim = z.infer<typeof GraphRetrievalClaimSchema>;
+
+export const ClaimConnectionSchema = z.object({
+  id: z.string().min(1),
+  tenantId: z.string().min(1),
+  fromClaimId: z.string().min(1),
+  toClaimId: z.string().min(1),
+  connectionType: ClaimConnectionTypeSchema,
+  status: ClaimConnectionStatusSchema.default("proposed"),
+  confidence: z.number().min(0).max(1),
+  scoreComponents: z.record(z.string(), z.number()).default({}),
+  evidenceSpanIds: z.array(z.string().min(1)).default([]),
+  rationale: z.string().nullable().optional(),
+  createdByPolicyRunId: z.string().nullable().optional(),
+  reviewerLabel: z.string().nullable().optional(),
+  reviewRationale: z.string().nullable().optional(),
+  createdAt: IsoDateTimeStringSchema,
+  updatedAt: IsoDateTimeStringSchema,
+});
+export type ClaimConnection = z.infer<typeof ClaimConnectionSchema>;
+
+export const ConflictMemberSchema = z.object({
+  conflictGroupId: z.string().min(1),
+  claimId: z.string().min(1),
+  role: z.string().min(1),
+  evidenceSpanIds: z.array(z.string().min(1)).default([]),
+});
+export type ConflictMember = z.infer<typeof ConflictMemberSchema>;
+
+export const ConflictGroupSchema = z.object({
+  id: z.string().min(1),
+  tenantId: z.string().min(1),
+  conflictType: ConflictTypeSchema,
+  severity: ConflictSeveritySchema,
+  status: ConflictStatusSchema.default("open"),
+  summary: z.string().min(1),
+  createdByPolicyRunId: z.string().nullable().optional(),
+  members: z.array(ConflictMemberSchema).default([]),
+  createdAt: IsoDateTimeStringSchema,
+  updatedAt: IsoDateTimeStringSchema,
+});
+export type ConflictGroup = z.infer<typeof ConflictGroupSchema>;
+
+export const GraphNodeSchema = z.object({
+  id: z.string().min(1),
+  tenantId: z.string().min(1),
+  nodeType: GraphNodeTypeSchema,
+  refId: z.string().min(1),
+  label: z.string().min(1),
+  properties: z.record(z.string(), z.unknown()).default({}),
+});
+export type GraphNode = z.infer<typeof GraphNodeSchema>;
+
+export const GraphEdgeSchema = z.object({
+  id: z.string().min(1),
+  tenantId: z.string().min(1),
+  fromNodeId: z.string().min(1),
+  toNodeId: z.string().min(1),
+  edgeType: z.string().min(1),
+  weight: z.number().default(1),
+  properties: z.record(z.string(), z.unknown()).default({}),
+});
+export type GraphEdge = z.infer<typeof GraphEdgeSchema>;
+
+export const GraphClusterSummarySchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  claimCount: z.number().int().min(0),
+  connectionCount: z.number().int().min(0),
+  openConflictCount: z.number().int().min(0),
+});
+export type GraphClusterSummary = z.infer<typeof GraphClusterSummarySchema>;
+
+export const GraphClusterSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  nodes: z.array(GraphNodeSchema),
+  edges: z.array(GraphEdgeSchema),
+  claims: z.array(GraphRetrievalClaimSchema),
+  connections: z.array(ClaimConnectionSchema),
+  conflicts: z.array(ConflictGroupSchema),
+});
+export type GraphCluster = z.infer<typeof GraphClusterSchema>;
+
+export const GraphRecallContextSchema = z.object({
+  question: z.string().min(1),
+  claims: z.array(GraphRetrievalClaimSchema),
+  conflicts: z.array(ConflictGroupSchema).default([]),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+});
+export type GraphRecallContext = z.infer<typeof GraphRecallContextSchema>;
+
+export const GroundedAnswerCitationSchema = z.object({
+  evidenceSpanId: z.string().min(1),
+  claimIds: z.array(z.string().min(1)).min(1),
+});
+export type GroundedAnswerCitation = z.infer<typeof GroundedAnswerCitationSchema>;
+
+export const GroundedAnswerResponseSchema = z.object({
+  answer: z.string().min(1),
+  citations: z.array(GroundedAnswerCitationSchema).default([]),
+  usedClaimIds: z.array(z.string().min(1)).default([]),
+  usedEvidenceSpanIds: z.array(z.string().min(1)).default([]),
+  warnings: z.array(z.string()).default([]),
+  gap: z.string().optional(),
+  model: z.string().min(1),
+});
+export type GroundedAnswerResponse = z.infer<typeof GroundedAnswerResponseSchema>;
+
+export const EmbeddingTargetTypeSchema = z.enum(["claim", "evidence_span", "entity", "schema_pattern"]);
+export type EmbeddingTargetType = z.infer<typeof EmbeddingTargetTypeSchema>;
+
+export const EmbeddingRequestSchema = z.object({
+  input: z.array(z.string().min(1)).min(1).max(128),
+  targetType: EmbeddingTargetTypeSchema,
+});
+export type EmbeddingRequest = z.infer<typeof EmbeddingRequestSchema>;
+
+export const EmbeddingResponseSchema = z.object({
+  vectors: z.array(z.array(z.number())),
+  model: z.string().min(1),
+});
+export type EmbeddingResponse = z.infer<typeof EmbeddingResponseSchema>;
+
 export const RecallCitationSchema = z.object({
   evidenceSpanId: z.string().min(1),
   sourceVersionId: z.string().min(1),
@@ -621,6 +807,10 @@ export const CitedAnswerSchema = z.object({
   citations: z.array(RecallCitationSchema).default([]),
   matches: z.array(RecallMatchSchema).default([]),
   gap: z.string().optional(),
+  conflicts: z.array(ConflictGroupSchema).default([]),
+  warnings: z.array(z.string()).default([]),
+  retrievalMetadata: z.record(z.string(), z.unknown()).default({}),
+  answerMetadata: z.record(z.string(), z.unknown()).default({}),
 });
 export type CitedAnswer = z.infer<typeof CitedAnswerSchema>;
 
