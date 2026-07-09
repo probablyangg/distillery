@@ -1,0 +1,209 @@
+{
+  "version": "hybrid-retrieval.v1",
+  "tenantId": "stable",
+  "evidenceSpans": [
+    {
+      "id": "ev_exact",
+      "sourceVersionId": "srcv_eval",
+      "startLine": 1,
+      "endLine": 1,
+      "startChar": 0,
+      "endChar": 80,
+      "text": "Project RAVEN-42 launch requires the compliance memo before public messaging."
+    },
+    {
+      "id": "ev_semantic",
+      "sourceVersionId": "srcv_eval",
+      "startLine": 2,
+      "endLine": 2,
+      "startChar": 0,
+      "endChar": 82,
+      "text": "The checkout launch cannot move forward until relayer reliability review clears."
+    },
+    {
+      "id": "ev_multihop",
+      "sourceVersionId": "srcv_eval",
+      "startLine": 3,
+      "endLine": 3,
+      "startChar": 0,
+      "endChar": 83,
+      "text": "The launch-readiness board tracks relayer review as the blocking dependency."
+    },
+    {
+      "id": "ev_conflict",
+      "sourceVersionId": "srcv_eval",
+      "startLine": 4,
+      "endLine": 4,
+      "startChar": 0,
+      "endChar": 72,
+      "text": "A later note says the relayer review is still unresolved for launch."
+    },
+    {
+      "id": "ev_stale",
+      "sourceVersionId": "srcv_eval",
+      "startLine": 5,
+      "endLine": 5,
+      "startChar": 0,
+      "endChar": 71,
+      "text": "An older plan assumed relayer review had already cleared for launch."
+    },
+    {
+      "id": "ev_irrelevant",
+      "sourceVersionId": "srcv_eval",
+      "startLine": 6,
+      "endLine": 6,
+      "startChar": 0,
+      "endChar": 78,
+      "text": "Merchant onboarding copy needs a new screenshot for the help center article."
+    }
+  ],
+  "claims": [
+    {
+      "id": "mem_exact",
+      "claimType": "dependency",
+      "statement": "Project RAVEN-42 launch requires the compliance memo before public messaging.",
+      "evidenceSpanIds": ["ev_exact"],
+      "entities": [{"name": "RAVEN-42", "entityType": "project", "canonicalName": "RAVEN-42"}],
+      "schemas": [{"subjectType": "project", "predicate": "requires", "objectType": "artifact", "status": "candidate"}]
+    },
+    {
+      "id": "mem_semantic",
+      "claimType": "dependency",
+      "statement": "Checkout launch depends on relayer reliability review clearing.",
+      "evidenceSpanIds": ["ev_semantic"],
+      "entities": [{"name": "relayer review", "entityType": "process", "canonicalName": "relayer review"}],
+      "schemas": [{"subjectType": "launch", "predicate": "depends_on", "objectType": "review", "status": "candidate"}]
+    },
+    {
+      "id": "mem_multihop",
+      "claimType": "risk",
+      "statement": "Launch readiness is blocked by the relayer review dependency.",
+      "evidenceSpanIds": ["ev_multihop"],
+      "entities": [{"name": "launch-readiness board", "entityType": "artifact", "canonicalName": "launch-readiness board"}],
+      "schemas": [{"subjectType": "artifact", "predicate": "tracks", "objectType": "dependency", "status": "candidate"}]
+    },
+    {
+      "id": "mem_conflict",
+      "claimType": "risk",
+      "statement": "Relayer review remains unresolved for launch.",
+      "evidenceSpanIds": ["ev_conflict"],
+      "entities": [{"name": "relayer review", "entityType": "process", "canonicalName": "relayer review"}],
+      "schemas": [{"subjectType": "review", "predicate": "blocks", "objectType": "launch", "status": "candidate"}]
+    },
+    {
+      "id": "mem_stale",
+      "claimType": "reported_decision",
+      "statement": "An older plan assumed relayer review had cleared for launch.",
+      "evidenceSpanIds": ["ev_stale"],
+      "entities": [{"name": "relayer review", "entityType": "process", "canonicalName": "relayer review"}],
+      "schemas": [{"subjectType": "plan", "predicate": "assumed", "objectType": "review_state", "status": "candidate"}]
+    },
+    {
+      "id": "mem_irrelevant",
+      "claimType": "scope_statement",
+      "statement": "Merchant onboarding copy needs a new screenshot for the help center article.",
+      "evidenceSpanIds": ["ev_irrelevant"],
+      "entities": [{"name": "help center article", "entityType": "artifact", "canonicalName": "help center article"}],
+      "schemas": [{"subjectType": "artifact", "predicate": "needs", "objectType": "asset", "status": "candidate"}]
+    }
+  ],
+  "graphEdges": [
+    {"from": "claim:mem_semantic", "to": "entity:relayer_review", "type": "mentions", "weight": 0.8},
+    {"from": "entity:relayer_review", "to": "claim:mem_multihop", "type": "mentioned_by", "weight": 0.8},
+    {"from": "entity:relayer_review", "to": "claim:mem_conflict", "type": "mentioned_by", "weight": 0.8},
+    {"from": "entity:relayer_review", "to": "claim:mem_stale", "type": "mentioned_by", "weight": 0.3},
+    {"from": "claim:mem_irrelevant", "to": "entity:help_center_article", "type": "mentions", "weight": 0.8}
+  ],
+  "conflicts": [
+    {
+      "id": "conf_rel_review",
+      "tenantId": "stable",
+      "conflictType": "temporal",
+      "severity": "warning",
+      "status": "open",
+      "summary": "Relayer review state is inconsistent across older and newer launch notes.",
+      "members": [
+        {"conflictGroupId": "conf_rel_review", "claimId": "mem_conflict", "role": "newer", "evidenceSpanIds": ["ev_conflict"]},
+        {"conflictGroupId": "conf_rel_review", "claimId": "mem_stale", "role": "older", "evidenceSpanIds": ["ev_stale"]}
+      ],
+      "createdAt": "2026-07-09T00:00:00.000Z",
+      "updatedAt": "2026-07-09T00:00:00.000Z"
+    }
+  ],
+  "cases": [
+    {
+      "id": "exact_identifier_recall",
+      "profile": "ask",
+      "query": "What is blocking RAVEN-42?",
+      "vectorCandidates": [],
+      "sparseCandidates": ["mem_exact"],
+      "expectedClaimIds": ["mem_exact"],
+      "forbiddenClaimIds": ["mem_irrelevant"],
+      "expectedMetadata": ["sparse:claim"]
+    },
+    {
+      "id": "semantic_paraphrase_recall",
+      "profile": "ask",
+      "query": "What review is preventing checkout release?",
+      "vectorCandidates": ["mem_semantic"],
+      "sparseCandidates": [],
+      "expectedClaimIds": ["mem_semantic"],
+      "expectedVectorClaimIds": ["mem_semantic"]
+    },
+    {
+      "id": "multi_hop_graph_recall",
+      "profile": "ask",
+      "query": "What launch-readiness risks are connected to relayer review?",
+      "vectorCandidates": ["mem_semantic"],
+      "sparseCandidates": [],
+      "expectedClaimIds": ["mem_multihop"],
+      "expectedGraphClaimIds": ["mem_multihop"]
+    },
+    {
+      "id": "conflict_aware_retrieval",
+      "profile": "ask",
+      "query": "Is relayer review cleared?",
+      "vectorCandidates": ["mem_conflict"],
+      "sparseCandidates": [],
+      "expectedClaimIds": ["mem_conflict"],
+      "expectedConflictIds": ["conf_rel_review"]
+    },
+    {
+      "id": "irrelevant_neighborhood_resistance",
+      "profile": "ask",
+      "query": "What blocks relayer review?",
+      "vectorCandidates": ["mem_semantic"],
+      "sparseCandidates": [],
+      "expectedClaimIds": ["mem_semantic"],
+      "forbiddenClaimIds": ["mem_irrelevant"]
+    },
+    {
+      "id": "synthesis_breadth_and_diversity",
+      "profile": "synthesis",
+      "query": "Synthesize launch readiness around relayer review.",
+      "seedMemoryItemIds": ["mem_semantic"],
+      "vectorCandidates": ["mem_semantic"],
+      "sparseCandidates": ["mem_conflict"],
+      "expectedClaimIds": ["mem_semantic", "mem_multihop", "mem_conflict"],
+      "minReturnedClaims": 3
+    },
+    {
+      "id": "stale_or_low_authority_suppression",
+      "profile": "ask",
+      "query": "What is the current relayer review state?",
+      "vectorCandidates": ["mem_conflict", "mem_stale"],
+      "sparseCandidates": [],
+      "expectedClaimIds": ["mem_conflict"],
+      "forbiddenTopClaimIds": ["mem_stale"]
+    },
+    {
+      "id": "citation_validity",
+      "profile": "ask",
+      "query": "What evidence says relayer review blocks launch?",
+      "vectorCandidates": ["mem_semantic"],
+      "sparseCandidates": [],
+      "expectedClaimIds": ["mem_semantic"],
+      "expectedEvidenceSpanIds": ["ev_semantic"]
+    }
+  ]
+}
