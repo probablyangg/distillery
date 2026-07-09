@@ -4,6 +4,7 @@ import {
   OpenRouterGroundedAnswerModel,
   OpenRouterInitiativeBriefDraftModel,
   OpenRouterMemoryGenerationModel,
+  OpenRouterRetrievalRerankerModel,
 } from "./index";
 
 describe("OpenRouterMemoryGenerationModel", () => {
@@ -284,6 +285,96 @@ describe("OpenRouterGroundedAnswerModel", () => {
       evidenceSpans: [],
       conflicts: [],
     })).rejects.toThrow("unavailable");
+  });
+});
+
+describe("OpenRouterRetrievalRerankerModel", () => {
+  it("reranks supplied claim IDs", async () => {
+    const model = new OpenRouterRetrievalRerankerModel({
+      apiKey: "test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "moonshotai/kimi-k2.7-code",
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as {
+          response_format?: { json_schema?: { name?: string; schema?: { required?: string[] } } };
+          messages?: Array<{ content: string }>;
+        };
+        expect(body.response_format?.json_schema?.name).toBe("retrieval_rerank");
+        expect(body.response_format?.json_schema?.schema?.required).toEqual(["rankedClaimIds"]);
+        expect(body.messages?.[1]?.content).toContain("claimId=\"mem_2\"");
+        return Response.json({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                rankedClaimIds: ["mem_2", "mem_1"],
+              }),
+            },
+          }],
+        });
+      },
+    });
+
+    const result = await model.rerankRetrieval({
+      question: "What blocks launch?",
+      profile: "ask",
+      candidates: [
+        {
+          claimId: "mem_1",
+          statement: "Relayer review is related to launch.",
+          evidenceSpanTexts: ["Relayer review is related to launch."],
+          graphScore: 0.3,
+          vectorScore: 0.4,
+          sparseScore: 0,
+          conflictWarningCount: 0,
+        },
+        {
+          claimId: "mem_2",
+          statement: "Relayer review blocks launch.",
+          evidenceSpanTexts: ["Relayer review blocks launch."],
+          graphScore: 0.2,
+          vectorScore: 0.5,
+          sparseScore: 1,
+          conflictWarningCount: 0,
+        },
+      ],
+    });
+
+    expect(result.rankedClaimIds).toEqual(["mem_2", "mem_1"]);
+    expect(result.rationaleByClaimId).toEqual({});
+    expect(result.model).toBe("moonshotai/kimi-k2.7-code");
+  });
+
+  it("rejects unknown reranked claim IDs", async () => {
+    const model = new OpenRouterRetrievalRerankerModel({
+      apiKey: "test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "moonshotai/kimi-k2.7-code",
+      fetchImpl: async () =>
+        Response.json({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                rankedClaimIds: ["mem_missing"],
+                rationaleByClaimId: {},
+              }),
+            },
+          }],
+        }),
+    });
+
+    await expect(model.rerankRetrieval({
+      question: "What blocks launch?",
+      profile: "ask",
+      candidates: [{
+        claimId: "mem_1",
+        statement: "Relayer review blocks launch.",
+        evidenceSpanTexts: ["Relayer review blocks launch."],
+        graphScore: 1,
+        vectorScore: 1,
+        sparseScore: 0,
+        conflictWarningCount: 0,
+      }],
+    })).rejects.toThrow("unknown claim ID");
   });
 });
 

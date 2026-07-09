@@ -23,9 +23,11 @@ import {
   groundedAnswerSystemPrompt,
   initiativeBriefDraftSystemPrompt,
   memoryGenerationSystemPrompt,
+  renderRetrievalRerankInputForModel,
   renderGroundedAnswerInputForModel,
   renderInitiativeBriefDraftInputForModel,
   renderMemoryGenerationInputForModel,
+  retrievalRerankSystemPrompt,
 } from "@distillery/prompts";
 import { jsonrepair } from "jsonrepair";
 
@@ -74,6 +76,32 @@ export interface EmbeddingModel {
 
 export interface GroundedAnswerModel {
   generateGroundedAnswer(request: GroundedAnswerRequest): Promise<GroundedAnswerResponse>;
+}
+
+export type RetrievalRerankCandidate = {
+  claimId: string;
+  statement: string;
+  evidenceSpanTexts: string[];
+  graphScore: number;
+  vectorScore: number;
+  sparseScore: number;
+  conflictWarningCount: number;
+};
+
+export type RetrievalRerankRequest = {
+  question: string;
+  profile: "ask" | "synthesis";
+  candidates: RetrievalRerankCandidate[];
+};
+
+export type RetrievalRerankResponse = {
+  rankedClaimIds: string[];
+  rationaleByClaimId: Record<string, string>;
+  model: string;
+};
+
+export interface RetrievalRerankerModel {
+  rerankRetrieval(request: RetrievalRerankRequest): Promise<RetrievalRerankResponse>;
 }
 
 export type OpenRouterModelConfig = {
@@ -234,6 +262,22 @@ const GROUNDED_ANSWER_SCHEMA = {
     usedEvidenceSpanIds: { type: "array", items: { type: "string" } },
     warnings: { type: "array", items: { type: "string" } },
     gap: { type: "string" },
+  },
+};
+
+const RETRIEVAL_RERANK_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["rankedClaimIds"],
+  properties: {
+    rankedClaimIds: {
+      type: "array",
+      items: { type: "string" },
+    },
+    rationaleByClaimId: {
+      type: "object",
+      additionalProperties: { type: "string", maxLength: 120 },
+    },
   },
 };
 
@@ -605,6 +649,118 @@ export class OpenRouterGroundedAnswerModel implements GroundedAnswerModel {
     } finally {
       clearTimeout(timeout);
     }
+  }
+}
+
+export class OpenRouterRetrievalRerankerModel implements RetrievalRerankerModel {
+  constructor(private readonly config: OpenRouterModelConfig) {}
+
+  async rerankRetrieval(request: RetrievalRerankRequest): Promise<RetrievalRerankResponse> {
+    const models = unique([this.config.model, ...(this.config.fallbackModels ?? [])]);
+    const failures: string[] = [];
+
+    for (const [index, model] of models.entries()) {
+      try {
+        const timeoutMs = index === 0
+          ? this.config.timeoutMs
+          : this.config.fallbackTimeoutMs ?? this.config.timeoutMs;
+        return await this.rerankRetrievalWithModel(request, model, timeoutMs);
+      } catch (error) {
+        failures.push(`${model}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    throw new Error(`OpenRouter retrieval rerank failed for all configured models. ${failures.join(" | ")}`);
+  }
+
+  private async rerankRetrievalWithModel(
+    request: RetrievalRerankRequest,
+    model: string,
+    configuredTimeoutMs: number | undefined,
+  ): Promise<RetrievalRerankResponse> {
+    const abortController = new AbortController();
+    const timeoutMs = configuredTimeoutMs ?? 12_000;
+    let didTimeout = false;
+    const timeout = setTimeout(() => {
+      didTimeout = true;
+      abortController.abort();
+    }, timeoutMs);
+
+    try {
+      let response: Response;
+      try {
+        const fetchImpl = this.config.fetchImpl ?? ((input, init) => fetch(input, init));
+        response = await fetchImpl(`${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+          method: "POST",
+          signal: abortController.signal,
+          headers: {
+            Authorization: `Bearer ${this.config.apiKey}`,
+            "Content-Type": "application/json",
+            "X-OpenRouter-Title": this.config.appTitle ?? "Distillery v0",
+          },
+          body: JSON.stringify({
+            model,
+            temperature: 0,
+            max_tokens: 1000,
+            messages: [
+              { role: "system", content: retrievalRerankSystemPrompt() },
+              { role: "user", content: renderRetrievalRerankInputForModel(request) },
+            ],
+            response_format: {
+              type: "json_schema",
+              json_schema: {
+                name: "retrieval_rerank",
+                strict: true,
+                schema: RETRIEVAL_RERANK_SCHEMA,
+              },
+            },
+          }),
+        });
+      } catch (error) {
+        if (didTimeout || abortController.signal.aborted) {
+          throw new Error(`OpenRouter retrieval rerank timed out after ${timeoutMs}ms for model ${model}.`);
+        }
+        throw error;
+      }
+
+      const rawText = await readModelResponseText(response, abortController.signal, didTimeout, timeoutMs, "OpenRouter retrieval rerank", model);
+      if (!response.ok) {
+        throw new Error(`OpenRouter retrieval rerank failed: ${response.status} ${rawText.slice(0, 500)}`);
+      }
+
+      const raw = JSON.parse(rawText) as { choices?: Array<{ message?: { content?: string } }> };
+      const content = raw.choices?.[0]?.message?.content;
+      if (!content) throw new Error("OpenRouter response did not include message content.");
+
+      const parsed = Object(parseModelJson(content)) as {
+        rankedClaimIds?: unknown;
+        rationaleByClaimId?: unknown;
+      };
+      const rankedClaimIds = Array.isArray(parsed.rankedClaimIds)
+        ? parsed.rankedClaimIds.filter((value): value is string => typeof value === "string")
+        : [];
+      const rationaleByClaimId = typeof parsed.rationaleByClaimId === "object" && parsed.rationaleByClaimId !== null
+        ? Object.fromEntries(Object.entries(parsed.rationaleByClaimId).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+        : {};
+      const responsePayload = { rankedClaimIds, rationaleByClaimId, model };
+      validateRetrievalRerankResponse(responsePayload, request);
+      return responsePayload;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+export function validateRetrievalRerankResponse(
+  response: RetrievalRerankResponse,
+  request: RetrievalRerankRequest,
+): void {
+  const allowedClaimIds = new Set(request.candidates.map((candidate) => candidate.claimId));
+  const seen = new Set<string>();
+  for (const claimId of response.rankedClaimIds) {
+    if (!allowedClaimIds.has(claimId)) throw new Error(`Retrieval reranker returned unknown claim ID: ${claimId}`);
+    if (seen.has(claimId)) throw new Error(`Retrieval reranker returned duplicate claim ID: ${claimId}`);
+    seen.add(claimId);
   }
 }
 
