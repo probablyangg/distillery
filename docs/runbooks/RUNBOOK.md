@@ -146,6 +146,12 @@ For pilots it is acceptable to clear application data and reseed.
 This deletes all tenant-scoped app data while preserving schema/functions:
 
 ```bash
+pnpm reset:stable
+```
+
+Equivalent SQL:
+
+```bash
 psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction <<'SQL'
 truncate table tenants cascade;
 notify pgrst, 'reload schema';

@@ -89,6 +89,13 @@ Seed Stable starter data:
 PATH=/opt/homebrew/bin:$PATH pnpm seed:stable
 ```
 
+Reset and reseed Stable pilot data:
+
+```bash
+PATH=/opt/homebrew/bin:$PATH pnpm reset:stable
+PATH=/opt/homebrew/bin:$PATH pnpm seed:stable
+```
+
 Deploy:
 
 ```bash

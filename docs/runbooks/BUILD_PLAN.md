@@ -250,7 +250,6 @@ Recommended next coverage:
 - Improve first-run UX copy.
 - Make trace details easier to scan.
 - Add model run metadata display for generated drafts.
-- Add a safe `reset:stable` script for pilots.
 - Add automated deployed smoke coverage for both pages.
 - Add duplicate/contradiction candidate detection.
 - Broaden contradiction detection beyond deterministic shared-subject polarity checks.

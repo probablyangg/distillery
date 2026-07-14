@@ -116,6 +116,7 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 - Cloudflare Worker web/API deployment.
 - Cloudflare Queue binding used as a noncanonical wakeup transport with `{ workItemId }` messages.
 - Supabase PostgreSQL with RPC functions for multi-table commits.
+- `pnpm reset:stable` pilot reset command that clears tenant-scoped app data while preserving schema/functions.
 - Loop tables:
   - `ledger_events`;
   - `event_outbox`;
@@ -258,7 +259,7 @@ Build next:
    - fallback used;
    - latency;
    - failure reason.
-5. Safer DB reset/seed command for pilots.
+5. Browser-verified graph page screenshot pass.
 
 ### Memory quality
 
