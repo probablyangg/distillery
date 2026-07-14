@@ -4,16 +4,20 @@ import type {
   EmbeddingResponse,
   EvidenceSpan,
   GeneratedMemoryBatch,
+  GeneratedMemoryItem,
   GraphRetrievalClaim,
   GroundedAnswerResponse,
   InitiativeBriefDraft,
   MemoryItem,
+  MemoryWithEvidence,
 } from "@distillery/contracts";
 import {
   CLAIM_TYPES,
+  CLAIM_CONNECTION_TYPES,
   EmbeddingRequestSchema,
   EmbeddingResponseSchema,
   GeneratedMemoryBatchSchema,
+  GeneratedMemoryItemSchema,
   GroundedAnswerResponseSchema,
   InitiativeBriefDraftSchema,
   EPISTEMIC_STATUSES,
@@ -22,7 +26,11 @@ import {
 import {
   groundedAnswerSystemPrompt,
   initiativeBriefDraftSystemPrompt,
+  memoryCandidateVerifierSystemPrompt,
+  memoryConnectionScorerSystemPrompt,
   memoryGenerationSystemPrompt,
+  renderMemoryCandidateVerificationInputForModel,
+  renderMemoryConnectionScoringInputForModel,
   renderRetrievalRerankInputForModel,
   renderGroundedAnswerInputForModel,
   renderInitiativeBriefDraftInputForModel,
@@ -39,6 +47,67 @@ export type MemoryGenerationRequest = {
 
 export type MemoryGenerationResponse = {
   parsed: GeneratedMemoryBatch;
+  raw: unknown;
+  model: string;
+};
+
+export type MemoryCandidateVerificationDecision =
+  | "verified"
+  | "needs_review"
+  | "corrected"
+  | "duplicate"
+  | "unsupported";
+
+export type MemoryCandidateVerificationRequest = {
+  evidenceSpans: EvidenceSpan[];
+  candidates: GeneratedMemoryItem[];
+  negativeExpectations?: string[];
+};
+
+export type MemoryCandidateVerificationItem = {
+  temporaryId: string;
+  decision: MemoryCandidateVerificationDecision;
+  rationale: string;
+  correctedItem?: GeneratedMemoryItem;
+};
+
+export type MemoryCandidateVerificationResponse = {
+  decisions: MemoryCandidateVerificationItem[];
+  raw: unknown;
+  model: string;
+};
+
+export type MemoryConnectionTier = "direct" | "supporting" | "contextual" | "weak";
+
+export type MemoryConnectionScoringCandidate = {
+  id: string;
+  fromClaimId: string;
+  toClaimId: string;
+  connectionType: string;
+  confidence: number;
+  scoreComponents: Record<string, unknown>;
+  evidenceSpanIds: string[];
+  rationale: string;
+};
+
+export type MemoryConnectionScoringRequest = {
+  memory: MemoryWithEvidence[];
+  candidates: MemoryConnectionScoringCandidate[];
+};
+
+export type MemoryConnectionScoringDecision = {
+  candidateId: string;
+  tier: MemoryConnectionTier;
+  connectionType: string;
+  connectionReason: string;
+  confidence: number;
+  rationale: string;
+  evidenceSpanIds: string[];
+  reviewRequired: boolean;
+};
+
+export type MemoryConnectionScoringResponse = {
+  decisions: MemoryConnectionScoringDecision[];
   raw: unknown;
   model: string;
 };
@@ -64,6 +133,14 @@ export type GroundedAnswerRequest = {
 
 export interface MemoryGenerationModel {
   generateMemory(request: MemoryGenerationRequest): Promise<MemoryGenerationResponse>;
+}
+
+export interface MemoryCandidateVerifierModel {
+  verifyMemoryCandidates(request: MemoryCandidateVerificationRequest): Promise<MemoryCandidateVerificationResponse>;
+}
+
+export interface MemoryConnectionScorerModel {
+  scoreMemoryConnections(request: MemoryConnectionScoringRequest): Promise<MemoryConnectionScoringResponse>;
 }
 
 export interface InitiativeBriefDraftModel {
@@ -120,6 +197,92 @@ export type OpenRouterEmbeddingModelConfig = OpenRouterModelConfig & {
   encodingFormat?: "float";
 };
 
+const GENERATED_MEMORY_ITEM_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "temporaryId",
+    "claimType",
+    "statement",
+    "evidenceSpanIds",
+    "epistemicStatus",
+    "qualifiers",
+    "stableDomainTags",
+    "entities",
+    "relations",
+    "schemas",
+  ],
+  properties: {
+    temporaryId: { type: "string" },
+    claimType: { type: "string", enum: CLAIM_TYPES },
+    statement: { type: "string" },
+    evidenceSpanIds: {
+      type: "array",
+      items: { type: "string" },
+    },
+    epistemicStatus: { type: "string", enum: EPISTEMIC_STATUSES },
+    qualifiers: {
+      type: "object",
+      additionalProperties: false,
+      required: [],
+      properties: {},
+    },
+    stableDomainTags: {
+      type: "array",
+      items: { type: "string" },
+    },
+    entities: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "entityType", "canonicalName"],
+        properties: {
+          name: { type: "string" },
+          entityType: { type: "string" },
+          canonicalName: {
+            anyOf: [
+              { type: "string" },
+              { type: "null" },
+            ],
+          },
+        },
+      },
+    },
+    relations: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["subject", "predicate", "object", "evidenceSpanIds"],
+        properties: {
+          subject: { type: "string" },
+          predicate: { type: "string" },
+          object: { type: "string" },
+          evidenceSpanIds: {
+            type: "array",
+            items: { type: "string" },
+          },
+        },
+      },
+    },
+    schemas: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["subjectType", "predicate", "objectType", "status"],
+        properties: {
+          subjectType: { type: "string" },
+          predicate: { type: "string" },
+          objectType: { type: "string" },
+          status: { type: "string", enum: MEMORY_SCHEMA_STATUSES },
+        },
+      },
+    },
+  },
+};
+
 const MEMORY_GENERATION_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -127,82 +290,58 @@ const MEMORY_GENERATION_SCHEMA = {
   properties: {
     items: {
       type: "array",
-      maxItems: 30,
+      items: GENERATED_MEMORY_ITEM_JSON_SCHEMA,
+    },
+  },
+};
+
+const MEMORY_CANDIDATE_VERIFICATION_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["decisions"],
+  properties: {
+    decisions: {
+      type: "array",
       items: {
         type: "object",
         additionalProperties: false,
-        required: [
-          "temporaryId",
-          "claimType",
-          "statement",
-          "evidenceSpanIds",
-          "epistemicStatus",
-          "qualifiers",
-          "stableDomainTags",
-          "entities",
-          "relations",
-          "schemas",
-        ],
+        required: ["temporaryId", "decision", "rationale", "correctedItem"],
         properties: {
           temporaryId: { type: "string" },
-          claimType: { type: "string", enum: CLAIM_TYPES },
-          statement: { type: "string" },
-          evidenceSpanIds: {
-            type: "array",
-            minItems: 1,
-            items: { type: "string" },
+          decision: { type: "string", enum: ["verified", "needs_review", "corrected", "duplicate", "unsupported"] },
+          rationale: { type: "string" },
+          correctedItem: {
+            anyOf: [
+              GENERATED_MEMORY_ITEM_JSON_SCHEMA,
+              { type: "null" },
+            ],
           },
-          epistemicStatus: { type: "string", enum: EPISTEMIC_STATUSES },
-          qualifiers: { type: "object" },
-          stableDomainTags: {
-            type: "array",
-            items: { type: "string" },
-          },
-          entities: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["name", "entityType"],
-              properties: {
-                name: { type: "string" },
-                entityType: { type: "string" },
-                canonicalName: { type: "string" },
-              },
-            },
-          },
-          relations: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["subject", "predicate", "object", "evidenceSpanIds"],
-              properties: {
-                subject: { type: "string" },
-                predicate: { type: "string" },
-                object: { type: "string" },
-                evidenceSpanIds: {
-                  type: "array",
-                  minItems: 1,
-                  items: { type: "string" },
-                },
-              },
-            },
-          },
-          schemas: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["subjectType", "predicate", "objectType", "status"],
-              properties: {
-                subjectType: { type: "string" },
-                predicate: { type: "string" },
-                objectType: { type: "string" },
-                status: { type: "string", enum: MEMORY_SCHEMA_STATUSES },
-              },
-            },
-          },
+        },
+      },
+    },
+  },
+};
+
+const MEMORY_CONNECTION_SCORING_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["decisions"],
+  properties: {
+    decisions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["candidateId", "tier", "connectionType", "connectionReason", "confidence", "rationale", "evidenceSpanIds", "reviewRequired"],
+        properties: {
+          candidateId: { type: "string" },
+          tier: { type: "string", enum: ["direct", "supporting", "contextual", "weak"] },
+          connectionType: { type: "string", enum: CLAIM_CONNECTION_TYPES },
+          connectionReason: { type: "string" },
+          confidence: { type: "number" },
+          rationale: { type: "string" },
+          evidenceSpanIds: { type: "array", items: { type: "string" } },
+          reviewRequired: { type: "boolean" },
         },
       },
     },
@@ -229,12 +368,10 @@ const INITIATIVE_BRIEF_DRAFT_SCHEMA = {
     risksAndDependencies: { type: "string" },
     memoryItemIds: {
       type: "array",
-      minItems: 1,
       items: { type: "string" },
     },
     evidenceSpanIds: {
       type: "array",
-      minItems: 1,
       items: { type: "string" },
     },
   },
@@ -243,7 +380,7 @@ const INITIATIVE_BRIEF_DRAFT_SCHEMA = {
 const GROUNDED_ANSWER_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["answer", "citations", "usedClaimIds", "usedEvidenceSpanIds", "warnings"],
+  required: ["answer", "citations", "usedClaimIds", "usedEvidenceSpanIds", "warnings", "gap"],
   properties: {
     answer: { type: "string" },
     citations: {
@@ -254,14 +391,19 @@ const GROUNDED_ANSWER_SCHEMA = {
         required: ["evidenceSpanId", "claimIds"],
         properties: {
           evidenceSpanId: { type: "string" },
-          claimIds: { type: "array", minItems: 1, items: { type: "string" } },
+          claimIds: { type: "array", items: { type: "string" } },
         },
       },
     },
     usedClaimIds: { type: "array", items: { type: "string" } },
     usedEvidenceSpanIds: { type: "array", items: { type: "string" } },
     warnings: { type: "array", items: { type: "string" } },
-    gap: { type: "string" },
+    gap: {
+      anyOf: [
+        { type: "string" },
+        { type: "null" },
+      ],
+    },
   },
 };
 
@@ -273,10 +415,6 @@ const RETRIEVAL_RERANK_SCHEMA = {
     rankedClaimIds: {
       type: "array",
       items: { type: "string" },
-    },
-    rationaleByClaimId: {
-      type: "object",
-      additionalProperties: { type: "string", maxLength: 120 },
     },
   },
 };
@@ -379,6 +517,184 @@ export class OpenRouterMemoryGenerationModel implements MemoryGenerationModel {
         raw,
         model,
       };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+export class OpenRouterMemoryCandidateVerifierModel implements MemoryCandidateVerifierModel {
+  constructor(private readonly config: OpenRouterModelConfig) {}
+
+  async verifyMemoryCandidates(request: MemoryCandidateVerificationRequest): Promise<MemoryCandidateVerificationResponse> {
+    const models = unique([this.config.model, ...(this.config.fallbackModels ?? [])]);
+    const failures: string[] = [];
+
+    for (const [index, model] of models.entries()) {
+      try {
+        const timeoutMs = index === 0
+          ? this.config.timeoutMs
+          : this.config.fallbackTimeoutMs ?? this.config.timeoutMs;
+        return await this.verifyMemoryCandidatesWithModel(request, model, timeoutMs);
+      } catch (error) {
+        failures.push(`${model}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    throw new Error(`OpenRouter memory candidate verification failed for all configured models. ${failures.join(" | ")}`);
+  }
+
+  private async verifyMemoryCandidatesWithModel(
+    request: MemoryCandidateVerificationRequest,
+    model: string,
+    configuredTimeoutMs: number | undefined,
+  ): Promise<MemoryCandidateVerificationResponse> {
+    const abortController = new AbortController();
+    const timeoutMs = configuredTimeoutMs ?? 30_000;
+    let didTimeout = false;
+    const timeout = setTimeout(() => {
+      didTimeout = true;
+      abortController.abort();
+    }, timeoutMs);
+
+    try {
+      let response: Response;
+      try {
+        const fetchImpl = this.config.fetchImpl ?? ((input, init) => fetch(input, init));
+        response = await fetchImpl(`${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+          method: "POST",
+          signal: abortController.signal,
+          headers: {
+            Authorization: `Bearer ${this.config.apiKey}`,
+            "Content-Type": "application/json",
+            "X-OpenRouter-Title": this.config.appTitle ?? "Distillery v0",
+          },
+          body: JSON.stringify({
+            model,
+            temperature: 0,
+            max_tokens: 2200,
+            messages: [
+              { role: "system", content: memoryCandidateVerifierSystemPrompt() },
+              { role: "user", content: renderMemoryCandidateVerificationInputForModel(request) },
+            ],
+            response_format: {
+              type: "json_schema",
+              json_schema: {
+                name: "memory_candidate_verification",
+                strict: true,
+                schema: MEMORY_CANDIDATE_VERIFICATION_SCHEMA,
+              },
+            },
+          }),
+        });
+      } catch (error) {
+        if (didTimeout || abortController.signal.aborted) {
+          throw new Error(`OpenRouter memory candidate verification timed out after ${timeoutMs}ms for model ${model}.`);
+        }
+        throw error;
+      }
+
+      const rawText = await readModelResponseText(response, abortController.signal, didTimeout, timeoutMs, "OpenRouter memory candidate verification", model);
+      if (!response.ok) {
+        throw new Error(`OpenRouter memory candidate verification failed: ${response.status} ${rawText.slice(0, 500)}`);
+      }
+
+      const raw = JSON.parse(rawText) as { choices?: Array<{ message?: { content?: string } }> };
+      const content = raw.choices?.[0]?.message?.content;
+      if (!content) throw new Error("OpenRouter response did not include message content.");
+
+      const parsed = parseMemoryCandidateVerificationResponse(parseModelJson(content), model, request);
+      validateMemoryCandidateVerificationResponse(parsed, request);
+      return { ...parsed, raw };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+export class OpenRouterMemoryConnectionScorerModel implements MemoryConnectionScorerModel {
+  constructor(private readonly config: OpenRouterModelConfig) {}
+
+  async scoreMemoryConnections(request: MemoryConnectionScoringRequest): Promise<MemoryConnectionScoringResponse> {
+    const models = unique([this.config.model, ...(this.config.fallbackModels ?? [])]);
+    const failures: string[] = [];
+
+    for (const [index, model] of models.entries()) {
+      try {
+        const timeoutMs = index === 0
+          ? this.config.timeoutMs
+          : this.config.fallbackTimeoutMs ?? this.config.timeoutMs;
+        return await this.scoreMemoryConnectionsWithModel(request, model, timeoutMs);
+      } catch (error) {
+        failures.push(`${model}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    throw new Error(`OpenRouter memory connection scoring failed for all configured models. ${failures.join(" | ")}`);
+  }
+
+  private async scoreMemoryConnectionsWithModel(
+    request: MemoryConnectionScoringRequest,
+    model: string,
+    configuredTimeoutMs: number | undefined,
+  ): Promise<MemoryConnectionScoringResponse> {
+    const abortController = new AbortController();
+    const timeoutMs = configuredTimeoutMs ?? 30_000;
+    let didTimeout = false;
+    const timeout = setTimeout(() => {
+      didTimeout = true;
+      abortController.abort();
+    }, timeoutMs);
+
+    try {
+      let response: Response;
+      try {
+        const fetchImpl = this.config.fetchImpl ?? ((input, init) => fetch(input, init));
+        response = await fetchImpl(`${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+          method: "POST",
+          signal: abortController.signal,
+          headers: {
+            Authorization: `Bearer ${this.config.apiKey}`,
+            "Content-Type": "application/json",
+            "X-OpenRouter-Title": this.config.appTitle ?? "Distillery v0",
+          },
+          body: JSON.stringify({
+            model,
+            temperature: 0,
+            max_tokens: 2600,
+            messages: [
+              { role: "system", content: memoryConnectionScorerSystemPrompt() },
+              { role: "user", content: renderMemoryConnectionScoringInputForModel(request) },
+            ],
+            response_format: {
+              type: "json_schema",
+              json_schema: {
+                name: "memory_connection_scoring",
+                strict: true,
+                schema: MEMORY_CONNECTION_SCORING_SCHEMA,
+              },
+            },
+          }),
+        });
+      } catch (error) {
+        if (didTimeout || abortController.signal.aborted) {
+          throw new Error(`OpenRouter memory connection scoring timed out after ${timeoutMs}ms for model ${model}.`);
+        }
+        throw error;
+      }
+
+      const rawText = await readModelResponseText(response, abortController.signal, didTimeout, timeoutMs, "OpenRouter memory connection scoring", model);
+      if (!response.ok) {
+        throw new Error(`OpenRouter memory connection scoring failed: ${response.status} ${rawText.slice(0, 500)}`);
+      }
+
+      const raw = JSON.parse(rawText) as { choices?: Array<{ message?: { content?: string } }> };
+      const content = raw.choices?.[0]?.message?.content;
+      if (!content) throw new Error("OpenRouter response did not include message content.");
+
+      const parsed = parseMemoryConnectionScoringResponse(parseModelJson(content), model);
+      validateMemoryConnectionScoringResponse(parsed, request);
+      return { ...parsed, raw };
     } finally {
       clearTimeout(timeout);
     }
@@ -640,8 +956,10 @@ export class OpenRouterGroundedAnswerModel implements GroundedAnswerModel {
       const content = raw.choices?.[0]?.message?.content;
       if (!content) throw new Error("OpenRouter response did not include message content.");
 
+      const parsedPayload = Object(parseModelJson(content)) as { gap?: unknown };
       const parsed = GroundedAnswerResponseSchema.parse({
-        ...Object(parseModelJson(content)),
+        ...parsedPayload,
+        ...(parsedPayload.gap === null ? { gap: undefined } : {}),
         model,
       });
       validateGroundedAnswerCitations(parsed, request);
@@ -761,6 +1079,157 @@ export function validateRetrievalRerankResponse(
     if (!allowedClaimIds.has(claimId)) throw new Error(`Retrieval reranker returned unknown claim ID: ${claimId}`);
     if (seen.has(claimId)) throw new Error(`Retrieval reranker returned duplicate claim ID: ${claimId}`);
     seen.add(claimId);
+  }
+}
+
+function parseMemoryCandidateVerificationResponse(
+  payload: unknown,
+  model: string,
+  request: MemoryCandidateVerificationRequest,
+): MemoryCandidateVerificationResponse {
+  const parsed = Object(payload) as { decisions?: unknown };
+  const candidatesByTemporaryId = new Map(request.candidates.map((candidate) => [candidate.temporaryId, candidate]));
+  const decisions = Array.isArray(parsed.decisions)
+    ? parsed.decisions.map((decision): MemoryCandidateVerificationItem => {
+      const record = Object(decision) as {
+        temporaryId?: unknown;
+        decision?: unknown;
+        rationale?: unknown;
+        correctedItem?: unknown;
+      };
+      const originalCandidate = candidatesByTemporaryId.get(String(record.temporaryId ?? ""));
+      let correctedItem: GeneratedMemoryItem | undefined;
+      if (record.correctedItem !== undefined && record.correctedItem !== null) {
+        const correctedRecord = Object(record.correctedItem) as Record<string, unknown>;
+        const suppliedQualifiers = correctedRecord.qualifiers;
+        correctedItem = GeneratedMemoryItemSchema.parse({
+          ...correctedRecord,
+          qualifiers: {
+            ...(originalCandidate?.qualifiers ?? {}),
+            ...(typeof suppliedQualifiers === "object" && suppliedQualifiers !== null && !Array.isArray(suppliedQualifiers)
+              ? suppliedQualifiers
+              : {}),
+          },
+        });
+      }
+      return {
+        temporaryId: String(record.temporaryId ?? ""),
+        decision: parseVerificationDecision(record.decision),
+        rationale: typeof record.rationale === "string" ? record.rationale : "",
+        ...(correctedItem ? { correctedItem } : {}),
+      };
+    })
+    : [];
+  return { decisions, raw: payload, model };
+}
+
+function parseVerificationDecision(value: unknown): MemoryCandidateVerificationDecision {
+  if (
+    value === "verified" ||
+    value === "needs_review" ||
+    value === "corrected" ||
+    value === "duplicate" ||
+    value === "unsupported"
+  ) {
+    return value;
+  }
+  throw new Error(`Unsupported memory verification decision: ${String(value)}`);
+}
+
+export function validateMemoryCandidateVerificationResponse(
+  response: MemoryCandidateVerificationResponse,
+  request: MemoryCandidateVerificationRequest,
+): void {
+  const allowedTemporaryIds = new Set(request.candidates.map((candidate) => candidate.temporaryId));
+  const allowedEvidenceSpanIds = new Set(request.evidenceSpans.map((span) => span.id));
+  const seen = new Set<string>();
+  for (const decision of response.decisions) {
+    if (!allowedTemporaryIds.has(decision.temporaryId)) {
+      throw new Error(`Memory verifier returned unknown candidate ID: ${decision.temporaryId}`);
+    }
+    if (seen.has(decision.temporaryId)) throw new Error(`Memory verifier returned duplicate candidate ID: ${decision.temporaryId}`);
+    seen.add(decision.temporaryId);
+    if (decision.decision === "corrected" && !decision.correctedItem) {
+      throw new Error(`Memory verifier marked ${decision.temporaryId} corrected without correctedItem.`);
+    }
+    if (decision.correctedItem) {
+      if (decision.decision !== "corrected") {
+        throw new Error(`Memory verifier returned correctedItem for ${decision.temporaryId} without a corrected decision.`);
+      }
+      if (decision.correctedItem.temporaryId !== decision.temporaryId) {
+        throw new Error(`Memory verifier corrected ${decision.temporaryId} with mismatched temporary ID: ${decision.correctedItem.temporaryId}`);
+      }
+      for (const evidenceSpanId of decision.correctedItem.evidenceSpanIds) {
+        if (!allowedEvidenceSpanIds.has(evidenceSpanId)) {
+          throw new Error(`Memory verifier corrected ${decision.temporaryId} with unavailable evidence span: ${evidenceSpanId}`);
+        }
+      }
+    }
+  }
+}
+
+function parseMemoryConnectionScoringResponse(payload: unknown, model: string): MemoryConnectionScoringResponse {
+  const parsed = Object(payload) as { decisions?: unknown };
+  const decisions = Array.isArray(parsed.decisions)
+    ? parsed.decisions.map((decision): MemoryConnectionScoringDecision => {
+      const record = Object(decision) as {
+        candidateId?: unknown;
+        tier?: unknown;
+        connectionType?: unknown;
+        connectionReason?: unknown;
+        confidence?: unknown;
+        rationale?: unknown;
+        evidenceSpanIds?: unknown;
+        reviewRequired?: unknown;
+      };
+      return {
+        candidateId: String(record.candidateId ?? ""),
+        tier: parseConnectionTier(record.tier),
+        connectionType: String(record.connectionType ?? ""),
+        connectionReason: String(record.connectionReason ?? ""),
+        confidence: Number(record.confidence),
+        rationale: typeof record.rationale === "string" ? record.rationale : "",
+        evidenceSpanIds: Array.isArray(record.evidenceSpanIds)
+          ? record.evidenceSpanIds.filter((value): value is string => typeof value === "string")
+          : [],
+        reviewRequired: Boolean(record.reviewRequired),
+      };
+    })
+    : [];
+  return { decisions, raw: payload, model };
+}
+
+function parseConnectionTier(value: unknown): MemoryConnectionTier {
+  if (value === "direct" || value === "supporting" || value === "contextual" || value === "weak") return value;
+  throw new Error(`Unsupported memory connection tier: ${String(value)}`);
+}
+
+export function validateMemoryConnectionScoringResponse(
+  response: MemoryConnectionScoringResponse,
+  request: MemoryConnectionScoringRequest,
+): void {
+  const allowedCandidateIds = new Set(request.candidates.map((candidate) => candidate.id));
+  const allowedClaimIds = new Set(request.memory.map((record) => record.memoryItem.id));
+  const allowedEvidenceSpanIds = new Set(request.memory.flatMap((record) => record.evidenceSpans.map((span) => span.id)));
+  const allowedConnectionTypes = new Set<string>(CLAIM_CONNECTION_TYPES);
+  const seen = new Set<string>();
+  for (const decision of response.decisions) {
+    if (!allowedCandidateIds.has(decision.candidateId)) throw new Error(`Connection scorer returned unknown candidate ID: ${decision.candidateId}`);
+    if (seen.has(decision.candidateId)) throw new Error(`Connection scorer returned duplicate candidate ID: ${decision.candidateId}`);
+    seen.add(decision.candidateId);
+    if (!allowedConnectionTypes.has(decision.connectionType)) throw new Error(`Connection scorer returned invalid connection type: ${decision.connectionType}`);
+    if (!Number.isFinite(decision.confidence) || decision.confidence < 0 || decision.confidence > 1) {
+      throw new Error(`Connection scorer returned invalid confidence for ${decision.candidateId}: ${decision.confidence}`);
+    }
+    const candidate = request.candidates.find((item) => item.id === decision.candidateId);
+    if (!candidate || !allowedClaimIds.has(candidate.fromClaimId) || !allowedClaimIds.has(candidate.toClaimId)) {
+      throw new Error(`Connection scorer candidate references unavailable claims: ${decision.candidateId}`);
+    }
+    for (const evidenceSpanId of decision.evidenceSpanIds) {
+      if (!allowedEvidenceSpanIds.has(evidenceSpanId)) {
+        throw new Error(`Connection scorer returned unavailable evidence span: ${evidenceSpanId}`);
+      }
+    }
   }
 }
 

@@ -3,6 +3,8 @@ import {
   OpenRouterEmbeddingModel,
   OpenRouterGroundedAnswerModel,
   OpenRouterInitiativeBriefDraftModel,
+  OpenRouterMemoryCandidateVerifierModel,
+  OpenRouterMemoryConnectionScorerModel,
   OpenRouterMemoryGenerationModel,
   OpenRouterRetrievalRerankerModel,
 } from "./index";
@@ -21,6 +23,7 @@ describe("OpenRouterMemoryGenerationModel", () => {
           response_format?: { json_schema?: { schema?: { properties?: { items?: { items?: { required?: string[]; properties?: Record<string, unknown> } } } } } };
         };
         requestedModels.push(body.model);
+        expectPortableStructuredOutputSchema(body.response_format?.json_schema?.schema);
         const itemSchema = body.response_format?.json_schema?.schema?.properties?.items?.items;
         expect(itemSchema?.required).toContain("claimType");
         expect(itemSchema?.required).not.toContain("type");
@@ -115,6 +118,163 @@ describe("OpenRouterMemoryGenerationModel", () => {
   });
 });
 
+describe("OpenRouterMemoryCandidateVerifierModel", () => {
+  it("verifies candidates with structured output", async () => {
+    const model = new OpenRouterMemoryCandidateVerifierModel({
+      apiKey: "test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "verifier-model",
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as {
+          response_format?: { json_schema?: { name?: string; schema?: unknown } };
+          messages?: Array<{ content: string }>;
+        };
+        expect(body.response_format?.json_schema?.name).toBe("memory_candidate_verification");
+        expectPortableStructuredOutputSchema(body.response_format?.json_schema?.schema);
+        expect(body.messages?.[1]?.content).toContain('temporaryId="cand_1"');
+        return Response.json({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                decisions: [{
+                  temporaryId: "cand_1",
+                  decision: "verified",
+                  rationale: "Supported by evidence.",
+                  correctedItem: null,
+                }],
+              }),
+            },
+          }],
+        });
+      },
+    });
+
+    const response = await model.verifyMemoryCandidates({
+      evidenceSpans: [testEvidenceSpan()],
+      candidates: [testGeneratedMemoryItem("cand_1")],
+    });
+
+    expect(response.model).toBe("verifier-model");
+    expect(response.decisions[0]).toMatchObject({
+      temporaryId: "cand_1",
+      decision: "verified",
+    });
+  });
+
+  it("preserves original qualifiers when a candidate is corrected", async () => {
+    const candidate = {
+      ...testGeneratedMemoryItem("cand_1"),
+      qualifiers: { extractionFallback: true },
+    };
+    const model = new OpenRouterMemoryCandidateVerifierModel({
+      apiKey: "test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "verifier-model",
+      fetchImpl: async () =>
+        Response.json({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                decisions: [{
+                  temporaryId: "cand_1",
+                  decision: "corrected",
+                  rationale: "The evidence supports narrower wording.",
+                  correctedItem: {
+                    ...candidate,
+                    statement: "Docs ownership is reported as a launch dependency.",
+                    qualifiers: {},
+                  },
+                }],
+              }),
+            },
+          }],
+        }),
+    });
+
+    const response = await model.verifyMemoryCandidates({
+      evidenceSpans: [testEvidenceSpan()],
+      candidates: [candidate],
+    });
+
+    expect(response.decisions[0]?.correctedItem?.qualifiers).toEqual({ extractionFallback: true });
+  });
+});
+
+describe("OpenRouterMemoryConnectionScorerModel", () => {
+  it("scores memory connection candidates with tier metadata", async () => {
+    const model = new OpenRouterMemoryConnectionScorerModel({
+      apiKey: "test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "connection-model",
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as {
+          response_format?: { json_schema?: { name?: string; schema?: unknown } };
+          messages?: Array<{ content: string }>;
+        };
+        expect(body.response_format?.json_schema?.name).toBe("memory_connection_scoring");
+        expectPortableStructuredOutputSchema(body.response_format?.json_schema?.schema);
+        expect(body.messages?.[1]?.content).toContain('connectionCandidate id="ccand_1"');
+        return Response.json({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                decisions: [{
+                  candidateId: "ccand_1",
+                  tier: "direct",
+                  connectionType: "depends_on",
+                  connectionReason: "explicit_dependency",
+                  confidence: 0.9,
+                  rationale: "Direct launch dependency.",
+                  evidenceSpanIds: ["ev_1"],
+                  reviewRequired: false,
+                }],
+              }),
+            },
+          }],
+        });
+      },
+    });
+
+    const response = await model.scoreMemoryConnections({
+      memory: [{
+        memoryItem: {
+          id: "mem_1",
+          ingestionId: "ing_1",
+          sourceVersionId: "srcv_1",
+          claimType: "dependency",
+          statement: "Docs ownership blocks launch readiness.",
+          evidenceSpanIds: ["ev_1"],
+          epistemicStatus: "reported",
+          qualifiers: {},
+          stableDomainTags: [],
+          entities: [],
+          relations: [],
+          schemas: [],
+          reviewState: "confirmed",
+        },
+        evidenceSpans: [testEvidenceSpan()],
+      }],
+      candidates: [{
+        id: "ccand_1",
+        fromClaimId: "mem_1",
+        toClaimId: "mem_1",
+        connectionType: "related_context",
+        confidence: 0.3,
+        scoreComponents: { source_context_overlap: 1 },
+        evidenceSpanIds: ["ev_1"],
+        rationale: "test",
+      }],
+    });
+
+    expect(response.model).toBe("connection-model");
+    expect(response.decisions[0]).toMatchObject({
+      candidateId: "ccand_1",
+      tier: "direct",
+      connectionReason: "explicit_dependency",
+    });
+  });
+});
+
 describe("OpenRouterEmbeddingModel", () => {
   it("calls OpenRouter embeddings and validates dimensions", async () => {
     const model = new OpenRouterEmbeddingModel({
@@ -188,10 +348,11 @@ describe("OpenRouterGroundedAnswerModel", () => {
       model: "moonshotai/kimi-k2.7-code",
       fetchImpl: async (_url, init) => {
         const body = JSON.parse(String(init?.body)) as {
-          response_format?: { json_schema?: { name?: string } };
+          response_format?: { json_schema?: { name?: string; schema?: unknown } };
           messages?: Array<{ content: string }>;
         };
         expect(body.response_format?.json_schema?.name).toBe("grounded_answer");
+        expectPortableStructuredOutputSchema(body.response_format?.json_schema?.schema);
         expect(body.messages?.[1]?.content).toContain("claim id=\"mem_1\"");
         return Response.json({
           choices: [{
@@ -202,6 +363,7 @@ describe("OpenRouterGroundedAnswerModel", () => {
                 usedClaimIds: ["mem_1"],
                 usedEvidenceSpanIds: ["ev_1"],
                 warnings: [],
+                gap: null,
               }),
             },
           }],
@@ -300,6 +462,7 @@ describe("OpenRouterRetrievalRerankerModel", () => {
           messages?: Array<{ content: string }>;
         };
         expect(body.response_format?.json_schema?.name).toBe("retrieval_rerank");
+        expectPortableStructuredOutputSchema(body.response_format?.json_schema?.schema);
         expect(body.response_format?.json_schema?.schema?.required).toEqual(["rankedClaimIds"]);
         expect(body.messages?.[1]?.content).toContain("claimId=\"mem_2\"");
         return Response.json({
@@ -386,11 +549,12 @@ describe("OpenRouterInitiativeBriefDraftModel", () => {
       model: "moonshotai/kimi-k2.7-code",
       fetchImpl: async (_url, init) => {
         const body = JSON.parse(String(init?.body)) as {
-          response_format?: { json_schema?: { name?: string } };
+          response_format?: { json_schema?: { name?: string; schema?: unknown } };
           messages?: Array<{ content: string }>;
         };
 
         expect(body.response_format?.json_schema?.name).toBe("initiative_brief_draft");
+        expectPortableStructuredOutputSchema(body.response_format?.json_schema?.schema);
         expect(body.messages?.[1]?.content).toContain("mem_1");
         expect(body.messages?.[1]?.content).toContain("ev_1");
 
@@ -452,3 +616,51 @@ describe("OpenRouterInitiativeBriefDraftModel", () => {
     expect(result.parsed.evidenceSpanIds).toEqual(["ev_1"]);
   });
 });
+
+function testEvidenceSpan() {
+  return {
+    id: "ev_1",
+    sourceVersionId: "srcv_1",
+    startLine: 1,
+    endLine: 1,
+    startChar: 0,
+    endChar: 39,
+    text: "Docs ownership blocks launch readiness.",
+  };
+}
+
+function testGeneratedMemoryItem(temporaryId: string) {
+  return {
+    temporaryId,
+    claimType: "dependency" as const,
+    statement: "Docs ownership blocks launch readiness.",
+    evidenceSpanIds: ["ev_1"],
+    epistemicStatus: "reported" as const,
+    qualifiers: {},
+    stableDomainTags: ["docs"],
+    entities: [],
+    relations: [],
+    schemas: [],
+  };
+}
+
+function expectPortableStructuredOutputSchema(schema: unknown): void {
+  expect(schema).toBeTypeOf("object");
+  expect(schema).not.toBeNull();
+  const record = schema as Record<string, unknown>;
+  for (const unsupportedKeyword of ["minItems", "maxItems", "minimum", "maximum", "minLength", "maxLength"]) {
+    expect(record, `unsupported structured-output keyword: ${unsupportedKeyword}`).not.toHaveProperty(unsupportedKeyword);
+  }
+
+  if (record.type === "object") {
+    expect(record.additionalProperties).toBe(false);
+    const properties = (record.properties ?? {}) as Record<string, unknown>;
+    expect([...(record.required as string[] ?? [])].sort()).toEqual(Object.keys(properties).sort());
+    for (const propertySchema of Object.values(properties)) expectPortableStructuredOutputSchema(propertySchema);
+  }
+
+  if (record.items) expectPortableStructuredOutputSchema(record.items);
+  if (Array.isArray(record.anyOf)) {
+    for (const option of record.anyOf) expectPortableStructuredOutputSchema(option);
+  }
+}
