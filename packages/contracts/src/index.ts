@@ -678,7 +678,7 @@ export const ClaimConnectionSchema = z.object({
   connectionType: ClaimConnectionTypeSchema,
   status: ClaimConnectionStatusSchema.default("proposed"),
   confidence: z.number().min(0).max(1),
-  scoreComponents: z.record(z.string(), z.number()).default({}),
+  scoreComponents: z.record(z.string(), z.unknown()).default({}),
   evidenceSpanIds: z.array(z.string().min(1)).default([]),
   rationale: z.string().nullable().optional(),
   createdByPolicyRunId: z.string().nullable().optional(),

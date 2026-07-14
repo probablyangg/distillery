@@ -145,6 +145,11 @@ export default {
       return handleInitiativeBriefDecision(decodeRouteParam(initiativeBriefDecisionMatch[1]), request, env);
     }
 
+    const proposedEventDecisionMatch = url.pathname.match(/^\/api\/proposed-events\/([^/]+)\/decision$/);
+    if (request.method === "POST" && proposedEventDecisionMatch?.[1]) {
+      return handleProposedEventDecision(decodeRouteParam(proposedEventDecisionMatch[1]), request, env, ctx);
+    }
+
     const ingestionMatch = url.pathname.match(/^\/api\/ingestions\/([^/]+)$/);
     if (request.method === "GET" && ingestionMatch?.[1]) {
       return handleGetIngestion(decodeRouteParam(ingestionMatch[1]), env);
