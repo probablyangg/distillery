@@ -3,12 +3,15 @@ import {
   CreateInitiativeBriefInputSchema,
   InitiativeBriefDraftInputSchema,
   InitiativeBriefDecisionInputSchema,
+  HumanReviewDecisionSchema,
   MemoryItemActionInputSchema,
+  ProposedEventSchema,
   RecallQueryInputSchema,
   type CitedAnswer,
   type EvidenceSpan,
   type GraphRecallContext,
   type MemoryWithEvidence,
+  type ProposedEvent,
 } from "@distillery/contracts";
 import { SupabaseMemoryGenerationRepository, SupabaseRpcClient } from "@distillery/db";
 import { SupabaseLoopPersistence } from "@distillery/db";
@@ -21,6 +24,8 @@ import {
   OpenRouterInitiativeBriefDraftModel,
   OpenRouterEmbeddingModel,
   OpenRouterGroundedAnswerModel,
+  OpenRouterMemoryCandidateVerifierModel,
+  OpenRouterMemoryConnectionScorerModel,
   OpenRouterMemoryGenerationModel,
   OpenRouterRetrievalRerankerModel,
   type OpenRouterModelConfig,
@@ -29,6 +34,7 @@ import d3LocalSource from "./vendor/d3.min.txt";
 import {
   DEFAULT_TENANT_ID,
   applyMemoryItemAction,
+  buildDeterministicCitedAnswer,
   submitTextCapture,
 } from "@distillery/memory-generation";
 import { retrieveMemoryContext } from "@distillery/memory-retrieval";
@@ -51,6 +57,9 @@ export type Env = {
   OPENROUTER_FALLBACK_MODELS?: string;
   OPENROUTER_TIMEOUT_MS?: string;
   OPENROUTER_FALLBACK_TIMEOUT_MS?: string;
+  MEMORY_EXTRACTOR_MODEL?: string;
+  MEMORY_VERIFIER_MODEL?: string;
+  MEMORY_CONNECTION_MODEL?: string;
   EMBEDDING_PROVIDER?: string;
   EMBEDDING_BASE_URL?: string;
   EMBEDDING_MODEL?: string;
@@ -120,7 +129,11 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === "/api/memory-items") {
-      return handleListActiveMemory(env);
+      return handleListActiveMemory(url, env);
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/memory-proposals") {
+      return handleListPendingMemoryProposals(url, env);
     }
 
     if (request.method === "GET" && url.pathname === "/api/initiative-briefs") {
@@ -304,8 +317,8 @@ async function handleRecallQuery(request: Request, env: Env): Promise<Response> 
     const evidenceSpans = uniqueEvidenceSpans(graphContext.claims.flatMap((claim) => claim.evidenceSpans));
     try {
       const grounded = await new OpenRouterGroundedAnswerModel(openRouterConfig(env, {
-        maxPrimaryTimeoutMs: 20_000,
-        maxFallbackTimeoutMs: 12_000,
+        maxPrimaryTimeoutMs: 60_000,
+        maxFallbackTimeoutMs: 45_000,
         maxFallbackModels: 1,
       })).generateGroundedAnswer({
         question: query.question,
@@ -321,18 +334,26 @@ async function handleRecallQuery(request: Request, env: Env): Promise<Response> 
         answer: grounded,
       }));
     } catch (error) {
-      return json({
-        ...retrievalGapAnswer({
-          question: query.question,
-          reason: `Grounded answer generation failed: ${error instanceof Error ? error.message : String(error)}`,
-          retrievalMetadata: graphContext.metadata,
-        }),
+      const reason = `Grounded answer generation failed: ${error instanceof Error ? error.message : String(error)}`;
+      const fallback = buildDeterministicCitedAnswer({
+        question: query.question,
         matches: graphContext.claims.map((claim) => ({
           rank: claim.rank,
           memoryItem: claim.claim,
           evidenceSpans: claim.evidenceSpans,
         })),
+      });
+
+      return json({
+        ...fallback,
+        gap: reason,
         conflicts: graphContext.conflicts,
+        warnings: [reason, ...fallback.warnings],
+        retrievalMetadata: graphContext.metadata,
+        answerMetadata: {
+          strategy: "deterministic-grounded-fallback",
+          fallbackReason: reason,
+        },
       });
     }
   } catch (error) {
@@ -348,9 +369,18 @@ async function handleRecallQuery(request: Request, env: Env): Promise<Response> 
   }
 }
 
-async function handleListActiveMemory(env: Env): Promise<Response> {
-  const memory = await createRepository(env).listActiveMemory({ limit: 100 });
+async function handleListActiveMemory(url: URL, env: Env): Promise<Response> {
+  const requestedLimit = Number.parseInt(url.searchParams.get("limit") ?? "200", 10);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 200) : 200;
+  const memory = await createRepository(env).listActiveMemory({ limit });
   return json(memory);
+}
+
+async function handleListPendingMemoryProposals(url: URL, env: Env): Promise<Response> {
+  const requestedLimit = Number.parseInt(url.searchParams.get("limit") ?? "50", 10);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50;
+  const proposals = await listPendingMemoryProposals(env, limit);
+  return json(proposals);
 }
 
 async function handleLoopStatus(url: URL, env: Env): Promise<Response> {
@@ -525,8 +555,8 @@ async function handleGenerateInitiativeBriefDraft(request: Request, env: Env): P
     const evidenceSpans = uniqueEvidenceSpans(selectedMemoryWithEvidence.flatMap((record) => record.evidenceSpans));
     try {
       const generated = await new OpenRouterInitiativeBriefDraftModel(openRouterConfig(env, {
-        maxPrimaryTimeoutMs: 25_000,
-        maxFallbackTimeoutMs: 15_000,
+        maxPrimaryTimeoutMs: 60_000,
+        maxFallbackTimeoutMs: 45_000,
         maxFallbackModels: 1,
       }))
         .generateInitiativeBriefDraft({
@@ -611,6 +641,30 @@ async function handleInitiativeBriefDecision(briefId: string, request: Request, 
   return json(brief);
 }
 
+async function handleProposedEventDecision(
+  proposedEventId: string,
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const decision = HumanReviewDecisionSchema.parse(await request.json());
+  const persistence = createLoopPersistence(env);
+  const reviewDecision = {
+    reviewerLabel: decision.reviewerLabel,
+    ...(decision.rationale ? { rationale: decision.rationale } : {}),
+  };
+  const proposal = decision.decision === "approve"
+    ? await persistence.approveProposedEvent(proposedEventId, reviewDecision)
+    : await persistence.rejectProposedEvent(proposedEventId, reviewDecision);
+
+  if (decision.decision === "reject") return json({ proposal });
+
+  const ledgerEvent = await persistence.commitValidatedProposedEvent(proposedEventId);
+  await persistence.rebuildGraphProjection({ tenantId: DEFAULT_TENANT_ID });
+  ctx.waitUntil(routeAndMaybeExecuteLoop(env));
+  return json({ proposal, ledgerEvent });
+}
+
 async function handleMemoryItemAction(memoryItemId: string, request: Request, env: Env): Promise<Response> {
   const action = MemoryItemActionInputSchema.parse(await request.json());
   const result = await applyMemoryItemAction({
@@ -647,15 +701,28 @@ async function processWorkItem(workItemId: string, env: Env): Promise<void> {
     policies: createPolicies({
       persistence,
       memoryModel: new OpenRouterMemoryGenerationModel(openRouterConfig(env, {
-        maxPrimaryTimeoutMs: 18_000,
-        maxFallbackTimeoutMs: 10_000,
+        modelOverride: env.MEMORY_EXTRACTOR_MODEL,
+        maxPrimaryTimeoutMs: 60_000,
+        maxFallbackTimeoutMs: 45_000,
+        maxFallbackModels: 1,
+      })),
+      memoryVerifierModel: new OpenRouterMemoryCandidateVerifierModel(openRouterConfig(env, {
+        modelOverride: env.MEMORY_VERIFIER_MODEL,
+        maxPrimaryTimeoutMs: 60_000,
+        maxFallbackTimeoutMs: 45_000,
+        maxFallbackModels: 1,
+      })),
+      memoryConnectionScorerModel: new OpenRouterMemoryConnectionScorerModel(openRouterConfig(env, {
+        modelOverride: env.MEMORY_CONNECTION_MODEL,
+        maxPrimaryTimeoutMs: 60_000,
+        maxFallbackTimeoutMs: 45_000,
         maxFallbackModels: 1,
       })),
       ...(embeddingModel ? { embeddingModel } : {}),
       retrievalRerankerModel: createRetrievalRerankerModel(env),
       initiativeBriefDraftModel: new OpenRouterInitiativeBriefDraftModel(openRouterConfig(env, {
-        maxPrimaryTimeoutMs: 25_000,
-        maxFallbackTimeoutMs: 15_000,
+        maxPrimaryTimeoutMs: 60_000,
+        maxFallbackTimeoutMs: 45_000,
         maxFallbackModels: 1,
       })),
     }),
@@ -682,8 +749,8 @@ function createEmbeddingModel(env: Env): OpenRouterEmbeddingModel | undefined {
 
 function createRetrievalRerankerModel(env: Env): OpenRouterRetrievalRerankerModel {
   return new OpenRouterRetrievalRerankerModel(openRouterConfig(env, {
-    maxPrimaryTimeoutMs: 18_000,
-    maxFallbackTimeoutMs: 8_000,
+    maxPrimaryTimeoutMs: 45_000,
+    maxFallbackTimeoutMs: 30_000,
     maxFallbackModels: 1,
   }));
 }
@@ -704,6 +771,69 @@ function createLoopPersistence(env: Env): SupabaseLoopPersistence {
       secretKey: env.SUPABASE_SECRET_KEY,
     }),
   );
+}
+
+async function listPendingMemoryProposals(env: Env, limit: number): Promise<ProposedEvent[]> {
+  const url = new URL(`${env.SUPABASE_URL.replace(/\/$/, "")}/rest/v1/proposed_events`);
+  url.searchParams.set("select", "*");
+  url.searchParams.set("proposed_event_type", "eq.memory_proposed");
+  url.searchParams.set("target_event_type", "eq.memory_committed");
+  url.searchParams.set("validation_status", "eq.valid");
+  url.searchParams.set("review_status", "eq.pending");
+  url.searchParams.set("order", "created_at.desc");
+  url.searchParams.set("limit", String(limit));
+
+  const response = await fetch(url, {
+    headers: {
+      apikey: env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`Supabase REST proposed_events failed: ${response.status} ${text.slice(0, 500)}`);
+  }
+
+  const rows = JSON.parse(text) as Array<Record<string, unknown>>;
+  return ProposedEventSchema.array().parse(rows.map(proposedEventRowToContract));
+}
+
+function proposedEventRowToContract(row: Record<string, unknown>): ProposedEvent {
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    workItemId: nullableString(row.work_item_id),
+    policyRunId: nullableString(row.policy_run_id),
+    proposedEventType: String(row.proposed_event_type) as ProposedEvent["proposedEventType"],
+    targetEventType: String(row.target_event_type) as ProposedEvent["targetEventType"],
+    subjectType: String(row.subject_type) as ProposedEvent["subjectType"],
+    subjectId: String(row.subject_id),
+    payload: objectRecord(row.payload),
+    evidenceSpanIds: stringArray(row.evidence_span_ids),
+    memoryItemIds: stringArray(row.memory_item_ids),
+    decisionIds: stringArray(row.decision_ids),
+    requiresHumanApproval: Boolean(row.requires_human_approval),
+    validationStatus: String(row.validation_status) as ProposedEvent["validationStatus"],
+    validationIssues: Array.isArray(row.validation_issues) ? row.validation_issues : [],
+    reviewStatus: String(row.review_status) as ProposedEvent["reviewStatus"],
+    reviewerLabel: nullableString(row.reviewer_label),
+    reviewRationale: nullableString(row.review_rationale),
+    committedLedgerEventId: nullableString(row.committed_ledger_event_id),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
 }
 
 function newId(prefix: string): string {
@@ -734,6 +864,7 @@ function parsePositiveInteger(input: string | undefined): number | undefined {
 function openRouterConfig(
   env: Env,
   options: {
+    modelOverride?: string | undefined;
     maxPrimaryTimeoutMs?: number;
     maxFallbackTimeoutMs?: number;
     maxFallbackModels?: number;
@@ -746,7 +877,7 @@ function openRouterConfig(
   return {
     apiKey: env.OPENROUTER_API_KEY,
     baseUrl: env.OPENROUTER_BASE_URL,
-    model: env.OPENROUTER_MODEL,
+    model: options.modelOverride?.trim() || env.OPENROUTER_MODEL,
     fallbackModels: typeof options.maxFallbackModels === "number"
       ? fallbackModels.slice(0, options.maxFallbackModels)
       : fallbackModels,
@@ -2373,10 +2504,14 @@ function renderSynthesisShell(): string {
       <div class="row"><button id="logout" type="button" class="secondary">Log out</button></div>
       <div class="row">
         <button id="load-memory" type="button">Load active memory</button>
+        <button id="load-proposals" type="button" class="secondary">Load pending memory</button>
         <button id="load-briefs" type="button" class="secondary">Load briefs</button>
         <button id="loop-open" type="button" class="secondary loop-button">Loop</button>
         <span id="status"></span>
       </div>
+
+      <h2>Pending memory review</h2>
+      <div id="pending-memory-list"></div>
 
       <h2>1. Select memory</h2>
       <div id="memory-list"></div>
@@ -2413,6 +2548,7 @@ function renderSynthesisShell(): string {
     const statusEl = document.querySelector("#status");
     const resultEl = document.querySelector("#result");
     const memoryList = document.querySelector("#memory-list");
+    const pendingMemoryList = document.querySelector("#pending-memory-list");
     const briefList = document.querySelector("#brief-list");
     const logoutButton = document.querySelector("#logout");
     const loginStatusEl = document.querySelector("#login-status");
@@ -2444,6 +2580,7 @@ function renderSynthesisShell(): string {
     });
 
     document.querySelector("#load-memory").addEventListener("click", loadMemory);
+    document.querySelector("#load-proposals").addEventListener("click", loadMemoryProposals);
     document.querySelector("#load-briefs").addEventListener("click", loadBriefs);
     document.querySelector("#generate-brief").addEventListener("click", generateBriefDraft);
     document.querySelector("#manual-brief").addEventListener("click", () => {
@@ -2533,10 +2670,21 @@ function renderSynthesisShell(): string {
 
     async function loadMemory() {
       statusEl.textContent = "Loading memory...";
-      const response = await fetch("/api/memory-items");
+      const response = await fetch("/api/memory-items?limit=200");
       if (handleUnauthorized(response)) return;
-      const items = await response.json();
+      const items = await readJsonResponse(response);
       memoryList.innerHTML = "";
+      if (!response.ok || !Array.isArray(items)) {
+        memoryList.innerHTML = "<p>Could not load memory.</p>";
+        resultEl.textContent = JSON.stringify(items, null, 2);
+        statusEl.textContent = "Failed";
+        return;
+      }
+      if (items.length === 0) {
+        memoryList.innerHTML = "<p>No active memory found.</p>";
+        statusEl.textContent = "No memory";
+        return;
+      }
       for (const record of items) {
         const memory = record.memoryItem;
         const evidence = (record.evidenceSpans || []).map((span) => "[" + span.id + "] " + span.text).join("\\n");
@@ -2545,7 +2693,67 @@ function renderSynthesisShell(): string {
         div.innerHTML = '<label><input type="checkbox" name="memory" value="' + escapeHtml(memory.id) + '" /><span><strong>' + escapeHtml(memory.claimType) + '</strong><br />' + escapeHtml(memory.statement) + '<br /><small>' + escapeHtml(memory.reviewState || "unreviewed") + ' · evidence: ' + escapeHtml(memory.evidenceSpanIds.join(", ")) + '</small></span></label>' + traceDetailsHtml(memory, evidence);
         memoryList.append(div);
       }
-      statusEl.textContent = response.ok ? "Memory loaded" : "Failed";
+      statusEl.textContent = "Memory loaded (" + items.length + ")";
+    }
+
+    async function loadMemoryProposals() {
+      statusEl.textContent = "Loading pending memory...";
+      const response = await fetch("/api/memory-proposals?limit=50");
+      if (handleUnauthorized(response)) return;
+      const proposals = await readJsonResponse(response);
+      pendingMemoryList.innerHTML = "";
+      if (!response.ok || !Array.isArray(proposals)) {
+        pendingMemoryList.innerHTML = "<p>Could not load pending memory.</p>";
+        resultEl.textContent = JSON.stringify(proposals, null, 2);
+        statusEl.textContent = "Failed";
+        return;
+      }
+      if (proposals.length === 0) {
+        pendingMemoryList.innerHTML = "<p>No pending memory.</p>";
+        statusEl.textContent = "No pending memory";
+        return;
+      }
+      for (const proposal of proposals) {
+        pendingMemoryList.append(renderMemoryProposal(proposal));
+      }
+      statusEl.textContent = "Pending memory loaded (" + proposals.length + ")";
+    }
+
+    function renderMemoryProposal(proposal) {
+      const div = document.createElement("div");
+      div.className = "memory";
+      const items = Array.isArray(proposal.payload?.items) ? proposal.payload.items : [];
+      const statements = items.map((item) => "<p><strong>" + escapeHtml(item.claimType || "memory") + "</strong><br />" + escapeHtml(item.statement || "") + "</p>").join("");
+      const reason = items.map((item) => item.qualifiers?.verificationRationale || item.qualifiers?.fallbackReason).find(Boolean) || "";
+      div.innerHTML = statements
+        + "<small>" + escapeHtml(proposal.id) + " · " + escapeHtml(proposal.reviewStatus || "pending") + "</small>"
+        + (reason ? "<pre>" + escapeHtml(reason) + "</pre>" : "");
+      const row = document.createElement("div");
+      row.className = "row";
+      row.append(
+        actionButton("Approve memory", () => decideMemoryProposal(proposal.id, "approve")),
+        actionButton("Reject", () => decideMemoryProposal(proposal.id, "reject"), "danger")
+      );
+      div.append(row);
+      return div;
+    }
+
+    async function decideMemoryProposal(proposalId, decision) {
+      const rationale = prompt("Rationale for " + decision) || "";
+      statusEl.textContent = decision === "approve" ? "Approving memory..." : "Rejecting memory...";
+      const response = await fetch("/api/proposed-events/" + encodeURIComponent(proposalId) + "/decision", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision, reviewerLabel: reviewerLabel(), rationale })
+      });
+      if (handleUnauthorized(response)) return;
+      const result = await readJsonResponse(response);
+      resultEl.textContent = JSON.stringify(result, null, 2);
+      statusEl.textContent = response.ok ? "Memory proposal reviewed" : "Failed";
+      if (response.ok) {
+        await loadMemoryProposals();
+        await loadMemory();
+      }
     }
 
     async function loadBriefs() {
@@ -2624,6 +2832,7 @@ function renderSynthesisShell(): string {
 
     function openApp() {
       showApp();
+      loadMemoryProposals();
       loadMemory();
       loadBriefs();
     }
