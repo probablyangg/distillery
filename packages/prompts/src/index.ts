@@ -1,8 +1,10 @@
 import type {
   ConflictGroup,
   EvidenceSpan,
+  GeneratedMemoryItem,
   GraphRetrievalClaim,
   MemoryItem,
+  MemoryWithEvidence,
 } from "@distillery/contracts";
 import {
   CLAIM_TYPES,
@@ -17,6 +19,26 @@ const RERANK_EVIDENCE_MAX_CHARS = 250;
 
 export type MemoryGenerationPromptInput = {
   evidenceSpans: EvidenceSpan[];
+};
+
+export type MemoryCandidateVerificationPromptInput = {
+  evidenceSpans: EvidenceSpan[];
+  candidates: GeneratedMemoryItem[];
+  negativeExpectations?: string[];
+};
+
+export type MemoryConnectionScoringPromptInput = {
+  memory: MemoryWithEvidence[];
+  candidates: Array<{
+    id: string;
+    fromClaimId: string;
+    toClaimId: string;
+    connectionType: string;
+    confidence: number;
+    scoreComponents: Record<string, unknown>;
+    evidenceSpanIds: string[];
+    rationale: string;
+  }>;
 };
 
 export type InitiativeBriefDraftPromptInput = {
@@ -60,8 +82,11 @@ export type SynthesisIntentInput = {
 
 export function memoryGenerationSystemPrompt(): string {
   return [
-    "You are Distillery's Memory Generation step for Stable.",
-    "Extract only source-backed memory items from the provided text spans.",
+    "You are Distillery's high-recall Memory Candidate Extractor for Stable.",
+    "Extract every plausible source-backed memory candidate from the provided text spans.",
+    "Optimize for recall, not final trust. A later verifier will decide which candidates become active memory.",
+    "One evidence span may produce multiple candidates when it contains multiple distinct memories.",
+    "Do not merge distinct facts just because they appear in the same sentence.",
     "Do not create initiatives, PRDs, tasks, recommendations, or product priorities.",
     "Do not hide uncertainty. If a statement is a decision report, use decision_reported.",
     "If evidence is weak, use inferred or assumption only when the inference is clearly labeled and supported by supplied span IDs.",
@@ -79,6 +104,42 @@ export function memoryGenerationSystemPrompt(): string {
     "Output must be a single minified JSON object.",
     "Do not include markdown, comments, trailing commas, or unescaped line breaks inside strings.",
     "Return valid JSON matching the requested schema.",
+  ].join("\n");
+}
+
+export function memoryCandidateVerifierSystemPrompt(): string {
+  return [
+    "You are Distillery's Memory Candidate Verifier.",
+    "Evaluate extracted memory candidates against the supplied evidence spans.",
+    "Optimize for trust: no unsupported, misleading, over-broad, wrongly typed, or invented memory should become active.",
+    "Judge each candidate independently.",
+    "For each candidate, return one decision: verified, needs_review, corrected, duplicate, or unsupported.",
+    "Use verified only when the evidence directly supports the statement and the candidate is safe for leadership and PM planning.",
+    "Use needs_review when the candidate is plausible but ambiguous, overlapping, weakly inferred, too broad, or could mislead planning.",
+    "Use corrected when a candidate is mostly valid but needs corrected wording, claim type, evidence IDs, entities, relations, or schemas.",
+    "Use duplicate when a candidate substantially overlaps a clearer candidate.",
+    "Use unsupported when the supplied evidence does not support the candidate.",
+    "Check claimType, epistemicStatus, entity specificity, relation evidence, schema usefulness, duplicates, and negative expectations.",
+    "Do not add new facts not present in the evidence.",
+    "Return only valid JSON matching the requested schema.",
+  ].join("\n");
+}
+
+export function memoryConnectionScorerSystemPrompt(): string {
+  return [
+    "You are Distillery's Memory Connection Scorer.",
+    "Classify candidate memory-to-memory links for leadership, team lead, and PM planning workflows.",
+    "Use only the supplied memory, evidence, and candidate deterministic signals.",
+    "Prefer broad recall, but label relationship strength clearly so weak context is not mistaken for fact.",
+    "For each candidate, choose tier: direct, supporting, contextual, or weak.",
+    "Use direct for explicit dependencies, ownership, decisions, blockers, conflicts, or duplicates.",
+    "Use supporting for same entity/schema/relation links that are clearly useful to the work.",
+    "Use contextual for broader background that may affect planning but is not a direct relationship.",
+    "Use weak for exploratory bridges that should be hidden by default or review-only.",
+    "Choose a connectionReason such as explicit_dependency, shared_entity, same_schema, semantic_bridge, ownership_signal, conflict_warning, duplicate, or source_context.",
+    "Every output confidence must be between 0 and 1.",
+    "Do not invent claim IDs or evidenceSpanIds.",
+    "Return only valid JSON matching the requested schema.",
   ].join("\n");
 }
 
@@ -134,6 +195,66 @@ export function renderEvidenceForModel(spans: EvidenceSpan[]): string {
 
 export function renderMemoryGenerationInputForModel(input: MemoryGenerationPromptInput): string {
   return renderEvidenceForModel(input.evidenceSpans);
+}
+
+export function renderMemoryCandidateVerificationInputForModel(input: MemoryCandidateVerificationPromptInput): string {
+  return [
+    "<evidence>",
+    renderEvidenceForModel(input.evidenceSpans),
+    "</evidence>",
+    "",
+    "<candidates>",
+    ...input.candidates.map((candidate) =>
+      [
+        `<candidate temporaryId="${escapeAttribute(candidate.temporaryId)}" claimType="${candidate.claimType}" epistemicStatus="${candidate.epistemicStatus}">`,
+        `<statement>${escapeText(candidate.statement)}</statement>`,
+        `<evidenceSpanIds>${candidate.evidenceSpanIds.map(escapeText).join(", ")}</evidenceSpanIds>`,
+        `<entities>${escapeText(JSON.stringify(candidate.entities))}</entities>`,
+        `<relations>${escapeText(JSON.stringify(candidate.relations))}</relations>`,
+        `<schemas>${escapeText(JSON.stringify(candidate.schemas))}</schemas>`,
+        "</candidate>",
+      ].join("\n")
+    ),
+    "</candidates>",
+    ...(input.negativeExpectations?.length
+      ? ["", "<negativeExpectations>", ...input.negativeExpectations.map((item) => `- ${escapeText(item)}`), "</negativeExpectations>"]
+      : []),
+  ].join("\n");
+}
+
+export function renderMemoryConnectionScoringInputForModel(input: MemoryConnectionScoringPromptInput): string {
+  const memoryById = new Map(input.memory.map((record) => [record.memoryItem.id, record]));
+  return [
+    "<memory>",
+    ...input.memory.map((record) =>
+      [
+        `<claim id="${escapeAttribute(record.memoryItem.id)}" claimType="${record.memoryItem.claimType}">`,
+        `<statement>${escapeText(record.memoryItem.statement)}</statement>`,
+        `<evidenceSpanIds>${record.memoryItem.evidenceSpanIds.map(escapeText).join(", ")}</evidenceSpanIds>`,
+        `<entities>${escapeText(JSON.stringify(record.memoryItem.entities))}</entities>`,
+        `<relations>${escapeText(JSON.stringify(record.memoryItem.relations))}</relations>`,
+        `<schemas>${escapeText(JSON.stringify(record.memoryItem.schemas))}</schemas>`,
+        "</claim>",
+      ].join("\n")
+    ),
+    "</memory>",
+    "",
+    "<candidates>",
+    ...input.candidates.map((candidate) => {
+      const left = memoryById.get(candidate.fromClaimId)?.memoryItem;
+      const right = memoryById.get(candidate.toClaimId)?.memoryItem;
+      return [
+        `<connectionCandidate id="${escapeAttribute(candidate.id)}" from="${escapeAttribute(candidate.fromClaimId)}" to="${escapeAttribute(candidate.toClaimId)}" type="${candidate.connectionType}" confidence="${candidate.confidence}">`,
+        `<fromStatement>${escapeText(left?.statement ?? "")}</fromStatement>`,
+        `<toStatement>${escapeText(right?.statement ?? "")}</toStatement>`,
+        `<scoreComponents>${escapeText(JSON.stringify(candidate.scoreComponents))}</scoreComponents>`,
+        `<evidenceSpanIds>${candidate.evidenceSpanIds.map(escapeText).join(", ")}</evidenceSpanIds>`,
+        `<deterministicRationale>${escapeText(candidate.rationale)}</deterministicRationale>`,
+        "</connectionCandidate>",
+      ].join("\n");
+    }),
+    "</candidates>",
+  ].join("\n");
 }
 
 export function renderInitiativeBriefDraftInputForModel(input: InitiativeBriefDraftPromptInput): string {
@@ -212,6 +333,14 @@ function truncateText(input: string, maxChars: number): string {
   const normalized = input.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, maxChars - 15).trimEnd()} [truncated]`;
+}
+
+function escapeAttribute(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
+function escapeText(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 }
 
 export function renderSynthesisIntent(input: SynthesisIntentInput): string {
