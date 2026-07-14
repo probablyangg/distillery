@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { SupabaseRpcClient } from "@distillery/db";
 import { OpenRouterEmbeddingModel } from "@distillery/model-gateway";
 import type { EmbeddingTargetType } from "@distillery/contracts";
@@ -8,9 +9,10 @@ type MissingEmbeddingTarget = {
   content: string;
 };
 
-const tenantId = process.env.TENANT_ID?.trim() || "stable";
-const embeddingModelName = process.env.EMBEDDING_MODEL?.trim() || "google/gemini-embedding-001";
-const embeddingDimensions = positiveInteger(process.env.EMBEDDING_DIMENSIONS) ?? 1536;
+const localEnv = readLocalEnv();
+const tenantId = envValue("TENANT_ID") || "stable";
+const embeddingModelName = envValue("EMBEDDING_MODEL") || "google/gemini-embedding-001";
+const embeddingDimensions = positiveInteger(envValue("EMBEDDING_DIMENSIONS")) ?? 1536;
 const batchSize = positiveInteger(flagValue("--batch-size")) ?? 64;
 const dryRun = process.argv.includes("--dry-run");
 
@@ -18,7 +20,7 @@ async function main(): Promise<void> {
   const supabaseUrl = requiredEnv("SUPABASE_URL");
   const secretKey = requiredEnv("SUPABASE_SECRET_KEY");
   const apiKey = requiredEnv("OPENROUTER_API_KEY");
-  const baseUrl = process.env.EMBEDDING_BASE_URL?.trim() || process.env.OPENROUTER_BASE_URL?.trim() || "https://openrouter.ai/api/v1";
+  const baseUrl = envValue("EMBEDDING_BASE_URL") || envValue("OPENROUTER_BASE_URL") || "https://openrouter.ai/api/v1";
 
   const rpcClient = new SupabaseRpcClient({ supabaseUrl, secretKey });
   const targets = await rpcClient.rpc<MissingEmbeddingTarget[]>("distillery_list_missing_memory_embedding_targets", {
@@ -43,8 +45,8 @@ async function main(): Promise<void> {
     baseUrl,
     model: embeddingModelName,
     dimensions: embeddingDimensions,
-    ...(process.env.EMBEDDING_ENCODING_FORMAT === "float" ? { encodingFormat: "float" as const } : {}),
-    timeoutMs: positiveInteger(process.env.OPENROUTER_TIMEOUT_MS) ?? 30_000,
+    ...(envValue("EMBEDDING_ENCODING_FORMAT") === "float" ? { encodingFormat: "float" as const } : {}),
+    timeoutMs: positiveInteger(envValue("OPENROUTER_TIMEOUT_MS")) ?? 30_000,
   });
 
   const embeddings: Array<{
@@ -88,9 +90,41 @@ async function main(): Promise<void> {
 }
 
 function requiredEnv(name: string): string {
-  const value = process.env[name]?.trim();
+  const value = envValue(name);
   if (!value) throw new Error(`Missing required environment variable: ${name}`);
   return value;
+}
+
+function envValue(name: string): string | undefined {
+  return localEnv[name] ?? process.env[name]?.trim();
+}
+
+function readLocalEnv(): Record<string, string> {
+  if (!fs.existsSync(".env.local")) return {};
+
+  const envText = fs.readFileSync(".env.local", "utf8");
+  const env: Record<string, string> = {};
+
+  for (const rawLine of envText.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) continue;
+
+    const key = match[1];
+    const rawValue = match[2];
+    if (!key || rawValue === undefined) continue;
+
+    let value = rawValue.trim();
+    if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+
+    env[key] = value;
+  }
+
+  return env;
 }
 
 function flagValue(name: string): string | undefined {
