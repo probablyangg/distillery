@@ -6,6 +6,7 @@ import {
   type EventType,
   type EvidenceSpan,
   type GeneratedMemoryBatch,
+  type GeneratedMemoryItem,
   type GraphEdge,
   type GraphNode,
   type InitiativeBrief,
@@ -27,7 +28,15 @@ import {
   type CommittableMemoryItem,
   type IngestionContext,
 } from "@distillery/memory-generation";
-import type { InitiativeBriefDraftModel, MemoryGenerationModel, RetrievalRerankerModel } from "@distillery/model-gateway";
+import type {
+  InitiativeBriefDraftModel,
+  MemoryCandidateVerifierModel,
+  MemoryConnectionScorerModel,
+  MemoryConnectionScoringCandidate,
+  MemoryConnectionScoringDecision,
+  MemoryGenerationModel,
+  RetrievalRerankerModel,
+} from "@distillery/model-gateway";
 import type { EmbeddingModel } from "@distillery/model-gateway";
 import {
   retrieveMemoryContext,
@@ -86,12 +95,13 @@ export type PolicyOutput = {
   provider?: string;
   model?: string;
   fallbackUsed?: boolean;
-  fallbackReason?: string;
+  fallbackReason?: string | undefined;
   promptVersion?: string;
   schemaVersion?: string;
   outputSchemaVersion?: string;
   rawResponse?: unknown;
   validationEvidenceSpans?: EvidenceSpan[];
+  policyValidationIssues?: ValidationGateResult["issues"] | undefined;
 };
 
 export type PolicyInputEnvelope<T> = {
@@ -283,6 +293,8 @@ export async function routeCommittedEvents(args: {
 export function createPolicies(args: {
   persistence: LoopPersistence;
   memoryModel: MemoryGenerationModel;
+  memoryVerifierModel?: MemoryCandidateVerifierModel;
+  memoryConnectionScorerModel?: MemoryConnectionScorerModel;
   embeddingModel?: EmbeddingModel;
   retrievalRerankerModel?: RetrievalRerankerModel;
   initiativeBriefDraftModel?: InitiativeBriefDraftModel;
@@ -357,6 +369,7 @@ export async function executeWorkItem(args: {
 
     const output = await policy.run(builtInput);
     const validation = mergeValidationResults([
+      ...(output.policyValidationIssues?.length ? [{ ok: false, issues: output.policyValidationIssues }] : []),
       await policy.validate(output),
       ...output.proposedEvents.map((draft) =>
         validateHumanApprovalRequirement(toProposedEventForValidation({
@@ -1097,7 +1110,7 @@ export class InMemoryLoopPersistence implements LoopPersistence {
         connectionType: String(connection.connectionType) as ClaimConnection["connectionType"],
         status: String(connection.status ?? "proposed") as ClaimConnection["status"],
         confidence: Number(connection.confidence),
-        scoreComponents: numericRecord(connection.scoreComponents),
+        scoreComponents: metadataRecord(connection.scoreComponents),
         evidenceSpanIds: stringArray(connection.evidenceSpanIds),
         rationale: typeof connection.rationale === "string" ? connection.rationale : null,
         createdByPolicyRunId: proposal.policyRunId ?? null,
@@ -1140,6 +1153,7 @@ export class InMemoryLoopPersistence implements LoopPersistence {
 function createExtractMemoryPolicy(args: {
   persistence: LoopPersistence;
   memoryModel: MemoryGenerationModel;
+  memoryVerifierModel?: MemoryCandidateVerifierModel;
   embeddingModel?: EmbeddingModel;
   newId?: (prefix: string) => string;
 }): Policy<ExtractMemoryInput, PolicyOutput> {
@@ -1172,6 +1186,7 @@ function createExtractMemoryPolicy(args: {
     },
     async run(envelope) {
       let generated;
+      let extractorFallbackReason: string | undefined;
       try {
         generated = await args.memoryModel.generateMemory({
           ingestionId: envelope.input.ingestionId,
@@ -1179,48 +1194,30 @@ function createExtractMemoryPolicy(args: {
           evidenceSpans: envelope.input.evidenceSpans,
         });
       } catch (error) {
+        extractorFallbackReason = error instanceof Error ? error.message : String(error);
         generated = deterministicMemoryGenerationFallback({
           evidenceSpans: envelope.input.evidenceSpans,
-          error: error instanceof Error ? error.message : String(error),
+          error: extractorFallbackReason,
         });
       }
       const extractionRunId = newId("extr");
-      await args.persistence.recordExtractionRun({
-        id: extractionRunId,
-        ingestionId: envelope.input.ingestionId,
-        tenantId: envelope.input.tenantId,
-        provider: "openrouter",
-        model: generated.model,
-        promptVersion: MEMORY_PROMPT_VERSION,
-        schemaVersion: MEMORY_SCHEMA_VERSION,
-        rawResponse: generated.raw,
-        status: "completed",
-      });
-      const generatedMemory = validateGeneratedMemory({
-        generated: generated.parsed,
+      const candidateRouting = await routeGeneratedMemoryCandidates({
+        candidates: generated.parsed.items,
         allowedEvidenceSpans: envelope.input.evidenceSpans,
+        verifierModel: args.memoryVerifierModel,
       });
-      const items = generatedMemory.items.map((item) => ({
-        id: newId("mem"),
-        claimType: item.claimType,
-        statement: item.statement,
-        evidenceSpanIds: item.evidenceSpanIds,
-        epistemicStatus: item.epistemicStatus,
-        qualifiers: item.qualifiers,
-        stableDomainTags: item.stableDomainTags,
-        entities: sanitizeMemoryEntities(item.entities),
-        relations: item.relations,
-        schemas: item.schemas,
-      }));
+      const autoItems = candidateRouting.autoItems.map((item) => toCommittableMemoryItem(item, newId));
+      const reviewItems = candidateRouting.reviewItems.map((item) => toCommittableMemoryItem(item, newId));
+      const allProposedItems = [...autoItems, ...reviewItems];
 
       let embeddingMetadata: Record<string, unknown> | undefined;
-      if (args.embeddingModel) {
+      if (args.embeddingModel && allProposedItems.length > 0) {
         try {
           embeddingMetadata = await generateAndStoreEmbeddings({
             persistence: args.persistence,
             embeddingModel: args.embeddingModel,
             tenantId: envelope.input.tenantId,
-            items,
+            items: allProposedItems,
             evidenceSpans: envelope.input.evidenceSpans,
             newId,
           });
@@ -1232,52 +1229,299 @@ function createExtractMemoryPolicy(args: {
         }
       }
 
-      return {
-        proposedEvents: [{
-          proposedEventType: "memory_proposed",
-          targetEventType: "memory_committed",
-          subjectType: "memory",
-          subjectId: envelope.input.sourceVersionId,
-          payload: {
-            ingestionId: envelope.input.ingestionId,
-            sourceVersionId: envelope.input.sourceVersionId,
-            extractionRunId,
-            memoryGenerationVersion: MEMORY_GENERATION_VERSION,
-            items,
-            ...(embeddingMetadata ? { embeddingMetadata } : {}),
-          },
-          evidenceSpanIds: [...new Set(items.flatMap((item) => item.evidenceSpanIds))],
-          memoryItemIds: items.map((item) => item.id),
-          requiresHumanApproval: false,
-        }],
+      const rawResponse = {
+        extractor: generated.raw,
+        verifier: candidateRouting.rawVerifierResponse ?? null,
+        audit: {
+          extractorFallbackReason: extractorFallbackReason ?? null,
+          verifierFallbackReason: candidateRouting.verifierFallbackReason ?? null,
+          rejectedCandidates: candidateRouting.rejectedCandidates,
+          duplicateCandidates: candidateRouting.duplicateCandidates,
+          deterministicIssues: candidateRouting.deterministicIssues,
+        },
+      };
+      await args.persistence.recordExtractionRun({
+        id: extractionRunId,
+        ingestionId: envelope.input.ingestionId,
+        tenantId: envelope.input.tenantId,
         provider: "openrouter",
-        model: generated.model,
+        model: candidateRouting.verifierModel
+          ? `${generated.model}+${candidateRouting.verifierModel}`
+          : generated.model,
+        promptVersion: MEMORY_PROMPT_VERSION,
+        schemaVersion: MEMORY_SCHEMA_VERSION,
+        rawResponse,
+        status: "completed",
+      });
+
+      const proposedEvents: ProposedEventDraft[] = [];
+      if (autoItems.length > 0) {
+        proposedEvents.push(memoryProposedDraft({
+          sourceVersionId: envelope.input.sourceVersionId,
+          ingestionId: envelope.input.ingestionId,
+          extractionRunId,
+          items: autoItems,
+          embeddingMetadata,
+          requiresHumanApproval: false,
+        }));
+      }
+      if (reviewItems.length > 0) {
+        proposedEvents.push(memoryProposedDraft({
+          sourceVersionId: envelope.input.sourceVersionId,
+          ingestionId: envelope.input.ingestionId,
+          extractionRunId,
+          items: reviewItems,
+          embeddingMetadata,
+          requiresHumanApproval: true,
+        }));
+      }
+
+      return {
+        proposedEvents,
+        provider: "openrouter",
+        model: candidateRouting.verifierModel
+          ? `${generated.model}+${candidateRouting.verifierModel}`
+          : generated.model,
+        fallbackUsed: Boolean(extractorFallbackReason || candidateRouting.verifierFallbackReason),
+        fallbackReason: extractorFallbackReason ?? candidateRouting.verifierFallbackReason,
         promptVersion: MEMORY_PROMPT_VERSION,
         schemaVersion: MEMORY_SCHEMA_VERSION,
         outputSchemaVersion: MEMORY_SCHEMA_VERSION,
-        rawResponse: generated.raw,
+        rawResponse,
         validationEvidenceSpans: envelope.input.evidenceSpans,
+        policyValidationIssues: proposedEvents.length === 0 && candidateRouting.deterministicIssues.length > 0
+          ? candidateRouting.deterministicIssues
+          : undefined,
       };
     },
     async validate(output) {
-      const draft = output.proposedEvents[0];
-      if (!draft || draft.proposedEventType !== "memory_proposed") {
-        return {
-          ok: false,
-          issues: [{ code: "missing_memory_proposal", message: "extract_memory must emit memory_proposed.", path: [] }],
-        };
-      }
-      const parsed = GeneratedMemoryBatchFromPayload(draft.payload);
-      return validateGeneratedMemory({
-        generated: parsed,
-        allowedEvidenceSpans: output.validationEvidenceSpans ?? [],
-      }).result;
+      const issues = output.proposedEvents.flatMap((draft) => {
+        if (draft.proposedEventType !== "memory_proposed") {
+          return [{ code: "invalid_memory_proposal", message: "extract_memory may only emit memory_proposed.", path: [] }];
+        }
+        const parsed = GeneratedMemoryBatchFromPayload(draft.payload);
+        return validateGeneratedMemory({
+          generated: parsed,
+          allowedEvidenceSpans: output.validationEvidenceSpans ?? [],
+        }).result.issues;
+      });
+      return { ok: issues.length === 0, issues };
     },
+  };
+}
+
+type RoutedGeneratedMemoryCandidates = {
+  autoItems: GeneratedMemoryItem[];
+  reviewItems: GeneratedMemoryItem[];
+  rejectedCandidates: Array<{ temporaryId: string; reason: string }>;
+  duplicateCandidates: Array<{ temporaryId: string; reason: string }>;
+  deterministicIssues: ValidationGateResult["issues"];
+  rawVerifierResponse?: unknown;
+  verifierModel?: string;
+  verifierFallbackReason?: string;
+};
+
+async function routeGeneratedMemoryCandidates(args: {
+  candidates: GeneratedMemoryItem[];
+  allowedEvidenceSpans: EvidenceSpan[];
+  verifierModel?: MemoryCandidateVerifierModel | undefined;
+}): Promise<RoutedGeneratedMemoryCandidates> {
+  const deterministicIssues: ValidationGateResult["issues"] = [];
+  const deterministicValid: GeneratedMemoryItem[] = [];
+  const rejectedCandidates: Array<{ temporaryId: string; reason: string }> = [];
+  const duplicateCandidates: Array<{ temporaryId: string; reason: string }> = [];
+  const seenStatements = new Set<string>();
+
+  for (const candidate of args.candidates) {
+    const normalizedStatement = normalizeText(candidate.statement);
+    if (seenStatements.has(normalizedStatement)) {
+      duplicateCandidates.push({ temporaryId: candidate.temporaryId, reason: "Duplicate generated memory statement." });
+      continue;
+    }
+    seenStatements.add(normalizedStatement);
+
+    const validation = validateGeneratedMemory({
+      generated: { items: [candidate] },
+      allowedEvidenceSpans: args.allowedEvidenceSpans,
+    });
+    if (!validation.result.ok) {
+      deterministicIssues.push(...validation.result.issues.map((issue) => ({
+        ...issue,
+        path: [candidate.temporaryId, ...issue.path],
+      })));
+      rejectedCandidates.push({
+        temporaryId: candidate.temporaryId,
+        reason: validation.result.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "),
+      });
+      continue;
+    }
+    deterministicValid.push(validation.items[0] ?? candidate);
+  }
+
+  if (deterministicValid.length === 0) {
+    return { autoItems: [], reviewItems: [], rejectedCandidates, duplicateCandidates, deterministicIssues };
+  }
+
+  if (!args.verifierModel) {
+    return {
+      autoItems: deterministicValid.map((item) => annotateMemoryCandidate(item, "verified", "No verifier model configured; deterministic validation passed.", "deterministic")),
+      reviewItems: [],
+      rejectedCandidates,
+      duplicateCandidates,
+      deterministicIssues,
+    };
+  }
+
+  let verifierResponse;
+  try {
+    verifierResponse = await args.verifierModel.verifyMemoryCandidates({
+      evidenceSpans: args.allowedEvidenceSpans,
+      candidates: deterministicValid,
+    });
+  } catch (error) {
+    return {
+      autoItems: [],
+      reviewItems: deterministicValid.map((item) =>
+        annotateMemoryCandidate(
+          item,
+          "needs_review",
+          `Verifier unavailable; deterministic validation passed. ${error instanceof Error ? error.message : String(error)}`,
+          "verifier_unavailable",
+        )
+      ),
+      rejectedCandidates,
+      duplicateCandidates,
+      deterministicIssues,
+      verifierFallbackReason: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  const decisionsById = new Map(verifierResponse.decisions.map((decision) => [decision.temporaryId, decision]));
+  const autoItems: GeneratedMemoryItem[] = [];
+  const reviewItems: GeneratedMemoryItem[] = [];
+
+  for (const candidate of deterministicValid) {
+    const decision = decisionsById.get(candidate.temporaryId);
+    if (!decision) {
+      reviewItems.push(annotateMemoryCandidate(candidate, "needs_review", "Verifier did not return a decision for this candidate.", verifierResponse.model));
+      continue;
+    }
+
+    if (decision.decision === "verified") {
+      autoItems.push(annotateMemoryCandidate(candidate, "verified", decision.rationale, verifierResponse.model));
+      continue;
+    }
+
+    if (decision.decision === "needs_review") {
+      reviewItems.push(annotateMemoryCandidate(candidate, "needs_review", decision.rationale, verifierResponse.model));
+      continue;
+    }
+
+    if (decision.decision === "corrected" && decision.correctedItem) {
+      const correctedValidation = validateGeneratedMemory({
+        generated: { items: [decision.correctedItem] },
+        allowedEvidenceSpans: args.allowedEvidenceSpans,
+      });
+      if (correctedValidation.result.ok) {
+        autoItems.push(annotateMemoryCandidate(
+          correctedValidation.items[0] ?? decision.correctedItem,
+          "corrected",
+          decision.rationale,
+          verifierResponse.model,
+          candidate.temporaryId,
+        ));
+      } else {
+        reviewItems.push(annotateMemoryCandidate(candidate, "needs_review", `Verifier correction failed validation: ${decision.rationale}`, verifierResponse.model));
+      }
+      continue;
+    }
+
+    if (decision.decision === "duplicate") {
+      duplicateCandidates.push({ temporaryId: candidate.temporaryId, reason: decision.rationale });
+      continue;
+    }
+
+    rejectedCandidates.push({ temporaryId: candidate.temporaryId, reason: decision.rationale || decision.decision });
+  }
+
+  return {
+    autoItems,
+    reviewItems,
+    rejectedCandidates,
+    duplicateCandidates,
+    deterministicIssues,
+    rawVerifierResponse: verifierResponse.raw,
+    verifierModel: verifierResponse.model,
+  };
+}
+
+function annotateMemoryCandidate(
+  item: GeneratedMemoryItem,
+  verificationStatus: string,
+  rationale: string,
+  verifiedBy: string,
+  originalTemporaryId?: string,
+): GeneratedMemoryItem {
+  return {
+    ...item,
+    qualifiers: {
+      ...item.qualifiers,
+      verificationStatus,
+      verificationRationale: rationale,
+      verifiedBy,
+      ...(originalTemporaryId ? { originalTemporaryId } : {}),
+    },
+  };
+}
+
+function toCommittableMemoryItem(
+  item: GeneratedMemoryItem,
+  newId: (prefix: string) => string,
+): CommittableMemoryItem {
+  return {
+    id: newId("mem"),
+    claimType: item.claimType,
+    statement: item.statement,
+    evidenceSpanIds: item.evidenceSpanIds,
+    epistemicStatus: item.epistemicStatus,
+    qualifiers: item.qualifiers,
+    stableDomainTags: item.stableDomainTags,
+    entities: sanitizeMemoryEntities(item.entities),
+    relations: item.relations,
+    schemas: item.schemas,
+  };
+}
+
+function memoryProposedDraft(args: {
+  sourceVersionId: string;
+  ingestionId: string;
+  extractionRunId: string;
+  items: CommittableMemoryItem[];
+  embeddingMetadata?: Record<string, unknown> | undefined;
+  requiresHumanApproval: boolean;
+}): ProposedEventDraft {
+  return {
+    proposedEventType: "memory_proposed",
+    targetEventType: "memory_committed",
+    subjectType: "memory",
+    subjectId: args.sourceVersionId,
+    payload: {
+      ingestionId: args.ingestionId,
+      sourceVersionId: args.sourceVersionId,
+      extractionRunId: args.extractionRunId,
+      memoryGenerationVersion: MEMORY_GENERATION_VERSION,
+      items: args.items,
+      ...(args.embeddingMetadata ? { embeddingMetadata: args.embeddingMetadata } : {}),
+    },
+    evidenceSpanIds: [...new Set(args.items.flatMap((item) => item.evidenceSpanIds))],
+    memoryItemIds: args.items.map((item) => item.id),
+    requiresHumanApproval: args.requiresHumanApproval,
   };
 }
 
 function createConnectMemoryPolicy(args: {
   persistence: LoopPersistence;
+  memoryConnectionScorerModel?: MemoryConnectionScorerModel;
   newId?: (prefix: string) => string;
 }): Policy<ConnectMemoryInput, PolicyOutput> {
   const newId = args.newId ?? defaultNewId;
@@ -1309,13 +1553,26 @@ function createConnectMemoryPolicy(args: {
       };
     },
     async run(envelope) {
-      const connections = buildDeterministicConnections(envelope.input.memory, newId);
+      const scoringResult = args.memoryConnectionScorerModel
+        ? await buildLlmScoredConnections({
+          memory: envelope.input.memory,
+          scorerModel: args.memoryConnectionScorerModel,
+          newId,
+        })
+        : {
+          connections: buildDeterministicConnections(envelope.input.memory, newId),
+          rawResponse: null,
+          model: "connect-memory-v0.1",
+          fallbackReason: undefined,
+        };
+      const connections = scoringResult.connections;
       if (connections.length === 0) {
         return {
           proposedEvents: [],
           provider: "deterministic",
-          model: "connect-memory-v0.1",
-          fallbackReason: "No graph-grounded connection candidates crossed the pilot threshold.",
+          model: scoringResult.model,
+          rawResponse: scoringResult.rawResponse,
+          fallbackReason: scoringResult.fallbackReason ?? "No graph-grounded connection candidates crossed the pilot threshold.",
         };
       }
       return {
@@ -1333,8 +1590,11 @@ function createConnectMemoryPolicy(args: {
           memoryItemIds: uniqueStrings(connections.flatMap((connection) => [connection.fromClaimId, connection.toClaimId])),
           requiresHumanApproval: false,
         }],
-        provider: "deterministic",
-        model: "connect-memory-v0.1",
+        provider: args.memoryConnectionScorerModel ? "openrouter" : "deterministic",
+        model: scoringResult.model,
+        fallbackUsed: Boolean(scoringResult.fallbackReason),
+        fallbackReason: scoringResult.fallbackReason,
+        rawResponse: scoringResult.rawResponse,
       };
     },
     async validate(output) {
@@ -1720,7 +1980,7 @@ function buildDeterministicConnections(
   connectionType: ClaimConnection["connectionType"];
   status: ClaimConnection["status"];
   confidence: number;
-  scoreComponents: Record<string, number>;
+  scoreComponents: Record<string, unknown>;
   evidenceSpanIds: string[];
   rationale: string;
 }> {
@@ -1751,6 +2011,121 @@ function buildDeterministicConnections(
   }
 
   return connections;
+}
+
+async function buildLlmScoredConnections(args: {
+  memory: MemoryWithEvidence[];
+  scorerModel: MemoryConnectionScorerModel;
+  newId: (prefix: string) => string;
+}): Promise<{
+  connections: ReturnType<typeof buildDeterministicConnections>;
+  rawResponse: unknown;
+  model: string;
+  fallbackReason?: string;
+}> {
+  const candidates = buildBroadConnectionCandidates(args.memory).slice(0, 120);
+  if (candidates.length === 0) {
+    return { connections: [], rawResponse: null, model: "connect-memory-v0.1" };
+  }
+
+  try {
+    const response = await args.scorerModel.scoreMemoryConnections({
+      memory: args.memory,
+      candidates,
+    });
+    const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+    const connections = response.decisions
+      .map((decision) => {
+        const candidate = candidateById.get(decision.candidateId);
+        if (!candidate) return null;
+        return connectionFromScoringDecision({
+          decision,
+          candidate,
+          model: response.model,
+          newId: args.newId,
+        });
+      })
+      .filter((connection): connection is ReturnType<typeof buildDeterministicConnections>[number] => Boolean(connection));
+    return { connections, rawResponse: response.raw, model: response.model };
+  } catch (error) {
+    return {
+      connections: buildDeterministicConnections(args.memory, args.newId),
+      rawResponse: null,
+      model: "connect-memory-v0.1",
+      fallbackReason: `Connection scorer unavailable; used deterministic fallback. ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+function buildBroadConnectionCandidates(memory: MemoryWithEvidence[]): MemoryConnectionScoringCandidate[] {
+  const candidates: MemoryConnectionScoringCandidate[] = [];
+  for (let leftIndex = 0; leftIndex < memory.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < memory.length; rightIndex += 1) {
+      const left = memory[leftIndex]!;
+      const right = memory[rightIndex]!;
+      const score = scoreConnection(left, right);
+      const hasGrounding = score.rationale !== "No grounding signal; claim-type compatibility was ignored.";
+      if (!hasGrounding && score.confidence < 0.12) continue;
+      if (score.confidence < 0.12 && !hasDirectWorkSignal(left, right)) continue;
+
+      candidates.push({
+        id: `ccand:${left.memoryItem.id}:${right.memoryItem.id}`,
+        fromClaimId: left.memoryItem.id,
+        toClaimId: right.memoryItem.id,
+        connectionType: score.connectionType,
+        confidence: score.confidence,
+        scoreComponents: score.scoreComponents,
+        evidenceSpanIds: uniqueStrings([
+          ...left.memoryItem.evidenceSpanIds,
+          ...right.memoryItem.evidenceSpanIds,
+        ]),
+        rationale: score.rationale,
+      });
+    }
+  }
+
+  return candidates.sort((left, right) =>
+    right.confidence - left.confidence ||
+    left.fromClaimId.localeCompare(right.fromClaimId) ||
+    left.toClaimId.localeCompare(right.toClaimId)
+  );
+}
+
+function hasDirectWorkSignal(left: MemoryWithEvidence, right: MemoryWithEvidence): boolean {
+  const claimTypes = new Set([left.memoryItem.claimType, right.memoryItem.claimType]);
+  return claimTypes.has("dependency") ||
+    claimTypes.has("risk") ||
+    claimTypes.has("constraint") ||
+    claimTypes.has("ownership_statement") ||
+    claimTypes.has("reported_decision");
+}
+
+function connectionFromScoringDecision(args: {
+  decision: MemoryConnectionScoringDecision;
+  candidate: MemoryConnectionScoringCandidate;
+  model: string;
+  newId: (prefix: string) => string;
+}): ReturnType<typeof buildDeterministicConnections>[number] {
+  return {
+    id: args.newId("conn"),
+    fromClaimId: args.candidate.fromClaimId,
+    toClaimId: args.candidate.toClaimId,
+    connectionType: args.decision.connectionType as ClaimConnection["connectionType"],
+    status: "proposed",
+    confidence: Number(Math.max(0, Math.min(1, args.decision.confidence)).toFixed(3)),
+    scoreComponents: {
+      ...args.candidate.scoreComponents,
+      llm_confidence: args.decision.confidence,
+      tier: args.decision.tier,
+      connectionReason: args.decision.connectionReason,
+      llmModel: args.model,
+      reviewRequired: args.decision.reviewRequired,
+    },
+    evidenceSpanIds: uniqueStrings(args.decision.evidenceSpanIds.length > 0
+      ? args.decision.evidenceSpanIds
+      : args.candidate.evidenceSpanIds),
+    rationale: args.decision.rationale || args.candidate.rationale,
+  };
 }
 
 async function generateAndStoreEmbeddings(args: {
@@ -2138,8 +2513,8 @@ function validateConnectionPayload(connection: unknown, index: number): Validati
   if (!connection.fromClaimId || !connection.toClaimId || connection.fromClaimId === connection.toClaimId) {
     issues.push({ code: "invalid_connection_claims", message: "Connection requires two distinct claim ids.", path: [`connections.${index}`] });
   }
-  if (!Number.isFinite(confidence) || confidence < 0.55 || confidence > 1) {
-    issues.push({ code: "invalid_connection_confidence", message: "Connection confidence must be between 0.55 and 1.", path: [`connections.${index}.confidence`] });
+  if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+    issues.push({ code: "invalid_connection_confidence", message: "Connection confidence must be between 0 and 1.", path: [`connections.${index}.confidence`] });
   }
   if (evidenceSpanIds.length === 0) {
     issues.push({ code: "connection_missing_evidence", message: "Connection must carry evidence span ids.", path: [`connections.${index}.evidenceSpanIds`] });
@@ -2222,13 +2597,9 @@ function uniqueStrings(values: string[]): string[] {
   return values.filter((value, index) => value.length > 0 && values.indexOf(value) === index);
 }
 
-function numericRecord(value: unknown): Record<string, number> {
+function metadataRecord(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value)
-      .map(([key, raw]) => [key, Number(raw)] as const)
-      .filter((entry): entry is readonly [string, number] => Number.isFinite(entry[1])),
-  );
+  return { ...value };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

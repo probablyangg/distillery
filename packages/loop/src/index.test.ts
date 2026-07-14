@@ -7,7 +7,11 @@ import {
   routeCommittedEvents,
   type PolicyOutput,
 } from "./index";
-import type { InitiativeBriefDraftModel } from "@distillery/model-gateway";
+import type {
+  InitiativeBriefDraftModel,
+  MemoryCandidateVerifierModel,
+  MemoryConnectionScorerModel,
+} from "@distillery/model-gateway";
 import { StaticMemoryGenerationModel } from "@distillery/memory-generation";
 
 const evidenceSpan = {
@@ -139,6 +143,51 @@ describe("loop system", () => {
     expect([...store.claimConnections.values()].some((connection) =>
       connection.fromClaimId === "mem_lookalike" || connection.toClaimId === "mem_lookalike"
     )).toBe(false);
+  });
+
+  it("connect_memory uses LLM scorer tiers and persists tier metadata in score components", async () => {
+    const store = seededStore();
+    store.seedMemorySynthesisContext(connectedMemoryContext());
+    await store.commitLedgerEventWithOutbox({
+      id: "levt_memory",
+      tenantId: "stable",
+      eventType: "memory_committed",
+      subjectType: "memory",
+      subjectId: "batch_1",
+      actorType: "policy",
+      inputVersion: "batch:v1",
+      idempotencyKey: "memory:connect:llm",
+      payload: { memoryItemIds: ["mem_1"] },
+    });
+    const work = await routeCommittedEvents({ persistence: store });
+    const connectWork = work.find((item) => item.policy === "connect_memory");
+    if (!connectWork) throw new Error("expected connect_memory work");
+
+    await executeWorkItem({
+      persistence: store,
+      policies: createPolicies({
+        persistence: store,
+        memoryModel: modelWithValidMemory(),
+        memoryConnectionScorerModel: new StaticConnectionScorer(),
+        newId: deterministicId(),
+      }),
+      workItemId: connectWork.id,
+      newId: deterministicId(),
+    });
+
+    const connection = [...store.claimConnections.values()][0];
+    expect(connection).toMatchObject({
+      fromClaimId: "mem_1",
+      toClaimId: "mem_2",
+      connectionType: "depends_on",
+      confidence: 0.88,
+    });
+    expect(connection?.scoreComponents).toMatchObject({
+      tier: "direct",
+      connectionReason: "explicit_dependency",
+      llmModel: "static-connection-scorer",
+      reviewRequired: false,
+    });
   });
 
   it("detect_contradiction records blocking conflicts with evidence", async () => {
@@ -636,6 +685,80 @@ describe("loop system", () => {
     expect(store.committedMemory).toHaveLength(0);
   });
 
+  it("extract_memory verifier routes verified, needs-review, duplicate, unsupported, and corrected candidates", async () => {
+    const store = seededStore();
+    const workItem = await routeSourceToWork(store);
+
+    await executeWorkItem({
+      persistence: store,
+      policies: createPolicies({
+        persistence: store,
+        memoryModel: new StaticMemoryGenerationModel({
+          items: [
+            memoryCandidate("verified", "Docs ownership blocks launch readiness."),
+            memoryCandidate("review", "Docs ownership may block launch readiness."),
+            memoryCandidate("unsupported", "Payments launch is approved."),
+            memoryCandidate("duplicate", "Docs ownership blocks launch readiness again."),
+            memoryCandidate("correct", "Docs ownership is a launch risk."),
+          ],
+        }),
+        memoryVerifierModel: new StaticMemoryVerifier({
+          verified: { decision: "verified", rationale: "Directly supported." },
+          review: { decision: "needs_review", rationale: "Plausible but hedged." },
+          unsupported: { decision: "unsupported", rationale: "Approval is not in evidence." },
+          duplicate: { decision: "duplicate", rationale: "Covered by verified." },
+          correct: {
+            decision: "corrected",
+            rationale: "This is a dependency, not a risk.",
+            correctedItem: {
+              ...memoryCandidate("corrected", "API launch readiness depends on docs ownership."),
+              claimType: "dependency",
+            },
+          },
+        }),
+        newId: deterministicId(),
+      }),
+      workItemId: workItem.id,
+      newId: deterministicId(),
+    });
+
+    const proposals = [...store.proposedEvents.values()].filter((event) => event.proposedEventType === "memory_proposed");
+    expect(proposals).toHaveLength(2);
+    expect(proposals.find((event) => !event.requiresHumanApproval)?.payload.items).toHaveLength(2);
+    expect(proposals.find((event) => event.requiresHumanApproval)?.payload.items).toHaveLength(1);
+    expect(store.committedMemory).toHaveLength(2);
+    expect(store.committedMemory.map((item) => item.qualifiers.verificationStatus)).toEqual(["verified", "corrected"]);
+    expect(JSON.stringify(store.extractionRuns[0])).toContain("Approval is not in evidence.");
+    expect(JSON.stringify(store.extractionRuns[0])).toContain("Covered by verified.");
+  });
+
+  it("extract_memory verifier outage routes valid candidates to review instead of active memory", async () => {
+    const store = seededStore();
+    const workItem = await routeSourceToWork(store);
+
+    await executeWorkItem({
+      persistence: store,
+      policies: createPolicies({
+        persistence: store,
+        memoryModel: modelWithValidMemory(),
+        memoryVerifierModel: {
+          async verifyMemoryCandidates() {
+            throw new Error("verifier timed out");
+          },
+        },
+        newId: deterministicId(),
+      }),
+      workItemId: workItem.id,
+      newId: deterministicId(),
+    });
+
+    const proposal = [...store.proposedEvents.values()][0];
+    expect(proposal?.requiresHumanApproval).toBe(true);
+    expect(proposal?.reviewStatus).toBe("pending");
+    expect(store.committedMemory).toHaveLength(0);
+    expect(store.pendingWorkItems.get(workItem.id)?.status).toBe("completed");
+  });
+
   it("valid auto-commit writes domain state, ledger_events, and event_outbox", async () => {
     const store = seededStore();
     const workItem = await routeSourceToWork(store);
@@ -972,6 +1095,59 @@ function connectedMemoryContext() {
       evidenceSpans: [secondEvidenceSpan],
     },
   ];
+}
+
+function memoryCandidate(temporaryId: string, statement: string) {
+  return {
+    temporaryId,
+    claimType: "dependency" as const,
+    statement,
+    evidenceSpanIds: ["ev_1"],
+    epistemicStatus: "reported" as const,
+    qualifiers: {},
+    stableDomainTags: ["docs"],
+    entities: [{ name: "API launch", entityType: "initiative" }],
+    relations: [],
+    schemas: [],
+  };
+}
+
+class StaticMemoryVerifier implements MemoryCandidateVerifierModel {
+  constructor(private readonly decisions: Record<string, {
+    decision: "verified" | "needs_review" | "corrected" | "duplicate" | "unsupported";
+    rationale: string;
+    correctedItem?: ReturnType<typeof memoryCandidate>;
+  }>) {}
+
+  async verifyMemoryCandidates() {
+    return {
+      model: "static-verifier",
+      raw: this.decisions,
+      decisions: Object.entries(this.decisions).map(([temporaryId, decision]) => ({
+        temporaryId,
+        ...decision,
+      })),
+    };
+  }
+}
+
+class StaticConnectionScorer implements MemoryConnectionScorerModel {
+  async scoreMemoryConnections() {
+    return {
+      model: "static-connection-scorer",
+      raw: { ok: true },
+      decisions: [{
+        candidateId: "ccand:mem_1:mem_2",
+        tier: "direct" as const,
+        connectionType: "depends_on",
+        connectionReason: "explicit_dependency",
+        confidence: 0.88,
+        rationale: "Docs dependency directly affects launch risk.",
+        evidenceSpanIds: ["ev_1", "ev_2"],
+        reviewRequired: false,
+      }],
+    };
+  }
 }
 
 function memoryRecord(input: {
