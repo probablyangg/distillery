@@ -152,6 +152,29 @@ function cleanupSmokeRows(env: LocalEnv, nonce: string): void {
     delete from ledger_events where payload->>$$ingestionId$$ like $$ing_live_e2e_${nonce}_%$$;
     delete from memory_item_events where memory_item_id like $$mem_live_e2e_${nonce}_%$$;
     delete from outbox_events where payload->>$$ingestionId$$ like $$ing_live_e2e_${nonce}_%$$;
+    delete from graph_edges
+    where from_node_id like $$%live_e2e_${nonce}%$$
+       or to_node_id like $$%live_e2e_${nonce}%$$
+       or properties::text like $$%live_e2e_${nonce}%$$;
+    delete from graph_nodes
+    where id like $$%live_e2e_${nonce}%$$
+       or ref_id like $$%live_e2e_${nonce}%$$;
+    delete from memory_embeddings where target_id like $$%live_e2e_${nonce}%$$;
+    delete from graph_claim_preferences where claim_id like $$mem_live_e2e_${nonce}_%$$;
+    delete from conflict_resolutions
+    where conflict_group_id in (
+      select conflict_group_id from conflict_members where claim_id like $$mem_live_e2e_${nonce}_%$$
+    );
+    delete from conflict_groups
+    where id in (
+      select conflict_group_id from conflict_members where claim_id like $$mem_live_e2e_${nonce}_%$$
+    );
+    delete from claim_connections
+    where from_claim_id like $$mem_live_e2e_${nonce}_%$$
+       or to_claim_id like $$mem_live_e2e_${nonce}_%$$;
+    delete from claim_evidence where claim_id like $$mem_live_e2e_${nonce}_%$$;
+    delete from observations where evidence_span_id like $$evspan_live_e2e_${nonce}_%$$;
+    delete from claims where id like $$mem_live_e2e_${nonce}_%$$;
     delete from memory_item_evidence where memory_item_id like $$mem_live_e2e_${nonce}_%$$;
     delete from memory_items where id like $$mem_live_e2e_${nonce}_%$$;
     delete from extraction_runs where id like $$extr_live_e2e_${nonce}_%$$;
