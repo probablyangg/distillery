@@ -4,9 +4,9 @@ compatibility_date = "2026-07-06"
 
 [vars]
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_MODEL = "deepseek/deepseek-v4-flash"
-OPENROUTER_FALLBACK_MODELS = "~moonshotai/kimi-latest,moonshotai/kimi-k2.6"
-OPENROUTER_TIMEOUT_MS = "30000"
+OPENROUTER_MODEL = "openai/gpt-5"
+OPENROUTER_FALLBACK_MODELS = "anthropic/claude-sonnet-4.5,moonshotai/kimi-k2.7-code,~moonshotai/kimi-latest"
+OPENROUTER_TIMEOUT_MS = "60000"
 OPENROUTER_FALLBACK_TIMEOUT_MS = "45000"
 EMBEDDING_PROVIDER = "openrouter"
 EMBEDDING_BASE_URL = "https://openrouter.ai/api/v1"
