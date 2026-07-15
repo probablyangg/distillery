@@ -51,7 +51,7 @@ import {
   type ProposedEvent,
   type WorkSubjectType,
 } from "@distillery/contracts";
-import type { LoopPersistence } from "@distillery/loop";
+import type { LoopPersistence, LoopRecoveryResult } from "@distillery/loop";
 import type {
   HydratedRetrievalClaims,
   RetrievalCandidate,
@@ -117,8 +117,9 @@ export class SupabaseMemoryGenerationRepository implements MemoryGenerationRepos
     content: string;
     contentHash: string;
     evidenceSpans: EvidenceSpan[];
+    routeSource?: boolean;
   }): Promise<IngestionReceipt> {
-    const result = await this.rpcClient.rpc<unknown>("distillery_create_text_ingestion_with_evidence", {
+    const result = await this.rpcClient.rpc<unknown>("distillery_create_text_ingestion_with_evidence_v2", {
       p_tenant_id: input.tenantId,
       p_ingestion_id: input.ingestionId,
       p_source_item_id: input.sourceItemId,
@@ -129,6 +130,7 @@ export class SupabaseMemoryGenerationRepository implements MemoryGenerationRepos
       p_content: input.content,
       p_content_hash: input.contentHash,
       p_evidence_spans: input.evidenceSpans,
+      p_route_source: input.routeSource ?? true,
     });
 
     return IngestionReceiptSchema.parse(result);
@@ -321,8 +323,10 @@ export class SupabaseLoopPersistence implements LoopPersistence {
     return LedgerEventSchema.parse(result);
   }
 
-  async claimEventOutboxRow(): Promise<EventOutboxRow | null> {
-    const result = await this.rpcClient.rpc<unknown>("distillery_claim_event_outbox_row", {});
+  async claimEventOutboxRow(leaseSeconds?: number): Promise<EventOutboxRow | null> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_claim_event_outbox_row", {
+      p_lease_seconds: leaseSeconds ?? 120,
+    });
     return result ? EventOutboxRowSchema.parse(result) : null;
   }
 
@@ -333,12 +337,19 @@ export class SupabaseLoopPersistence implements LoopPersistence {
     return result ? LedgerEventSchema.parse(result) : null;
   }
 
-  async markEventOutboxProcessed(id: string): Promise<void> {
-    await this.rpcClient.rpc("distillery_mark_event_outbox_processed", { p_id: id });
+  async markEventOutboxProcessed(id: string, leaseToken?: string): Promise<void> {
+    await this.rpcClient.rpc("distillery_mark_event_outbox_processed", {
+      p_id: id,
+      p_lease_token: leaseToken ?? null,
+    });
   }
 
-  async markEventOutboxFailed(id: string, error: string): Promise<void> {
-    await this.rpcClient.rpc("distillery_mark_event_outbox_failed", { p_id: id, p_error: error });
+  async markEventOutboxFailed(id: string, error: string, leaseToken?: string): Promise<void> {
+    await this.rpcClient.rpc("distillery_mark_event_outbox_failed", {
+      p_id: id,
+      p_error: error,
+      p_lease_token: leaseToken ?? null,
+    });
   }
 
   async enqueuePendingWork(input: {
@@ -364,23 +375,63 @@ export class SupabaseLoopPersistence implements LoopPersistence {
     };
   }
 
-  async claimPendingWork(workItemId?: string): Promise<PendingWorkItem | null> {
+  async claimPendingWork(workItemId?: string, leaseSeconds?: number): Promise<PendingWorkItem | null> {
     const result = await this.rpcClient.rpc<unknown>("distillery_claim_pending_work", {
       p_work_item_id: workItemId ?? null,
+      p_lease_seconds: leaseSeconds ?? 900,
     });
     return result ? PendingWorkItemSchema.parse(result) : null;
   }
 
-  async completePendingWork(id: string): Promise<void> {
-    await this.rpcClient.rpc("distillery_complete_pending_work", { p_id: id });
+  async renewPendingWorkLease(id: string, leaseToken: string, leaseSeconds?: number): Promise<PendingWorkItem | null> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_renew_pending_work_lease", {
+      p_id: id,
+      p_lease_token: leaseToken,
+      p_lease_seconds: leaseSeconds ?? 900,
+    });
+    return result ? PendingWorkItemSchema.parse(result) : null;
   }
 
-  async failPendingWork(id: string, error: string): Promise<void> {
-    await this.rpcClient.rpc("distillery_fail_pending_work", { p_id: id, p_error: error });
+  async completePendingWork(id: string, leaseToken?: string): Promise<void> {
+    await this.rpcClient.rpc("distillery_complete_pending_work", {
+      p_id: id,
+      p_lease_token: leaseToken ?? null,
+    });
+  }
+
+  async failPendingWork(id: string, error: string, leaseToken?: string): Promise<void> {
+    await this.rpcClient.rpc("distillery_fail_pending_work", {
+      p_id: id,
+      p_error: error,
+      p_lease_token: leaseToken ?? null,
+    });
   }
 
   async cancelPendingWork(id: string, reason: string): Promise<void> {
     await this.rpcClient.rpc("distillery_cancel_pending_work", { p_id: id, p_reason: reason });
+  }
+
+  async recoverExpiredLoopClaims(input: {
+    tenantId: string;
+    now?: string;
+    maxOutboxAttempts?: number;
+    maxWorkAttempts?: number;
+  }): Promise<LoopRecoveryResult> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_recover_expired_loop_claims", {
+      p_tenant_id: input.tenantId,
+      p_now: input.now ?? null,
+      p_max_outbox_attempts: input.maxOutboxAttempts ?? 5,
+      p_max_work_attempts: input.maxWorkAttempts ?? 3,
+    });
+    return LoopRecoveryResponseSchema.parse(result);
+  }
+
+  async listRecoveredPendingWork(input: { tenantId: string; limit: number }): Promise<PendingWorkItem[]> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_list_recovered_pending_work", {
+      p_tenant_id: input.tenantId,
+      p_limit: input.limit,
+    });
+    return PendingWorkItemSchema.array().parse(result);
   }
 
   async createPolicyRun(input: Omit<PolicyRun, "createdAt"> & { createdAt?: string }): Promise<PolicyRun> {
@@ -390,18 +441,25 @@ export class SupabaseLoopPersistence implements LoopPersistence {
     return PolicyRunSchema.parse(result);
   }
 
-  async completePolicyRun(id: string, input: Partial<PolicyRun>): Promise<void> {
+  async completePolicyRun(id: string, input: Partial<PolicyRun>, leaseToken?: string): Promise<void> {
     await this.rpcClient.rpc("distillery_complete_policy_run", {
       p_id: id,
       p_patch: input,
+      p_lease_token: leaseToken ?? null,
     });
   }
 
-  async failPolicyRun(id: string, error: string, issues: PolicyRun["validationIssues"] = []): Promise<void> {
+  async failPolicyRun(
+    id: string,
+    error: string,
+    issues: PolicyRun["validationIssues"] = [],
+    leaseToken?: string,
+  ): Promise<void> {
     await this.rpcClient.rpc("distillery_fail_policy_run", {
       p_id: id,
       p_error: error,
       p_issues: issues,
+      p_lease_token: leaseToken ?? null,
     });
   }
 
@@ -586,7 +644,7 @@ export class SupabaseLoopPersistence implements LoopPersistence {
     ingestionId?: string;
     limit?: number;
   } = {}): Promise<LoopStatusResponse> {
-    const result = await this.rpcClient.rpc<unknown>("distillery_get_loop_status", {
+    const result = await this.rpcClient.rpc<unknown>("distillery_get_loop_status_v2", {
       p_tenant_id: input.tenantId ?? "stable",
       p_ingestion_id: input.ingestionId ?? null,
       p_limit: input.limit ?? 25,
@@ -731,6 +789,16 @@ const IngestionContextResponseSchema = IngestionResultSchema.pick({
 const PendingWorkEnqueueResponseSchema = z.object({
   workItem: PendingWorkItemSchema,
   inserted: z.boolean(),
+});
+
+const LoopRecoveryResponseSchema = z.object({
+  recoveredWorkItems: PendingWorkItemSchema.array().default([]),
+  recoveredOutboxCount: z.number().int().min(0),
+  terminalOutboxCount: z.number().int().min(0),
+  recoveredWorkCount: z.number().int().min(0),
+  terminalWorkCount: z.number().int().min(0),
+  suppressedSeedOutboxCount: z.number().int().min(0),
+  cancelledSeedWorkCount: z.number().int().min(0),
 });
 
 const RetrievalCandidateSchema = z.object({

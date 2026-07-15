@@ -58,7 +58,7 @@ describe("SupabaseLoopPersistence.getLoopStatus", () => {
       limit: 10,
     });
 
-    expect(calls[0]?.url).toBe("https://example.supabase.co/rest/v1/rpc/distillery_get_loop_status");
+    expect(calls[0]?.url).toBe("https://example.supabase.co/rest/v1/rpc/distillery_get_loop_status_v2");
     expect(calls[0]?.body).toEqual({
       p_tenant_id: "stable",
       p_ingestion_id: "ing_1",
