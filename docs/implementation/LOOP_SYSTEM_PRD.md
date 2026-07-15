@@ -2,6 +2,8 @@
 
 Status: implementation contract; initial loop infrastructure is implemented.
 
+Reading rule: “required” sections below preserve the original loop contract. The “Historical Repo Baseline,” original model list, policy classification, route table, and event list describe the repository when this PRD was written. They are historical where they disagree with the current status, `.env.example`, `apps/web/wrangler.toml`, contracts, or routing code.
+
 Implementation note, 2026-07-09:
 
 - The canonical loop tables, queue wakeup shape, router, executor, proposal validation, memory auto-commit path, loop status API, and loop status UI are present in the repo.
@@ -99,9 +101,9 @@ const policies: Record<PolicyName, Policy<unknown, unknown>> = {
 
 The only orchestration framework is this in-repo runner plus the ledger/outbox/queue tables defined in this PRD.
 
-## Current Repo Baseline
+## Historical Repo Baseline
 
-The implementation starts from the current repository state, not a greenfield app.
+The implementation started from the repository state below, not a greenfield app. For example, migrations now continue through `0011`; the `0001` through `0008` line records the old baseline.
 
 Existing runtime:
 
@@ -174,13 +176,13 @@ to:
 
 The Worker queue consumer must claim `pending_work` from PostgreSQL using `workItemId` before running any policy.
 
-## Required LLM Provider And Models
+## Model-provider contract
 
 All LLM calls must go through `packages/model-gateway`.
 
 Use OpenRouter as the provider.
 
-Required configured models:
+The original configured defaults were:
 
 ```text
 primary generation/drafting model: deepseek/deepseek-v4-flash
@@ -191,7 +193,9 @@ embedding model: google/gemini-embedding-001
 
 The embedding model is for retrieval/indexing only. It must not be treated as a reasoning policy model.
 
-LLM-backed policies:
+Current model IDs are configuration, not an architectural invariant. As of 2026-07-15, `.env.example` and `apps/web/wrangler.toml` default to `openai/gpt-5` with `anthropic/claude-sonnet-4.5`, `moonshotai/kimi-k2.7-code`, and `~moonshotai/kimi-latest` fallbacks. Optional `MEMORY_EXTRACTOR_MODEL`, `MEMORY_VERIFIER_MODEL`, and `MEMORY_CONNECTION_MODEL` values override the primary model for those roles.
+
+Original planned LLM-backed policies:
 
 ```text
 extract_memory
@@ -201,7 +205,7 @@ draft_artifact
 revise_artifact
 ```
 
-Deterministic policies:
+Original planned deterministic policies:
 
 ```text
 event_router
@@ -213,6 +217,8 @@ gate_output
 validation
 human_review_commit
 ```
+
+Current delta: `extract_memory` can call separate extractor and verifier models; `connect_memory` can use a model-gateway connection scorer after deterministic candidate generation; and `synthesize_brief` uses the model gateway. The six placeholder policies do not implement the planned domain behavior yet. Inspect `createPolicies` in `packages/loop/src/index.ts` for the current registry.
 
 When a deterministic policy requires LLM assistance in a future change, that change must add a new model-gateway method and keep deterministic validation as the authority. Do not call model providers directly from policy modules.
 

@@ -1,6 +1,8 @@
 # Graph-grounded hybrid retrieval and synthesis PRD
 
-Status: implementation contract, written 2026-07-09.
+Status: implemented 2026-07-09; retained as the design and acceptance-test record.
+
+Reading rule: the “Current repo baseline” below is the pre-implementation state from when this PRD was written. It is intentionally historical. The shared retriever, migration `0011`, backfill script, reranker, and retrieval fixtures now exist. Use [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md) and the code for current behavior.
 
 This PRD upgrades Distillery retrieval and synthesis using MemGraphRAG as inspiration, not as a rigid implementation target. The goal is better evidence-backed Ask answers and broader, more useful synthesis context through hybrid semantic, sparse, exact, and graph signals.
 
@@ -27,9 +29,9 @@ The retriever must use:
 
 This is a retrieval and synthesis quality upgrade. Do not optimize for paper fidelity when product retrieval quality, exact recall, traceability, or synthesis breadth requires a practical deviation.
 
-## Current repo baseline
+## Historical pre-implementation baseline
 
-The implementation starts from the current repository, not a greenfield system.
+The implementation started from the repository state described below, not a greenfield system. The bullets in this section are not current facts.
 
 Current implemented behavior:
 

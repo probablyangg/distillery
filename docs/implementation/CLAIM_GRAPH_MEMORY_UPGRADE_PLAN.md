@@ -2,6 +2,8 @@
 
 Status: implemented pilot contract plus remaining hardening notes, written 2026-07-09.
 
+Reading rule: this is a completed implementation plan, not the canonical current-state document. Sections phrased as “implement,” “target,” “deliverables,” or “definition of success” preserve the original acceptance criteria. The current code has since added migration `0011`, shared hybrid retrieval, bounded PPR, reranking, embedding backfill, extractor verification, and human review for uncertain memory proposals.
+
 This plan upgraded Distillery from v0 `memory_items` plus transient synthesis bundles to a pilot-grade claim graph inspired by MemGraphRAG. It is written for implementation agents. Use it for claim-graph design intent, but use the code, migrations, and [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md) as the source of truth for what is implemented today.
 
 Related docs:
@@ -38,9 +40,9 @@ Add durable, reviewable, evidence-backed memory connections so Distillery can:
 
 The highest-priority success metric is better initiative briefs. Recall quality and reviewer trust are also success metrics.
 
-## Current repo baseline
+## Historical pre-upgrade baseline
 
-The implementation starts from the current repository, not a greenfield system.
+The implementation started from the repository snapshot below, not a greenfield system. Where a bullet says something is not implemented, treat that as historical unless the current status document agrees.
 
 Current implemented behavior:
 
@@ -51,8 +53,8 @@ Current implemented behavior:
 - `extract_memory` stores embeddings through `memory_embeddings` when embedding env vars are configured.
 - `packages/memory-synthesis` builds transient `SynthesisBundle` objects from active memory. Durable claim connections and conflict groups are persisted through the claim graph pilot, but synthesis still derives its selected bundle at runtime.
 - `memory_entities`, `memory_relations`, and `memory_schemas` exist and are populated from extraction output.
-- `memory_embeddings` stores claim, evidence-span, entity, and schema-pattern embeddings. Historical backfill and vector-ranked retrieval are not implemented.
-- `distillery_graph_recall_context` provides graph retrieval context for Ask, with deterministic lexical recall as fallback.
+- `memory_embeddings` stored claim, evidence-span, entity, and schema-pattern embeddings. Historical backfill and vector-ranked retrieval were not implemented at that point.
+- `distillery_graph_recall_context` provided graph retrieval context for Ask, with deterministic lexical recall as fallback at that point.
 - `distillery_get_memory_synthesis_context` uses seed memory plus graph connection/conflict context for synthesis.
 - `/graph` exposes cluster review, connection accept/reject, conflict resolution, claim pinning/exclusion, and projection rebuild.
 
@@ -67,6 +69,15 @@ Current transient synthesis risk:
 
 - `complementary_claim_type` can connect unrelated memories when no shared entity, schema, evidence, or semantic support exists.
 - Replace this with scored, inspectable, persisted connection logic.
+
+Current delta as of 2026-07-15:
+
+- Ask and background synthesis use `packages/memory-retrieval` with vector/sparse seeds, bounded PPR, and optional reranking.
+- Ask does not call the legacy `distillery_recall_memory_lexical` answer path. Deterministic degraded behavior uses the shared retrieved graph context.
+- `scripts/backfill-memory-embeddings.ts` and migration `0011_hybrid_retrieval_rpcs.sql` are implemented.
+- Manual `POST /api/initiative-brief-drafts` expands through the shared retriever only when `expandRelatedMemory: true`; the default remains selected-memory-only for compatibility.
+- `connect_memory` can use model-gateway scoring in addition to deterministic signals.
+- Extraction can use a verifier and can route uncertain `memory_proposed` events to human review.
 
 ## MemGraphRAG lessons to borrow
 

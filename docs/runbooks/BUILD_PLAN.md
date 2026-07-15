@@ -1,6 +1,6 @@
 # Distillery build plan
 
-Status: implemented and deployed as a private pilot.
+Status: historical build plan. The described pilot is implemented in the repository; consult the current-status document for deployment and remaining-work claims.
 
 For current status and roadmap, start with [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md). This file explains the initial build structure, what shipped, and what remains.
 
@@ -81,6 +81,8 @@ Implemented:
 - evidence spans;
 - extraction runs;
 - OpenRouter structured memory generation;
+- optional second-model verification and correction of extracted candidates;
+- human review proposals for uncertain memory;
 - deterministic validation;
 - memory commit through Supabase RPC;
 - Cloudflare Queue handler.
@@ -145,7 +147,7 @@ Implemented:
 - canonical loop tables and queue wakeup handling;
 - real `connect_memory`, `detect_contradiction`, and `synthesize_brief` policies;
 - `0010_claim_graph_memory_upgrade.sql` graph tables, triggers, projection, and RPCs;
-- graph-grounded Ask answers with deterministic lexical fallback;
+- hybrid vector/sparse-seeded PPR retrieval with grounded Ask answers and deterministic degraded behavior over retrieved graph context;
 - `/graph` review surface;
 - OpenRouter embedding and grounded-answer clients.
 
@@ -266,5 +268,5 @@ Recommended next coverage:
 - SSO/RBAC;
 - source-level ACLs;
 - human-reviewed canonical entity/schema promotion workflow;
-- vector-ranked/PPR graph retrieval;
+- production benchmarking and hardening of vector/sparse-seeded PPR graph retrieval;
 - continuous freshness checks.
