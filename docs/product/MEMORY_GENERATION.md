@@ -21,7 +21,9 @@ Queue consumer or inline fallback
   -> load source/evidence context
   -> call OpenRouter
   -> parse structured JSON
-  -> validate evidence and schema
+  -> validate evidence and schema deterministically
+  -> optionally verify/correct/classify candidates with a second model
+  -> route uncertain candidates to human review
   -> optionally store embeddings when embedding env vars are configured
   -> create memory_proposed
   -> auto-commit valid memory_committed
@@ -38,6 +40,8 @@ The capture page asks:
 > What should Distillery remember or answer?
 
 For `Remember`, the page shows committed memory items and correction controls.
+
+The synthesis page also shows pending memory proposals. A reviewer can approve a valid `memory_proposed` event, which commits it and resumes downstream routing, or reject it without committing memory.
 
 For `Ask`, the page returns a cited answer or an explicit evidence gap.
 
@@ -141,15 +145,16 @@ Provider:
 OpenRouter
 ```
 
-Model chain:
+Effective default Worker model chain:
 
 ```text
-deepseek/deepseek-v4-flash
-  -> ~moonshotai/kimi-latest
-  -> moonshotai/kimi-k2.6
+openai/gpt-5
+  -> anthropic/claude-sonnet-4.5
 ```
 
-The model must return structured JSON matching the contract. It receives evidence spans and may only cite supplied evidence IDs.
+The configured fallback list also contains `moonshotai/kimi-k2.7-code` and `~moonshotai/kimi-latest`, but current Worker call sites cap fallback attempts to the first configured model. Extractor, verifier, and connection-scoring roles may use `MEMORY_EXTRACTOR_MODEL`, `MEMORY_VERIFIER_MODEL`, and `MEMORY_CONNECTION_MODEL`; each falls back to `OPENROUTER_MODEL` when unset.
+
+The extractor and verifier must return structured JSON matching their contracts. They receive evidence spans and may cite only supplied evidence IDs. Deterministic validation remains authoritative.
 
 ## Correction model
 
@@ -176,8 +181,8 @@ If memory does not support an answer, Distillery returns an explicit gap instead
 
 ## Future work
 
-- historical embedding backfill;
-- vector-ranked and hybrid lexical/vector graph recall;
+- broader extraction/verifier quality evaluation;
+- production hardening for embedding backfill and hybrid graph retrieval;
 - duplicate detection;
 - broader contradiction detection;
 - memory quality evals by `claimType`;

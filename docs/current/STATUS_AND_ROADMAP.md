@@ -1,8 +1,8 @@
 # Distillery status and roadmap
 
-Last updated: 2026-07-09
+Last updated: 2026-07-15
 
-This is the canonical current-state document for implemented behavior. For the intended loop-system contract, use [LOOP_SYSTEM_PRD.md](../implementation/LOOP_SYSTEM_PRD.md). For background synthesis behavior, use [MEMORY_SYNTHESIS_POLICY_PRD.md](../implementation/MEMORY_SYNTHESIS_POLICY_PRD.md).
+This is the canonical prose snapshot of implemented behavior. Executable code/tests and ordered SQL migrations remain authoritative. Implementation PRDs explain design intent and may contain historical baselines; do not use them as current-state checklists without confirming the code.
 
 ## Current product state
 
@@ -63,6 +63,12 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 - Event router maps committed source events to `extract_memory` pending work.
 - Policy executor records `policy_runs`, emits `proposed_events`, validates output, and auto-commits valid `memory_committed` events.
 - OpenRouter structured memory generation.
+- Two-stage extraction routing: the extractor proposes candidates, deterministic validation rejects malformed or ungrounded candidates, and an optional verifier classifies remaining candidates.
+- Verifier outcomes:
+  - `verified` and valid `corrected` candidates can auto-commit;
+  - `needs_review` candidates become human-review `memory_proposed` events;
+  - duplicates and unsupported candidates are recorded in extraction audit metadata and do not commit.
+- Pending memory review on `/synthesis`, backed by `GET /api/memory-proposals` and `POST /api/proposed-events/{id}/decision`.
 - Runtime validation before memory commit.
 - `claimType` taxonomy:
   - `fact`;
@@ -129,6 +135,8 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 - OpenRouter model gateway.
 - OpenRouter embedding client.
 - Stable fixture validation.
+- Deterministic retrieval fixture validation.
+- Standalone extraction-quality and connection-density evaluators. The extraction evaluator calls live OpenRouter; the connection evaluator is local and deterministic.
 - Stable seed script.
 - Live smoke script.
 
@@ -192,13 +200,18 @@ Authoritative state is in PostgreSQL. Lexical indexes, embeddings, and graph pro
 
 ## Current models
 
-Generation and brief drafting use OpenRouter.
+Generation, verification, connection scoring, retrieval reranking, grounded answers, and brief drafting use OpenRouter through `packages/model-gateway`.
 
 ```text
-primary:  deepseek/deepseek-v4-flash
-fallback: ~moonshotai/kimi-latest
-fallback: moonshotai/kimi-k2.6
+default primary:  openai/gpt-5
+configured fallback 1: anthropic/claude-sonnet-4.5
+configured fallback 2: moonshotai/kimi-k2.7-code
+configured fallback 3: ~moonshotai/kimi-latest
 ```
+
+These are repository defaults from `.env.example` and `apps/web/wrangler.toml`, not hard-coded product requirements. `MEMORY_EXTRACTOR_MODEL`, `MEMORY_VERIFIER_MODEL`, and `MEMORY_CONNECTION_MODEL` may override the primary model for those roles. If an override is absent, that role uses `OPENROUTER_MODEL`.
+
+Current Worker call sites cap fallback attempts to one model, so only the first configured fallback is effective in the Worker. Standalone scripts that construct the model gateway directly may use the full configured list.
 
 Configured embedding model:
 
@@ -235,7 +248,7 @@ Embedding storage and inline extraction-time embedding generation exist when emb
 - Production-grade contradiction adjudication workflow.
 - Production-grade observability, cost dashboards, or alerting.
 - Human-reviewed canonical entity/schema promotion workflow.
-- Production-grade graph retrieval / Personalized PageRank.
+- Production hardening and quality benchmarking for hybrid graph retrieval and Personalized PageRank.
 
 ## Roadmap
 
@@ -260,6 +273,7 @@ Build next:
    - latency;
    - failure reason.
 5. Browser-verified graph page screenshot pass.
+6. Review-queue browser coverage for verifier-routed memory proposals.
 
 ### Memory quality
 
