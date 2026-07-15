@@ -103,7 +103,7 @@ The only orchestration framework is this in-repo runner plus the ledger/outbox/q
 
 ## Historical Repo Baseline
 
-The implementation started from the repository state below, not a greenfield app. For example, migrations now continue through `0011`; the `0001` through `0008` line records the old baseline.
+The implementation started from the repository state below, not a greenfield app. Migrations now continue through `0012`; the `0001` through `0008` line records the old baseline.
 
 Existing runtime:
 

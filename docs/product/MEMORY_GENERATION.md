@@ -18,6 +18,7 @@ POST /api/ingestions
 
 Queue consumer or inline fallback
   -> claim pending_work by workItemId
+  -> hold a fenced worker lease while model work is active
   -> load source/evidence context
   -> call OpenRouter
   -> parse structured JSON
@@ -28,6 +29,11 @@ Queue consumer or inline fallback
   -> create memory_proposed
   -> auto-commit valid memory_committed
   -> route graph connection, contradiction, and synthesis work
+
+Scheduled maintenance
+  -> recover only expired router/worker leases
+  -> close abandoned policy runs and requeue safe retries
+  -> drain bounded outbox batches independently of user traffic
 
 GET /api/ingestions/{id}
   -> return status, evidence spans, memory items, error if any

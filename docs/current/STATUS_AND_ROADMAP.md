@@ -121,6 +121,9 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 
 - Cloudflare Worker web/API deployment.
 - Cloudflare Queue binding used as a noncanonical wakeup transport with `{ workItemId }` messages.
+- Cloudflare Cron invokes bounded loop maintenance every minute, so outbox progress does not depend on another user action.
+- Router and worker claims use explicit leases and fencing tokens. Expired claims are recovered up to bounded attempt limits; unexpired work is never reclaimed.
+- Approved seed fixtures preserve source/evidence/ledger records but atomically resolve their source outbox rows as non-actionable, avoiding duplicate model extraction.
 - Supabase PostgreSQL with RPC functions for multi-table commits.
 - `pnpm reset:stable` pilot reset command that clears tenant-scoped app data while preserving schema/functions.
 - Loop tables:
@@ -161,6 +164,13 @@ Worker queue consumer or inline fallback
   -> proposed_events
   -> validation and approval
   -> ledger_events
+
+Scheduled loop maintenance (every minute)
+  -> resolve legacy non-actionable seed routing
+  -> recover expired router and worker leases
+  -> close abandoned policy runs with failure metadata
+  -> requeue recovered workItemId messages
+  -> route a bounded event_outbox batch
 
 After memory commit
   -> connect_memory
@@ -226,7 +236,7 @@ Embedding storage and inline extraction-time embedding generation exist when emb
 
 - `extract_memory`, `connect_memory`, `detect_contradiction`, and `synthesize_brief` have real domain logic.
 - `discover_candidate`, `check_freshness`, `rank_candidate`, `draft_artifact`, `gate_output`, and `revise_artifact` are registered policy runners but currently emit placeholder `not_enough_context` proposals.
-- After a worker auto-commits a proposed event, the newly inserted `event_outbox` row is not automatically drained by the same worker invocation. Multi-hop loops can therefore wait until another router invocation occurs.
+- A worker does not drain newly committed downstream outbox rows in the same invocation. The one-minute scheduled router drains them in bounded batches, so progress may pause until the next scheduled invocation but no longer requires another user action.
 - SQL/RPC loop behavior has minimal automated coverage. Most loop tests run against `InMemoryLoopPersistence`.
 - The OpenRouter embedding client and `memory_embeddings` table are wired into `extract_memory`; historical embedding backfill is available through `scripts/backfill-memory-embeddings.ts`.
 - Ask and synthesis are wired to the shared hybrid graph retriever in code. Full runtime success requires migration `0011_hybrid_retrieval_rpcs.sql`, graph projection rebuild, and embedding backfill in the target database. If OpenRouter reranking fails, retrieval degrades to deterministic graph/vector/sparse ranking and reports the reranker failure in metadata.

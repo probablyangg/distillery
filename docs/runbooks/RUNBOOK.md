@@ -101,10 +101,11 @@ for migration in packages/db/migrations/*.sql; do
 done
 ```
 
-If the database already has migrations through `0010`, apply `0011`:
+If the database already has migrations through `0010`, apply `0011` and then `0012`:
 
 ```bash
 psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0011_hybrid_retrieval_rpcs.sql
+psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0012_loop_leases_and_scheduled_recovery.sql
 ```
 
 Equivalent helper:
@@ -113,7 +114,7 @@ Equivalent helper:
 pnpm retrieval:migrate
 ```
 
-`pnpm retrieval:migrate` always applies only `0011_hybrid_retrieval_rpcs.sql`. It is not a general migration runner. If the database is older than `0010`, apply every missing migration in filename order instead.
+`pnpm retrieval:migrate` always applies only `0011_hybrid_retrieval_rpcs.sql`. It does not apply `0012` and is not a general migration runner. Apply every missing migration in filename order.
 
 Do not run migrations from the Cloudflare Worker. Migrations require `DATABASE_DIRECT_URL` from local/CI.
 
@@ -130,6 +131,7 @@ Current migration set:
 - `0009_synthesize_brief_policy.sql` — `synthesize_brief` policy constraint, synthesis context RPC, semantic memory JSON projection, and atomic artifact-draft-to-initiative-brief commit path.
 - `0010_claim_graph_memory_upgrade.sql` — claim graph pilot tables, memory-to-claim graph triggers, graph projection/retrieval RPCs, connection review, conflict resolution, claim preferences, generic `memory_embeddings`, and graph policy/event constraints.
 - `0011_hybrid_retrieval_rpcs.sql` — hybrid retrieval candidate/snapshot/hydration RPCs, schema graph projection, and missing embedding target listing for backfill.
+- `0012_loop_leases_and_scheduled_recovery.sql` — atomic seed-source suppression, router/worker leases and fencing, abandoned-claim recovery, retry metadata, and lease-aware loop status.
 
 ## Seed Stable starter data
 
@@ -231,6 +233,8 @@ The helper:
 - uploads Worker secrets from `.env.local`;
 - deploys the Worker;
 - health-checks the deployment.
+
+The Worker configuration includes a one-minute Cron Trigger and a bounded Queue consumer. After migration `0012` and deployment, scheduled maintenance safely drains pending outbox rows and recovers only expired claims. Do not manually change `running` rows while their lease is still valid.
 
 Manual deploy:
 

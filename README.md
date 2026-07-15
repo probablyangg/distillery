@@ -38,6 +38,7 @@ Implemented in the current repository:
 - extractor-plus-verifier memory routing, including a human review queue for uncertain memory proposals;
 - human-directed initiative brief draft, save, approve, and reject flow;
 - event-driven loop infrastructure with `ledger_events`, `event_outbox`, `pending_work`, `policy_runs`, and `proposed_events`;
+- one-minute scheduled outbox draining, explicit router/worker leases, stale-claim recovery, and fenced retries;
 - `source_committed -> extract_memory -> memory_proposed -> validation -> memory_committed` loop path;
 - `memory_committed -> connect_memory -> memory_connection_proposed -> validation -> memory_connected` loop path;
 - `memory_committed -> detect_contradiction -> contradiction_proposed -> validation -> contradiction_recorded` loop path;
