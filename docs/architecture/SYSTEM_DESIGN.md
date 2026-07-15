@@ -120,7 +120,8 @@ Capture and recall:
 - inspect recent loop activity;
 - show committed memory;
 - confirm/edit/remove memory;
-- ask graph-grounded cited recall questions with lexical fallback.
+- ask through hybrid vector/sparse-seeded graph retrieval, bounded Personalized PageRank, optional model reranking, and grounded answer generation;
+- degrade to deterministic ranking/answering over the same retrieved graph context when model steps fail. The legacy DB lexical-answer function is not an Ask fallback.
 
 ## Implemented loop
 
@@ -215,7 +216,7 @@ Claim Graph:
 - add currentness checks;
 - add source ACLs;
 - harden contradiction workflows;
-- add vector-ranked and PPR-style graph retrieval after the current lexical/neighborhood approach is benchmarked.
+- benchmark and harden the implemented vector/sparse-seeded PPR retrieval path against simpler retrieval variants.
 
 ## Engineering rules
 

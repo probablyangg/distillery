@@ -12,7 +12,8 @@ The current implementation borrows the MemGraphRAG separation partially:
 - graph recall, graph clusters, connection review, conflict resolution, claim pinning, and synthesis exclusion are implemented as a pilot;
 - OpenRouter embeddings can be stored during extraction when embedding env vars are configured;
 - there is no human-reviewed canonical entity/schema promotion workflow yet;
-- graph retrieval is lexical/neighborhood based and does not use vector ranking or Personalized PageRank yet;
+- shared Ask/synthesis retrieval uses vector and sparse/exact seeds, bounded Personalized PageRank, and optional model reranking;
+- the old database lexical-answer function remains for legacy compatibility but is not on the Ask path;
 - contradiction detection is deterministic and narrow, not a production-grade adjudication system.
 
 Use [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md) for current project state. Use this file for design rationale and future memory-layer direction.
@@ -423,7 +424,7 @@ Every step is idempotent on source version and processor version.
 
 ## 9. Recall path
 
-Start simpler than the paper's PPR pipeline:
+The implemented retrieval path is:
 
 ```text
 question
@@ -451,7 +452,7 @@ semantic relevance
 - low extraction quality
 ```
 
-Add Personalized PageRank only after an evaluation set shows that multi-hop graph propagation improves recall without increasing unsupported synthesis. PostgreSQL plus `pgvector` and an edge table is sufficient for the current system.
+Personalized PageRank is now implemented in TypeScript over a bounded PostgreSQL graph snapshot. Keep it only if evaluation shows that multi-hop propagation improves recall without increasing unsupported synthesis. PostgreSQL plus `pgvector` and edge tables remain sufficient; do not infer a need for a separate graph database.
 
 ## 10. Memory Synthesis path
 
