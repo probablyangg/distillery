@@ -10,19 +10,19 @@ The core product rule:
 
 For implementation work, read these in order:
 
-1. [Docs index](./docs/README.md) — source-of-truth map for all documentation.
-2. [Current status](./docs/current/STATUS_AND_ROADMAP.md) — what exists today, including known loop-system gaps.
-3. [Loop system PRD](./docs/implementation/LOOP_SYSTEM_PRD.md) — implementation contract for the event-driven loop system.
-4. [Memory synthesis policy PRD](./docs/implementation/MEMORY_SYNTHESIS_POLICY_PRD.md) — implementation contract for the `synthesize_brief` policy worker.
-5. [Runbook](./docs/runbooks/RUNBOOK.md) — local setup, migrations, seed data, deployment, and smoke testing.
+1. [Coding-agent instructions](./AGENTS.md) — source-of-truth order, current boundaries, and safe workflow.
+2. [Docs index](./docs/README.md) — authority and lifecycle map for all documentation.
+3. [Current status](./docs/current/STATUS_AND_ROADMAP.md) — what exists today, including known loop-system gaps.
+4. [Runbook](./docs/runbooks/RUNBOOK.md) — local setup, migrations, seed data, deployment, and smoke testing.
+5. Read the relevant product/architecture doc, then any implementation PRD needed for design history.
 
-Do not treat older roadmap or research docs as implementation authority when they conflict with the current status document, loop system PRD, or memory synthesis policy PRD.
+Do not treat roadmaps, research notes, build plans, or implementation PRD baselines as current implementation authority. When sources disagree, follow the order in `AGENTS.md`: code/tests, ordered migrations, then the current-status document.
 
 For code-facing details, use the implementation as the final source of truth: exported contracts live in `packages/contracts/src/index.ts`, Worker routes in `apps/web/src/index.ts`, loop routing and policies in `packages/loop/src/index.ts`, persistence/RPC bindings in `packages/db/src/index.ts`, and database invariants in `packages/db/migrations/`.
 
 ## Current System
 
-Implemented and deployed:
+Implemented in the current repository:
 
 - password-gated capture/recall app at `/`;
 - password-gated synthesis surface at `/synthesis`;
@@ -33,7 +33,9 @@ Implemented and deployed:
 - evidence-backed memory with `claimType`, entities, relations, and schemas;
 - durable claim graph projection with claim connections, conflict groups, graph clusters, and reviewer preferences;
 - confirm/edit/remove memory actions with append-only history;
-- graph-grounded Ask answers with deterministic lexical fallback;
+- hybrid vector/sparse-seeded graph retrieval with bounded Personalized PageRank, optional model reranking, and grounded Ask answers;
+- deterministic degraded ranking/answering from the retrieved graph context when a model step fails; the legacy DB lexical-answer function is not on the Ask path;
+- extractor-plus-verifier memory routing, including a human review queue for uncertain memory proposals;
 - human-directed initiative brief draft, save, approve, and reject flow;
 - event-driven loop infrastructure with `ledger_events`, `event_outbox`, `pending_work`, `policy_runs`, and `proposed_events`;
 - `source_committed -> extract_memory -> memory_proposed -> validation -> memory_committed` loop path;
@@ -45,7 +47,7 @@ Implemented and deployed:
 - Cloudflare Worker deployment;
 - Supabase PostgreSQL/RPC persistence with `pgvector`.
 
-Live app:
+Configured live app (health endpoint verified 2026-07-15):
 
 ```text
 https://distillery-v0.angela-f4b.workers.dev
@@ -80,26 +82,28 @@ Run locally:
 ```bash
 cp .env.example .env.local
 cp apps/web/.dev.vars.example apps/web/.dev.vars
-PATH=/opt/homebrew/bin:$PATH pnpm dev
+pnpm dev
 ```
+
+`apps/web/.dev.vars` contains only Worker runtime secrets. Non-secret local Worker variables come from `apps/web/wrangler.toml`. The repository-level `.env.local` is used by scripts and is not automatically loaded by Wrangler.
 
 Seed Stable starter data:
 
 ```bash
-PATH=/opt/homebrew/bin:$PATH pnpm seed:stable
+pnpm seed:stable
 ```
 
 Reset and reseed Stable pilot data:
 
 ```bash
-PATH=/opt/homebrew/bin:$PATH pnpm reset:stable
-PATH=/opt/homebrew/bin:$PATH pnpm seed:stable
+pnpm reset:stable
+pnpm seed:stable
 ```
 
 Deploy:
 
 ```bash
-PATH=/opt/homebrew/bin:$PATH pnpm deploy:cloudflare
+pnpm deploy:cloudflare
 ```
 
 ## Verification Commands
@@ -108,6 +112,7 @@ PATH=/opt/homebrew/bin:$PATH pnpm deploy:cloudflare
 pnpm typecheck
 pnpm test
 pnpm fixtures:validate
+pnpm retrieval:validate
 pnpm build
 pnpm smoke:live
 ```
@@ -130,6 +135,7 @@ Copy `.env.example` to `.env.local` and populate:
   - `OPENROUTER_FALLBACK_MODELS`;
   - `OPENROUTER_TIMEOUT_MS`;
   - `OPENROUTER_FALLBACK_TIMEOUT_MS`;
+  - optional role overrides: `MEMORY_EXTRACTOR_MODEL`, `MEMORY_VERIFIER_MODEL`, and `MEMORY_CONNECTION_MODEL`;
 - embeddings:
   - `EMBEDDING_PROVIDER`;
   - `EMBEDDING_BASE_URL`;

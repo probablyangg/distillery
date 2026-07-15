@@ -2,6 +2,8 @@
 
 This directory is organized so an implementation agent can quickly separate current product facts, implementation authority, operational runbooks, architecture rationale, and research notes.
 
+Start with the repository [coding-agent instructions](../AGENTS.md). They define how to resolve conflicts between code, migrations, current-state docs, and historical plans.
+
 The code is the final source of truth. When docs and implementation disagree, inspect:
 
 - `packages/contracts/src/index.ts` for exported API/runtime contracts;
@@ -13,24 +15,21 @@ The code is the final source of truth. When docs and implementation disagree, in
 ## Read Order For Coding Agents
 
 1. [Current status](./current/STATUS_AND_ROADMAP.md)
-2. [Loop system PRD](./implementation/LOOP_SYSTEM_PRD.md)
-3. [Memory synthesis policy PRD](./implementation/MEMORY_SYNTHESIS_POLICY_PRD.md)
-4. [Claim graph memory upgrade plan](./implementation/CLAIM_GRAPH_MEMORY_UPGRADE_PLAN.md)
-5. [Graph-grounded hybrid retrieval and synthesis PRD](./implementation/GRAPH_GROUNDED_HYBRID_RETRIEVAL_SYNTHESIS_PRD.md)
-6. [Runbook](./runbooks/RUNBOOK.md)
-7. [System design](./architecture/SYSTEM_DESIGN.md)
-8. [Loop system diagram](./architecture/loop-system.mermaid)
+2. [Runbook](./runbooks/RUNBOOK.md)
+3. The product or architecture document for the subsystem being changed.
+4. The relevant implementation PRD for design constraints and history.
+5. The code, tests, package manifests, and SQL migrations in that subsystem.
 
-The current status document is the prose source of truth for what is implemented today. The loop system PRD is the source of truth for the base loop contract. The memory synthesis policy PRD is the source of truth for the `synthesize_brief` worker. The claim graph memory upgrade plan records the claim-graph implementation contract and should be read with the current status document because the graph pilot is now partially implemented. If another doc conflicts with these on event routing, queue ownership, policy runner behavior, validation gates, required tables, or definition of success, follow the code and migrations first, then the current status document for reality and the relevant implementation document for intended behavior.
+The current status document is the prose source of truth for what is implemented today. Implementation PRDs record the contract at the time a feature was designed; their baseline, requirements, and future-work language is historical unless the current status and code confirm it. If another doc conflicts on event routing, queue ownership, policy behavior, validation gates, required tables, or endpoint behavior, follow code/tests first, migrations second, and the current status document third.
 
-As of 2026-07-09, `extract_memory`, `connect_memory`, `detect_contradiction`, and `synthesize_brief` are implemented policy workers. Candidate discovery, freshness, ranking, artifact gating, and revision remain placeholder policy runners.
+As of 2026-07-15, `extract_memory`, `connect_memory`, `detect_contradiction`, and `synthesize_brief` are implemented policy workers. Candidate discovery, freshness, ranking, artifact gating, and revision remain placeholder policy runners.
 
 ## Implementation
 
-- [Loop system PRD](./implementation/LOOP_SYSTEM_PRD.md) — implementation contract for the event-driven loop system.
+- [Loop system PRD](./implementation/LOOP_SYSTEM_PRD.md) — original loop contract plus an implementation-status note; historical requirements do not override current code.
 - [Memory synthesis policy PRD](./implementation/MEMORY_SYNTHESIS_POLICY_PRD.md) — implementation contract for the `synthesize_brief` policy worker.
-- [Claim graph memory upgrade plan](./implementation/CLAIM_GRAPH_MEMORY_UPGRADE_PLAN.md) — implemented pilot plan and remaining hardening notes for durable memory connections, graph retrieval, conflicts, and graph review UI.
-- [Graph-grounded hybrid retrieval and synthesis PRD](./implementation/GRAPH_GROUNDED_HYBRID_RETRIEVAL_SYNTHESIS_PRD.md) — implementation contract for hybrid retrieval, graph PPR, reranking, and synthesis context selection.
+- [Claim graph memory upgrade plan](./implementation/CLAIM_GRAPH_MEMORY_UPGRADE_PLAN.md) — historical implementation plan plus current delta notes for durable memory connections, conflicts, retrieval, and graph review UI.
+- [Graph-grounded hybrid retrieval and synthesis PRD](./implementation/GRAPH_GROUNDED_HYBRID_RETRIEVAL_SYNTHESIS_PRD.md) — implemented contract for hybrid retrieval, graph PPR, reranking, and synthesis context selection; its baseline section describes the pre-upgrade state.
 
 ## Current State
 
@@ -65,3 +64,5 @@ As of 2026-07-09, `extract_memory`, `connect_memory`, `detect_contradiction`, an
 - Do not duplicate implementation requirements across multiple docs. Link to the PRD instead.
 - Keep current-state facts in [Status and roadmap](./current/STATUS_AND_ROADMAP.md).
 - Keep operational commands in [Runbook](./runbooks/RUNBOOK.md).
+- Put coding-agent invariants and conflict-resolution rules in the root [AGENTS.md](../AGENTS.md).
+- Label plans and PRDs as `proposed`, `partially implemented`, `implemented`, or `historical`. Never use an unlabeled “current baseline” in a completed PRD.
