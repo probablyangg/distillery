@@ -201,6 +201,7 @@ async function seedFixture(args: {
     content,
     contentHash,
     evidenceSpans,
+    routeSource: false,
   });
 
   let result = await repository.getIngestionResult(ingestionId);
