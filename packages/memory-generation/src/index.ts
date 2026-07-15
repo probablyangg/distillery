@@ -65,6 +65,7 @@ export interface MemoryGenerationRepository {
     content: string;
     contentHash: string;
     evidenceSpans: EvidenceSpan[];
+    routeSource?: boolean;
   }): Promise<IngestionReceipt>;
 
   getIngestionContext(ingestionId: string): Promise<IngestionContext>;
