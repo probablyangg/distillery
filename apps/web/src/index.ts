@@ -18,6 +18,7 @@ import { SupabaseLoopPersistence } from "@distillery/db";
 import {
   createPolicies,
   executeWorkItem,
+  maintainLoop,
   routeCommittedEvents,
 } from "@distillery/loop";
 import {
@@ -219,7 +220,32 @@ export default {
       }),
     );
   },
-};
+
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(runScheduledLoopMaintenance(env));
+  },
+} satisfies ExportedHandler<Env, { workItemId: string }>;
+
+async function runScheduledLoopMaintenance(env: Env): Promise<void> {
+  if (!env.MEMORY_GENERATION_QUEUE) {
+    throw new Error("MEMORY_GENERATION_QUEUE is required for scheduled loop maintenance.");
+  }
+  const result = await maintainLoop({
+    persistence: createLoopPersistence(env),
+    queue: env.MEMORY_GENERATION_QUEUE,
+    tenantId: DEFAULT_TENANT_ID,
+  });
+  console.log(JSON.stringify({
+    event: "loop_maintenance_completed",
+    recoveredOutboxCount: result.recoveredOutboxCount,
+    terminalOutboxCount: result.terminalOutboxCount,
+    recoveredWorkCount: result.recoveredWorkCount,
+    terminalWorkCount: result.terminalWorkCount,
+    suppressedSeedOutboxCount: result.suppressedSeedOutboxCount,
+    cancelledSeedWorkCount: result.cancelledSeedWorkCount,
+    routedWorkCount: result.routedWorkItems.length,
+  }));
+}
 
 async function handleLogin(request: Request, env: Env): Promise<Response> {
   const contentType = request.headers.get("content-type") ?? "";
