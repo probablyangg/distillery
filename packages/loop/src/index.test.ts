@@ -4,6 +4,7 @@ import {
   InMemoryLoopPersistence,
   createPolicies,
   executeWorkItem,
+  maintainLoop,
   routeCommittedEvents,
   type PolicyOutput,
 } from "./index";
@@ -13,6 +14,7 @@ import type {
   MemoryConnectionScorerModel,
 } from "@distillery/model-gateway";
 import { StaticMemoryGenerationModel } from "@distillery/memory-generation";
+import type { PendingWorkItem, PolicyRun } from "@distillery/contracts";
 
 const evidenceSpan = {
   id: "ev_1",
@@ -67,6 +69,221 @@ describe("loop system", () => {
     expect(first[0]?.policy).toBe("extract_memory");
     expect(second).toHaveLength(0);
     expect([...store.pendingWorkItems.values()]).toHaveLength(1);
+  });
+
+  it("re-sends an existing pending work id when the first queue wakeup fails", async () => {
+    const store = seededStore();
+    await commitSource(store);
+    let sends = 0;
+    const queue = {
+      async send() {
+        sends += 1;
+        if (sends === 1) throw new Error("queue unavailable");
+      },
+    };
+
+    const first = await routeCommittedEvents({ persistence: store, queue });
+    const second = await routeCommittedEvents({ persistence: store, queue });
+
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    expect(first[0]?.id).toBe(second[0]?.id);
+    expect(store.pendingWorkItems.size).toBe(1);
+    expect([...store.eventOutboxRows.values()][0]?.status).toBe("processed");
+  });
+
+  it("routes more than ten pending outbox events in one bounded default batch", async () => {
+    const store = new InMemoryLoopPersistence();
+    for (let index = 0; index < 11; index += 1) {
+      await commitSourceNumber(store, index);
+    }
+
+    const routed = await routeCommittedEvents({ persistence: store });
+
+    expect(routed).toHaveLength(11);
+    expect([...store.eventOutboxRows.values()].every((row) => row.status === "processed")).toBe(true);
+    expect(store.pendingWorkItems.size).toBe(11);
+  });
+
+  it("processed seed sources do not block a later real capture", async () => {
+    const store = new InMemoryLoopPersistence();
+    for (let index = 0; index < 10; index += 1) {
+      const event = await commitSourceNumber(store, index, "Distillery seed data");
+      const outbox = [...store.eventOutboxRows.values()].find((row) => row.ledgerEventId === event.id);
+      if (!outbox) throw new Error("expected seed outbox");
+      outbox.status = "processed";
+      outbox.processedAt = new Date(0).toISOString();
+      outbox.resolutionReason = "non_actionable_seed_source";
+    }
+    const realEvent = await commitSourceNumber(store, 10, "Angela");
+
+    const routed = await routeCommittedEvents({ persistence: store });
+
+    expect(routed).toHaveLength(1);
+    expect(routed[0]?.causedByEventId).toBe(realEvent.id);
+    expect([...store.pendingWorkItems.values()].filter((item) => item.policy === "extract_memory")).toHaveLength(1);
+  });
+
+  it("scheduled maintenance drains bounded batches on future invocations", async () => {
+    const store = new InMemoryLoopPersistence();
+    const messages: string[] = [];
+    const queue = { async send(message: { workItemId: string }) { messages.push(message.workItemId); } };
+    for (let index = 0; index < 30; index += 1) {
+      await commitSourceNumber(store, index);
+    }
+
+    const first = await maintainLoop({ persistence: store, queue, tenantId: "stable", maxRows: 12 });
+    const second = await maintainLoop({ persistence: store, queue, tenantId: "stable", maxRows: 12 });
+    const third = await maintainLoop({ persistence: store, queue, tenantId: "stable", maxRows: 12 });
+
+    expect(first.routedWorkItems).toHaveLength(12);
+    expect(second.routedWorkItems).toHaveLength(12);
+    expect(third.routedWorkItems).toHaveLength(6);
+    expect(messages).toHaveLength(30);
+    expect([...store.eventOutboxRows.values()].every((row) => row.status === "processed")).toBe(true);
+  });
+
+  it("recovers stale running work, closes its policy run, and requeues the work id", async () => {
+    const store = new InMemoryLoopPersistence();
+    const messages: string[] = [];
+    const queue = { async send(message: { workItemId: string }) { messages.push(message.workItemId); } };
+    const work = await enqueueExtractWork(store, "stale");
+    const claimed = await store.claimPendingWork(work.id, 120);
+    if (!claimed?.leaseToken) throw new Error("expected leased work");
+    await store.createPolicyRun(policyRunFor(claimed, "polrun_stale"));
+    const stored = store.pendingWorkItems.get(work.id);
+    if (!stored) throw new Error("expected stored work");
+    stored.leaseExpiresAt = "2026-07-15T12:00:00.000Z";
+
+    const result = await maintainLoop({
+      persistence: store,
+      queue,
+      tenantId: "stable",
+      now: "2026-07-15T12:01:00.000Z",
+    });
+
+    expect(result.recoveredWorkCount).toBe(1);
+    expect(messages).toEqual([work.id]);
+    expect(store.pendingWorkItems.get(work.id)).toMatchObject({ status: "pending", recoveryCount: 1 });
+    expect(store.policyRuns.get("polrun_stale")).toMatchObject({
+      status: "failed",
+      failureKind: "lease_expired",
+    });
+  });
+
+  it("retries a recovered-work wakeup when the first queue send is lost", async () => {
+    const store = new InMemoryLoopPersistence();
+    const work = await enqueueExtractWork(store, "lost-recovery-wakeup");
+    const claimed = await store.claimPendingWork(work.id, 120);
+    if (!claimed?.leaseToken) throw new Error("expected leased work");
+    const stored = store.pendingWorkItems.get(work.id);
+    if (!stored) throw new Error("expected stored work");
+    stored.leaseExpiresAt = "2026-07-15T12:00:00.000Z";
+
+    await expect(maintainLoop({
+      persistence: store,
+      queue: { async send() { throw new Error("queue unavailable"); } },
+      tenantId: "stable",
+      now: "2026-07-15T12:01:00.000Z",
+    })).rejects.toThrow("queue unavailable");
+    expect(store.pendingWorkItems.get(work.id)?.status).toBe("pending");
+
+    const messages: string[] = [];
+    await maintainLoop({
+      persistence: store,
+      queue: { async send(message) { messages.push(message.workItemId); } },
+      tenantId: "stable",
+      now: "2026-07-15T12:02:00.000Z",
+    });
+
+    expect(messages).toEqual([work.id]);
+  });
+
+  it("recovers an abandoned processing outbox claim without touching active claims", async () => {
+    const store = new InMemoryLoopPersistence();
+    await commitSourceNumber(store, 1);
+    const claimed = await store.claimEventOutboxRow(120);
+    if (!claimed) throw new Error("expected claimed outbox row");
+    const stored = store.eventOutboxRows.get(claimed.id);
+    if (!stored) throw new Error("expected stored outbox row");
+    stored.leaseExpiresAt = "2026-07-15T12:00:00.000Z";
+
+    const result = await store.recoverExpiredLoopClaims({
+      tenantId: "stable",
+      now: "2026-07-15T12:01:00.000Z",
+    });
+
+    expect(result.recoveredOutboxCount).toBe(1);
+    expect(store.eventOutboxRows.get(claimed.id)).toMatchObject({
+      status: "pending",
+      recoveryCount: 1,
+      leaseToken: null,
+    });
+  });
+
+  it("moves a repeatedly abandoned work item to terminal failure at its attempt limit", async () => {
+    const store = new InMemoryLoopPersistence();
+    const work = await enqueueExtractWork(store, "terminal");
+    const claimed = await store.claimPendingWork(work.id, 120);
+    if (!claimed?.leaseToken) throw new Error("expected leased work");
+    const stored = store.pendingWorkItems.get(work.id);
+    if (!stored) throw new Error("expected stored work");
+    stored.attempts = 3;
+    stored.leaseExpiresAt = "2026-07-15T12:00:00.000Z";
+
+    const result = await store.recoverExpiredLoopClaims({
+      tenantId: "stable",
+      now: "2026-07-15T12:01:00.000Z",
+      maxWorkAttempts: 3,
+    });
+
+    expect(result.terminalWorkCount).toBe(1);
+    expect(result.recoveredWorkItems).toHaveLength(0);
+    expect(store.pendingWorkItems.get(work.id)).toMatchObject({ status: "failed", recoveryCount: 1 });
+  });
+
+  it("duplicate queue delivery can claim and execute a work item only once", async () => {
+    const store = seededStore();
+    const work = await routeSourceToWork(store);
+    let modelCalls = 0;
+    const policies = createPolicies({
+      persistence: store,
+      memoryModel: {
+        async generateMemory() {
+          modelCalls += 1;
+          return modelWithValidMemory().generateMemory();
+        },
+      },
+      newId: deterministicId(),
+    });
+
+    const first = await executeWorkItem({ persistence: store, policies, workItemId: work.id, newId: deterministicId() });
+    const duplicate = await executeWorkItem({ persistence: store, policies, workItemId: work.id, newId: deterministicId() });
+
+    expect(first).not.toBeNull();
+    expect(duplicate).toBeNull();
+    expect(modelCalls).toBe(1);
+    expect(store.committedMemory).toHaveLength(1);
+  });
+
+  it("does not recover a slow worker while its lease is still valid", async () => {
+    const store = new InMemoryLoopPersistence();
+    const work = await enqueueExtractWork(store, "slow");
+    const claimed = await store.claimPendingWork(work.id, 900);
+    if (!claimed?.leaseToken) throw new Error("expected leased work");
+    await store.createPolicyRun(policyRunFor(claimed, "polrun_slow"));
+    const stored = store.pendingWorkItems.get(work.id);
+    if (!stored) throw new Error("expected stored work");
+    stored.leaseExpiresAt = "2026-07-15T12:15:00.000Z";
+
+    const result = await store.recoverExpiredLoopClaims({
+      tenantId: "stable",
+      now: "2026-07-15T12:14:59.000Z",
+    });
+
+    expect(result.recoveredWorkCount).toBe(0);
+    expect(store.pendingWorkItems.get(work.id)?.status).toBe("running");
+    expect(store.policyRuns.get("polrun_slow")?.status).toBe("running");
   });
 
   it("memory_committed routes configured follow-up work idempotently", async () => {
@@ -942,6 +1159,75 @@ class OrderedLoopPersistence extends InMemoryLoopPersistence {
     this.calls.push("completePendingWork");
     await super.completePendingWork(id);
   }
+}
+
+async function commitSourceNumber(
+  store: InMemoryLoopPersistence,
+  index: number,
+  actorLabel = "Angela",
+) {
+  return store.commitLedgerEventWithOutbox({
+    id: `levt_source_${index}`,
+    tenantId: "stable",
+    eventType: "source_committed",
+    subjectType: "source",
+    subjectId: `srcv_${index}`,
+    actorType: "human",
+    actorLabel,
+    inputVersion: `srcv_${index}`,
+    idempotencyKey: `source_committed:ing_${index}`,
+    payload: { ingestionId: `ing_${index}`, sourceVersionId: `srcv_${index}` },
+  });
+}
+
+async function enqueueExtractWork(store: InMemoryLoopPersistence, suffix: string) {
+  const event = await store.commitLedgerEventWithOutbox({
+    id: `levt_${suffix}`,
+    tenantId: "stable",
+    eventType: "source_committed",
+    subjectType: "source",
+    subjectId: `srcv_${suffix}`,
+    actorType: "human",
+    actorLabel: "Angela",
+    inputVersion: `srcv_${suffix}`,
+    idempotencyKey: `source_committed:${suffix}`,
+    payload: { ingestionId: `ing_${suffix}`, sourceVersionId: `srcv_${suffix}` },
+  });
+  const outbox = [...store.eventOutboxRows.values()].find((row) => row.ledgerEventId === event.id);
+  if (!outbox) throw new Error("expected outbox");
+  outbox.status = "processed";
+  outbox.processedAt = new Date(0).toISOString();
+  const result = await store.enqueuePendingWork({
+    tenantId: "stable",
+    policy: "extract_memory",
+    subjectType: "source",
+    subjectId: `srcv_${suffix}`,
+    causedByEventId: event.id,
+    inputVersion: `srcv_${suffix}`,
+  });
+  return result.workItem;
+}
+
+function policyRunFor(work: PendingWorkItem, id: string): Omit<PolicyRun, "createdAt"> & { createdAt: string } {
+  return {
+    id,
+    tenantId: work.tenantId,
+    workItemId: work.id,
+    causedByEventId: work.causedByEventId,
+    policyName: work.policy,
+    policyVersion: "test-v1",
+    status: "running",
+    inputVersion: work.inputVersion,
+    inputHash: `hash_${id}`,
+    inputSummary: {},
+    fallbackUsed: false,
+    validationIssues: [],
+    retryCount: Math.max(0, work.attempts - 1),
+    leaseToken: work.leaseToken,
+    leaseExpiresAt: work.leaseExpiresAt,
+    startedAt: "2026-07-15T12:00:00.000Z",
+    createdAt: "2026-07-15T12:00:00.000Z",
+  };
 }
 
 async function commitSource(store: InMemoryLoopPersistence) {

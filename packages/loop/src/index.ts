@@ -143,10 +143,10 @@ export type DetectContradictionInput = PolicyInputEnvelope<{
 
 export type LoopPersistence = MemoryRetrievalPersistence & {
   commitLedgerEventWithOutbox(input: Omit<LedgerEvent, "createdAt"> & { createdAt?: string }): Promise<LedgerEvent>;
-  claimEventOutboxRow(): Promise<EventOutboxRow | null>;
+  claimEventOutboxRow(leaseSeconds?: number): Promise<EventOutboxRow | null>;
   loadLedgerEvent(id: string): Promise<LedgerEvent | null>;
-  markEventOutboxProcessed(id: string): Promise<void>;
-  markEventOutboxFailed(id: string, error: string): Promise<void>;
+  markEventOutboxProcessed(id: string, leaseToken?: string): Promise<void>;
+  markEventOutboxFailed(id: string, error: string, leaseToken?: string): Promise<void>;
   enqueuePendingWork(input: {
     tenantId: string;
     policy: PolicyName;
@@ -155,10 +155,18 @@ export type LoopPersistence = MemoryRetrievalPersistence & {
     causedByEventId: string;
     inputVersion: string;
   }): Promise<{ workItem: PendingWorkItem; inserted: boolean }>;
-  claimPendingWork(workItemId?: string): Promise<PendingWorkItem | null>;
-  completePendingWork(id: string): Promise<void>;
-  failPendingWork(id: string, error: string): Promise<void>;
+  claimPendingWork(workItemId?: string, leaseSeconds?: number): Promise<PendingWorkItem | null>;
+  renewPendingWorkLease(id: string, leaseToken: string, leaseSeconds?: number): Promise<PendingWorkItem | null>;
+  completePendingWork(id: string, leaseToken?: string): Promise<void>;
+  failPendingWork(id: string, error: string, leaseToken?: string): Promise<void>;
   cancelPendingWork(id: string, reason: string): Promise<void>;
+  recoverExpiredLoopClaims(input: {
+    tenantId: string;
+    now?: string;
+    maxOutboxAttempts?: number;
+    maxWorkAttempts?: number;
+  }): Promise<LoopRecoveryResult>;
+  listRecoveredPendingWork(input: { tenantId: string; limit: number }): Promise<PendingWorkItem[]>;
   createPolicyRun(input: Omit<PolicyRun, "createdAt"> & { createdAt?: string }): Promise<PolicyRun>;
   completePolicyRun(
     id: string,
@@ -182,8 +190,9 @@ export type LoopPersistence = MemoryRetrievalPersistence & {
       | "completedAt"
       | "latencyMs"
     >>,
+    leaseToken?: string,
   ): Promise<void>;
-  failPolicyRun(id: string, error: string, issues?: ValidationGateResult["issues"]): Promise<void>;
+  failPolicyRun(id: string, error: string, issues?: ValidationGateResult["issues"], leaseToken?: string): Promise<void>;
   createProposedEvent(input: Omit<ProposedEvent, "createdAt" | "updatedAt" | "validationStatus" | "validationIssues" | "reviewStatus" | "committedLedgerEventId">): Promise<ProposedEvent>;
   markProposedEventValid(id: string): Promise<void>;
   markProposedEventInvalid(id: string, issues: ValidationGateResult["issues"]): Promise<void>;
@@ -232,6 +241,24 @@ export type QueueLike = {
   send(message: { workItemId: string }): Promise<unknown>;
 };
 
+export type LoopRecoveryResult = {
+  recoveredWorkItems: PendingWorkItem[];
+  recoveredOutboxCount: number;
+  terminalOutboxCount: number;
+  recoveredWorkCount: number;
+  terminalWorkCount: number;
+  suppressedSeedOutboxCount: number;
+  cancelledSeedWorkCount: number;
+};
+
+export type LoopMaintenanceResult = LoopRecoveryResult & {
+  routedWorkItems: PendingWorkItem[];
+};
+
+export const DEFAULT_OUTBOX_LEASE_SECONDS = 120;
+export const DEFAULT_WORK_LEASE_SECONDS = 15 * 60;
+export const DEFAULT_ROUTER_BATCH_SIZE = 25;
+
 export const eventRoutes: EventRoute[] = [
   route("source_committed", "extract_memory", "source"),
   route("memory_committed", "connect_memory", "memory"),
@@ -250,12 +277,15 @@ export async function routeCommittedEvents(args: {
   persistence: LoopPersistence;
   queue?: QueueLike;
   maxRows?: number;
+  outboxLeaseSeconds?: number;
 }): Promise<PendingWorkItem[]> {
   const workItems: PendingWorkItem[] = [];
-  const maxRows = args.maxRows ?? 10;
+  const maxRows = args.maxRows ?? DEFAULT_ROUTER_BATCH_SIZE;
 
   for (let count = 0; count < maxRows; count += 1) {
-    const outboxRow = await args.persistence.claimEventOutboxRow();
+    const outboxRow = await args.persistence.claimEventOutboxRow(
+      args.outboxLeaseSeconds ?? DEFAULT_OUTBOX_LEASE_SECONDS,
+    );
     if (!outboxRow) break;
 
     try {
@@ -272,22 +302,57 @@ export async function routeCommittedEvents(args: {
           causedByEventId: event.id,
           inputVersion: routeRule.getInputVersion(event),
         });
-        if (routed.inserted) {
+        if (routed.workItem.status === "pending") {
           workItems.push(routed.workItem);
           await args.queue?.send({ workItemId: routed.workItem.id });
         }
       }
 
-      await args.persistence.markEventOutboxProcessed(outboxRow.id);
+      await args.persistence.markEventOutboxProcessed(outboxRow.id, outboxRow.leaseToken ?? undefined);
     } catch (error) {
       await args.persistence.markEventOutboxFailed(
         outboxRow.id,
         error instanceof Error ? error.message : String(error),
+        outboxRow.leaseToken ?? undefined,
       );
+      break;
     }
   }
 
   return workItems;
+}
+
+export async function maintainLoop(args: {
+  persistence: LoopPersistence;
+  queue: QueueLike;
+  tenantId: string;
+  maxRows?: number;
+  now?: string;
+  maxOutboxAttempts?: number;
+  maxWorkAttempts?: number;
+}): Promise<LoopMaintenanceResult> {
+  const recovery = await args.persistence.recoverExpiredLoopClaims({
+    tenantId: args.tenantId,
+    ...(args.now ? { now: args.now } : {}),
+    ...(args.maxOutboxAttempts ? { maxOutboxAttempts: args.maxOutboxAttempts } : {}),
+    ...(args.maxWorkAttempts ? { maxWorkAttempts: args.maxWorkAttempts } : {}),
+  });
+
+  const recoveredPendingWork = await args.persistence.listRecoveredPendingWork({
+    tenantId: args.tenantId,
+    limit: args.maxRows ?? DEFAULT_ROUTER_BATCH_SIZE,
+  });
+  for (const workItem of recoveredPendingWork) {
+    await args.queue.send({ workItemId: workItem.id });
+  }
+
+  const routedWorkItems = await routeCommittedEvents({
+    persistence: args.persistence,
+    queue: args.queue,
+    maxRows: args.maxRows ?? DEFAULT_ROUTER_BATCH_SIZE,
+  });
+
+  return { ...recovery, routedWorkItems };
 }
 
 export function createPolicies(args: {
@@ -322,21 +387,26 @@ export async function executeWorkItem(args: {
   persistence: LoopPersistence;
   policies: Record<PolicyName, Policy<unknown, PolicyOutput>>;
   workItemId?: string;
+  leaseSeconds?: number;
   newId?: (prefix: string) => string;
 }): Promise<{ workItem: PendingWorkItem; proposedEvents: ProposedEvent[] } | null> {
   const newId = args.newId ?? defaultNewId;
-  const workItem = await args.persistence.claimPendingWork(args.workItemId);
+  const workItem = await args.persistence.claimPendingWork(
+    args.workItemId,
+    args.leaseSeconds ?? DEFAULT_WORK_LEASE_SECONDS,
+  );
   if (!workItem) return null;
+  const leaseToken = workItem.leaseToken ?? undefined;
 
   const shape = validateWorkItemShape(workItem);
   if (!shape.ok) {
-    await args.persistence.failPendingWork(workItem.id, renderIssues(shape.issues));
+    await args.persistence.failPendingWork(workItem.id, renderIssues(shape.issues), leaseToken);
     return { workItem, proposedEvents: [] };
   }
 
   const policy = args.policies[workItem.policy];
   if (!policy) {
-    await args.persistence.failPendingWork(workItem.id, `unknown policy: ${workItem.policy}`);
+    await args.persistence.failPendingWork(workItem.id, `unknown policy: ${workItem.policy}`, leaseToken);
     return { workItem, proposedEvents: [] };
   }
 
@@ -360,6 +430,8 @@ export async function executeWorkItem(args: {
       fallbackUsed: false,
       validationIssues: [],
       retryCount: Math.max(0, workItem.attempts - 1),
+      leaseToken: workItem.leaseToken ?? null,
+      leaseExpiresAt: workItem.leaseExpiresAt ?? null,
       startedAt,
       createdAt: startedAt,
     });
@@ -367,7 +439,23 @@ export async function executeWorkItem(args: {
     const runShape = validatePolicyRunMetadataShape(policyRun);
     if (!runShape.ok) throw new Error(renderIssues(runShape.issues));
 
+    const activeWork = leaseToken
+      ? await args.persistence.renewPendingWorkLease(
+        workItem.id,
+        leaseToken,
+        args.leaseSeconds ?? DEFAULT_WORK_LEASE_SECONDS,
+      )
+      : workItem;
+    if (!activeWork) throw new Error(`work lease lost before policy execution: ${workItem.id}`);
+
     const output = await policy.run(builtInput);
+    if (leaseToken && !await args.persistence.renewPendingWorkLease(
+      workItem.id,
+      leaseToken,
+      args.leaseSeconds ?? DEFAULT_WORK_LEASE_SECONDS,
+    )) {
+      throw new Error(`work lease lost before output commit: ${workItem.id}`);
+    }
     const validation = mergeValidationResults([
       ...(output.policyValidationIssues?.length ? [{ ok: false, issues: output.policyValidationIssues }] : []),
       await policy.validate(output),
@@ -425,19 +513,19 @@ export async function executeWorkItem(args: {
       rawResponseHash: output.rawResponse ? await sha256Hex(JSON.stringify(output.rawResponse)) : undefined,
       completedAt: now(),
       latencyMs: Date.now() - Date.parse(startedAt),
-    });
+    }, leaseToken);
 
     if (!validation.ok) {
-      await args.persistence.failPendingWork(workItem.id, renderIssues(validation.issues));
+      await args.persistence.failPendingWork(workItem.id, renderIssues(validation.issues), leaseToken);
     } else {
-      await args.persistence.completePendingWork(workItem.id);
+      await args.persistence.completePendingWork(workItem.id, leaseToken);
     }
 
     return { workItem, proposedEvents };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (policyRun) await args.persistence.failPolicyRun(policyRun.id, message);
-    await args.persistence.failPendingWork(workItem.id, message);
+    if (policyRun) await args.persistence.failPolicyRun(policyRun.id, message, [], leaseToken);
+    await args.persistence.failPendingWork(workItem.id, message, leaseToken);
     return { workItem, proposedEvents: [] };
   }
 }
@@ -494,6 +582,11 @@ export class InMemoryLoopPersistence implements LoopPersistence {
       attempts: 0,
       lastError: null,
       lockedAt: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      recoveryCount: 0,
+      lastRecoveredAt: null,
+      resolutionReason: null,
       processedAt: null,
       createdAt: now(),
       updatedAt: now(),
@@ -504,7 +597,7 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     return event;
   }
 
-  async claimEventOutboxRow(): Promise<EventOutboxRow | null> {
+  async claimEventOutboxRow(leaseSeconds = DEFAULT_OUTBOX_LEASE_SECONDS): Promise<EventOutboxRow | null> {
     const row = [...this.eventOutboxRows.values()]
       .filter((candidate) => candidate.status === "pending")
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt))[0];
@@ -512,6 +605,8 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     row.status = "processing";
     row.attempts += 1;
     row.lockedAt = now();
+    row.leaseToken = globalThis.crypto.randomUUID();
+    row.leaseExpiresAt = addSeconds(row.lockedAt, leaseSeconds);
     row.updatedAt = now();
     return { ...row };
   }
@@ -520,17 +615,24 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     return this.ledgerEvents.get(id) ?? null;
   }
 
-  async markEventOutboxProcessed(id: string): Promise<void> {
+  async markEventOutboxProcessed(id: string, leaseToken?: string): Promise<void> {
     const row = this.mustGet(this.eventOutboxRows, id, "event outbox row");
+    if (!leaseMatches(row.leaseToken, leaseToken)) return;
     row.status = "processed";
     row.processedAt = now();
+    row.leaseToken = null;
+    row.leaseExpiresAt = null;
     row.updatedAt = now();
   }
 
-  async markEventOutboxFailed(id: string, error: string): Promise<void> {
+  async markEventOutboxFailed(id: string, error: string, leaseToken?: string): Promise<void> {
     const row = this.mustGet(this.eventOutboxRows, id, "event outbox row");
-    row.status = "failed";
+    if (!leaseMatches(row.leaseToken, leaseToken)) return;
+    row.status = row.attempts >= 5 ? "failed" : "pending";
     row.lastError = error;
+    row.lockedAt = null;
+    row.leaseToken = null;
+    row.leaseExpiresAt = null;
     row.updatedAt = now();
   }
 
@@ -558,6 +660,10 @@ export class InMemoryLoopPersistence implements LoopPersistence {
       attempts: 0,
       lastError: null,
       lockedAt: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      recoveryCount: 0,
+      lastRecoveredAt: null,
       startedAt: null,
       completedAt: null,
       cancelledAt: null,
@@ -568,7 +674,7 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     return { workItem, inserted: true };
   }
 
-  async claimPendingWork(workItemId?: string): Promise<PendingWorkItem | null> {
+  async claimPendingWork(workItemId?: string, leaseSeconds = DEFAULT_WORK_LEASE_SECONDS): Promise<PendingWorkItem | null> {
     const item = workItemId
       ? this.pendingWorkItems.get(workItemId)
       : [...this.pendingWorkItems.values()]
@@ -579,22 +685,53 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     item.attempts += 1;
     item.startedAt = now();
     item.lockedAt = now();
+    item.leaseToken = globalThis.crypto.randomUUID();
+    item.leaseExpiresAt = addSeconds(item.lockedAt, leaseSeconds);
     item.updatedAt = now();
     return { ...item };
   }
 
-  async completePendingWork(id: string): Promise<void> {
+  async renewPendingWorkLease(
+    id: string,
+    leaseToken: string,
+    leaseSeconds = DEFAULT_WORK_LEASE_SECONDS,
+  ): Promise<PendingWorkItem | null> {
     const item = this.mustGet(this.pendingWorkItems, id, "pending work");
+    const current = now();
+    if (
+      item.status !== "running" ||
+      item.leaseToken !== leaseToken ||
+      !item.leaseExpiresAt ||
+      Date.parse(item.leaseExpiresAt) <= Date.parse(current)
+    ) return null;
+    item.leaseExpiresAt = addSeconds(current, leaseSeconds);
+    item.updatedAt = current;
+    for (const run of this.policyRuns.values()) {
+      if (run.workItemId === id && run.status === "running" && run.leaseToken === leaseToken) {
+        run.leaseExpiresAt = item.leaseExpiresAt;
+      }
+    }
+    return { ...item };
+  }
+
+  async completePendingWork(id: string, leaseToken?: string): Promise<void> {
+    const item = this.mustGet(this.pendingWorkItems, id, "pending work");
+    if (!leaseMatches(item.leaseToken, leaseToken)) return;
     item.status = "completed";
     item.completedAt = now();
+    item.leaseToken = null;
+    item.leaseExpiresAt = null;
     item.updatedAt = now();
   }
 
-  async failPendingWork(id: string, error: string): Promise<void> {
+  async failPendingWork(id: string, error: string, leaseToken?: string): Promise<void> {
     const item = this.mustGet(this.pendingWorkItems, id, "pending work");
+    if (!leaseMatches(item.leaseToken, leaseToken)) return;
     item.status = "failed";
     item.lastError = error;
     item.completedAt = now();
+    item.leaseToken = null;
+    item.leaseExpiresAt = null;
     item.updatedAt = now();
   }
 
@@ -603,7 +740,102 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     item.status = "cancelled";
     item.lastError = reason;
     item.cancelledAt = now();
+    item.leaseToken = null;
+    item.leaseExpiresAt = null;
     item.updatedAt = now();
+  }
+
+  async recoverExpiredLoopClaims(input: {
+    tenantId: string;
+    now?: string;
+    maxOutboxAttempts?: number;
+    maxWorkAttempts?: number;
+  }): Promise<LoopRecoveryResult> {
+    const recoveredAt = input.now ?? now();
+    const maxOutboxAttempts = input.maxOutboxAttempts ?? 5;
+    const maxWorkAttempts = input.maxWorkAttempts ?? 3;
+    const recoveredWorkItems: PendingWorkItem[] = [];
+    let recoveredOutboxCount = 0;
+    let terminalOutboxCount = 0;
+    let recoveredWorkCount = 0;
+    let terminalWorkCount = 0;
+
+    for (const row of this.eventOutboxRows.values()) {
+      if (
+        row.tenantId !== input.tenantId ||
+        row.status !== "processing" ||
+        !row.leaseExpiresAt ||
+        Date.parse(row.leaseExpiresAt) > Date.parse(recoveredAt)
+      ) continue;
+      row.recoveryCount += 1;
+      row.lastRecoveredAt = recoveredAt;
+      row.lastError = appendRecoveryError(row.lastError, `Router lease expired at ${row.leaseExpiresAt}.`);
+      row.lockedAt = null;
+      row.leaseToken = null;
+      row.leaseExpiresAt = null;
+      row.updatedAt = recoveredAt;
+      if (row.attempts >= maxOutboxAttempts) {
+        row.status = "failed";
+        terminalOutboxCount += 1;
+      } else {
+        row.status = "pending";
+        recoveredOutboxCount += 1;
+      }
+    }
+
+    for (const item of this.pendingWorkItems.values()) {
+      if (
+        item.tenantId !== input.tenantId ||
+        item.status !== "running" ||
+        !item.leaseExpiresAt ||
+        Date.parse(item.leaseExpiresAt) > Date.parse(recoveredAt)
+      ) continue;
+      const expiredLeaseToken = item.leaseToken;
+      for (const run of this.policyRuns.values()) {
+        if (run.workItemId !== item.id || run.status !== "running") continue;
+        if (expiredLeaseToken && run.leaseToken !== expiredLeaseToken) continue;
+        run.status = "failed";
+        run.failureKind = "lease_expired";
+        run.failureReason = appendRecoveryError(run.failureReason, `Worker lease expired at ${item.leaseExpiresAt}.`);
+        run.validationOk = false;
+        run.completedAt = recoveredAt;
+        run.leaseExpiresAt = null;
+      }
+      item.recoveryCount += 1;
+      item.lastRecoveredAt = recoveredAt;
+      item.lastError = appendRecoveryError(item.lastError, `Worker lease expired at ${item.leaseExpiresAt}.`);
+      item.lockedAt = null;
+      item.leaseToken = null;
+      item.leaseExpiresAt = null;
+      item.updatedAt = recoveredAt;
+      if (item.attempts >= maxWorkAttempts) {
+        item.status = "failed";
+        item.completedAt = recoveredAt;
+        terminalWorkCount += 1;
+      } else {
+        item.status = "pending";
+        recoveredWorkCount += 1;
+        recoveredWorkItems.push({ ...item });
+      }
+    }
+
+    return {
+      recoveredWorkItems,
+      recoveredOutboxCount,
+      terminalOutboxCount,
+      recoveredWorkCount,
+      terminalWorkCount,
+      suppressedSeedOutboxCount: 0,
+      cancelledSeedWorkCount: 0,
+    };
+  }
+
+  async listRecoveredPendingWork(input: { tenantId: string; limit: number }): Promise<PendingWorkItem[]> {
+    return [...this.pendingWorkItems.values()]
+      .filter((item) => item.tenantId === input.tenantId && item.status === "pending" && item.recoveryCount > 0)
+      .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))
+      .slice(0, input.limit)
+      .map((item) => ({ ...item }));
   }
 
   async createPolicyRun(input: Omit<PolicyRun, "createdAt"> & { createdAt?: string }): Promise<PolicyRun> {
@@ -618,21 +850,30 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     return run;
   }
 
-  async completePolicyRun(id: string, input: Partial<PolicyRun>): Promise<void> {
+  async completePolicyRun(id: string, input: Partial<PolicyRun>, leaseToken?: string): Promise<void> {
     const run = this.mustGet(this.policyRuns, id, "policy run");
+    if (!leaseMatches(run.leaseToken, leaseToken)) return;
     Object.assign(run, input, {
       status: "completed",
       completedAt: input.completedAt ?? now(),
+      leaseExpiresAt: null,
     });
   }
 
-  async failPolicyRun(id: string, error: string, issues: ValidationGateResult["issues"] = []): Promise<void> {
+  async failPolicyRun(
+    id: string,
+    error: string,
+    issues: ValidationGateResult["issues"] = [],
+    leaseToken?: string,
+  ): Promise<void> {
     const run = this.mustGet(this.policyRuns, id, "policy run");
+    if (!leaseMatches(run.leaseToken, leaseToken)) return;
     run.status = "failed";
     run.failureReason = error;
     run.validationOk = false;
     run.validationIssues = issues;
     run.completedAt = now();
+    run.leaseExpiresAt = null;
     run.latencyMs = Date.now() - Date.parse(run.startedAt);
   }
 
@@ -2627,6 +2868,18 @@ function defaultNewId(prefix: string): string {
 
 function now(): string {
   return new Date().toISOString();
+}
+
+function addSeconds(value: string, seconds: number): string {
+  return new Date(Date.parse(value) + seconds * 1_000).toISOString();
+}
+
+function leaseMatches(current: string | null | undefined, expected: string | undefined): boolean {
+  return expected === undefined || current === expected;
+}
+
+function appendRecoveryError(existing: string | null | undefined, message: string): string {
+  return existing ? `${existing}\n${message}` : message;
 }
 
 function renderIssues(issues: ValidationGateResult["issues"]): string {
