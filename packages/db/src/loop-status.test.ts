@@ -47,6 +47,18 @@ describe("SupabaseLoopPersistence.getLoopStatus", () => {
               technical: [{ label: "work_item_id", value: "work_1" }],
             }],
             activity: [],
+            sectionProgress: {
+              usedSectioning: true,
+              plannedSections: 7,
+              pendingSections: 3,
+              processingSections: 1,
+              completedSections: 3,
+              failedSections: 0,
+              currentSectionOrdinal: 4,
+              currentSectionTitle: "MemIAVL",
+              phase: "extracting",
+              terminalState: "processing",
+            },
           }), { status: 200 });
         },
       }),
@@ -58,7 +70,7 @@ describe("SupabaseLoopPersistence.getLoopStatus", () => {
       limit: 10,
     });
 
-    expect(calls[0]?.url).toBe("https://example.supabase.co/rest/v1/rpc/distillery_get_loop_status_v2");
+    expect(calls[0]?.url).toBe("https://example.supabase.co/rest/v1/rpc/distillery_get_loop_status_v3");
     expect(calls[0]?.body).toEqual({
       p_tenant_id: "stable",
       p_ingestion_id: "ing_1",
@@ -66,6 +78,7 @@ describe("SupabaseLoopPersistence.getLoopStatus", () => {
     });
     expect(status.mode).toBe("current");
     expect(status.stages[0]?.status).toBe("running");
+    expect(status.sectionProgress?.plannedSections).toBe(7);
   });
 });
 
@@ -258,6 +271,14 @@ describe("Ask retrieval wiring", () => {
     expect(askHandler).toContain("retrieveMemoryContext");
     expect(askHandler).not.toContain("recallMemory(");
     expect(askHandler).not.toContain("distillery_recall_memory_lexical");
+  });
+});
+
+describe("Worker authentication logging safety", () => {
+  it("does not accept the shared password in a request header that platform logs can retain", () => {
+    const worker = readFileSync(resolve(testDir, "../../../apps/web/src/index.ts"), "utf8");
+    expect(worker).not.toContain("x-distillery-password");
+    expect(worker).toContain("distillery_session");
   });
 });
 

@@ -29,6 +29,8 @@ import {
   SynthesisEnrichmentStateSchema,
   SynthesisSimilaritySignalSchema,
   SuggestedBriefSchema,
+  StoredMemorySectionPlanSchema,
+  MemorySectionSchema,
   type EvidenceSpan,
   type IngestionReceipt,
   type IngestionResult,
@@ -56,6 +58,9 @@ import {
   type ProposedEvent,
   type UpdateInitiativeBriefInput,
   type WorkSubjectType,
+  type StoredMemorySectionPlan,
+  type MemorySection,
+  type GeneratedMemoryItem,
 } from "@distillery/contracts";
 import type { CorpusSynthesisState, LoopPersistence, LoopRecoveryResult } from "@distillery/loop";
 import type {
@@ -346,9 +351,10 @@ export class SupabaseLoopPersistence implements LoopPersistence {
     return LedgerEventSchema.parse(result);
   }
 
-  async claimEventOutboxRow(leaseSeconds?: number): Promise<EventOutboxRow | null> {
-    const result = await this.rpcClient.rpc<unknown>("distillery_claim_event_outbox_row", {
+  async claimEventOutboxRow(leaseSeconds?: number, preferredSubjectId?: string): Promise<EventOutboxRow | null> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_claim_event_outbox_row_v2", {
       p_lease_seconds: leaseSeconds ?? 120,
+      p_preferred_subject_id: preferredSubjectId ?? null,
     });
     return result ? EventOutboxRowSchema.parse(result) : null;
   }
@@ -694,12 +700,72 @@ export class SupabaseLoopPersistence implements LoopPersistence {
     ingestionId?: string;
     limit?: number;
   } = {}): Promise<LoopStatusResponse> {
-    const result = await this.rpcClient.rpc<unknown>("distillery_get_loop_status_v2", {
+    const result = await this.rpcClient.rpc<unknown>("distillery_get_loop_status_v3", {
       p_tenant_id: input.tenantId ?? "stable",
       p_ingestion_id: input.ingestionId ?? null,
       p_limit: input.limit ?? 25,
     });
     return LoopStatusResponseSchema.parse(result);
+  }
+
+  async getMemorySectionPlan(sourceVersionId: string): Promise<StoredMemorySectionPlan | null> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_get_memory_section_plan", {
+      p_source_version_id: sourceVersionId,
+    });
+    return result ? StoredMemorySectionPlanSchema.parse(result) : null;
+  }
+
+  async createMemorySectionPlan(input: Record<string, unknown>): Promise<StoredMemorySectionPlan> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_create_memory_section_plan", { p_plan: input });
+    return StoredMemorySectionPlanSchema.parse(result);
+  }
+
+  async getMemorySectionContext(sectionId: string): Promise<{
+    section: MemorySection;
+    plan: StoredMemorySectionPlan;
+    evidenceSpans: EvidenceSpan[];
+  }> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_get_memory_section_context", { p_section_id: sectionId });
+    return MemorySectionContextResponseSchema.parse(result);
+  }
+
+  async startMemorySection(input: { sectionId: string; workItemId: string; leaseToken: string }): Promise<MemorySection> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_start_memory_section", {
+      p_section_id: input.sectionId,
+      p_work_item_id: input.workItemId,
+      p_lease_token: input.leaseToken,
+    });
+    return MemorySectionSchema.parse(result);
+  }
+
+  async completeMemorySection(input: {
+    sectionId: string;
+    workItemId: string;
+    leaseToken: string;
+    extractionRunId: string;
+    candidateCount: number;
+    autoItems: GeneratedMemoryItem[];
+    reviewItems: GeneratedMemoryItem[];
+  }): Promise<MemorySection> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_complete_memory_section", {
+      p_section_id: input.sectionId,
+      p_work_item_id: input.workItemId,
+      p_lease_token: input.leaseToken,
+      p_extraction_run_id: input.extractionRunId,
+      p_candidate_count: input.candidateCount,
+      p_auto_items: input.autoItems,
+      p_review_items: input.reviewItems,
+    });
+    return MemorySectionSchema.parse(result);
+  }
+
+  async markMemorySectionPlanConsolidating(sourceVersionId: string): Promise<void> {
+    await this.rpcClient.rpc("distillery_mark_memory_section_plan_consolidating", { p_source_version_id: sourceVersionId });
+  }
+
+  async retryMemorySectionIngestion(ingestionId: string): Promise<string[]> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_retry_memory_section_ingestion", { p_ingestion_id: ingestionId });
+    return z.array(z.string().min(1)).parse(result);
   }
 
   async getGraphRecallContext(input: {
@@ -834,6 +900,12 @@ const IngestionContextResponseSchema = IngestionResultSchema.pick({
 }).extend({
   tenantId: EvidenceSpanSchema.shape.id,
   sourceVersionId: EvidenceSpanSchema.shape.sourceVersionId,
+});
+
+const MemorySectionContextResponseSchema = z.object({
+  section: MemorySectionSchema,
+  plan: StoredMemorySectionPlanSchema,
+  evidenceSpans: EvidenceSpanSchema.array().min(1),
 });
 
 const PendingWorkEnqueueResponseSchema = z.object({
