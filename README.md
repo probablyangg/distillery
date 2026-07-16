@@ -29,6 +29,7 @@ Implemented in the current repository:
 - password-gated graph review surface at `/graph`;
 - text-only ingestion;
 - immutable source versions and evidence spans;
+- automatic semantic sectioning for documents that reach 6,000 normalized characters or 20 evidence spans, with deterministic fallback boundaries;
 - OpenRouter memory generation;
 - evidence-backed memory with `claimType`, entities, relations, and schemas;
 - durable claim graph projection with claim connections, conflict groups, graph clusters, and reviewer preferences;
@@ -39,7 +40,8 @@ Implemented in the current repository:
 - human-directed initiative brief draft, save, approve, and reject flow;
 - event-driven loop infrastructure with `ledger_events`, `event_outbox`, `pending_work`, `policy_runs`, and `proposed_events`;
 - one-minute scheduled outbox draining, explicit router/worker leases, stale-claim recovery, and fenced retries;
-- `source_committed -> extract_memory -> memory_proposed -> validation -> memory_committed` loop path;
+- short-source `source_committed -> extract_memory -> memory_proposed -> validation -> memory_committed` loop path;
+- long-source `extract_memory -> extract_memory_section (one leased work item per section) -> consolidate_memory -> memory_committed` loop path;
 - `memory_committed -> connect_memory -> enrichment_update_proposed -> validation -> connections_updated` loop path;
 - `memory_committed -> detect_contradiction -> enrichment_update_proposed -> validation -> contradictions_updated` loop path;
 - independent post-memory enrichment for connections, contradictions, embeddings, graph projection, candidates, and freshness;
@@ -47,7 +49,7 @@ Implemented in the current repository:
 - versioned overlapping clusters, deterministic opportunity scoring, bounded evidence dossiers, and idempotent suggested drafts;
 - atomic batching for auto-approved policy proposals, keeping high-fan-out cluster work within the Cloudflare Worker subrequest budget;
 - cursor-backed global synthesis sweeps that no-op when cluster versions have not changed;
-- loop status endpoint and UI drawer for recent loop activity;
+- loop status endpoint and UI drawer with planned, pending, processing, completed, and failed section counts;
 - Cloudflare Worker deployment;
 - Supabase PostgreSQL/RPC persistence with `pgvector`.
 
@@ -81,7 +83,7 @@ pnpm install
 pnpm build
 ```
 
-Before running against a database, apply every SQL file in `packages/db/migrations/` in filename order. The current schema requires migrations `0001` through `0015`; see the [runbook](./docs/runbooks/RUNBOOK.md#database-migrations).
+Before running against a database, apply every SQL file in `packages/db/migrations/` in filename order. The current schema requires migrations `0001` through `0017`; see the [runbook](./docs/runbooks/RUNBOOK.md#database-migrations).
 
 Run locally:
 
@@ -141,7 +143,14 @@ Copy `.env.example` to `.env.local` and populate:
   - `OPENROUTER_FALLBACK_MODELS`;
   - `OPENROUTER_TIMEOUT_MS`;
   - `OPENROUTER_FALLBACK_TIMEOUT_MS`;
-  - optional role overrides: `MEMORY_EXTRACTOR_MODEL`, `MEMORY_VERIFIER_MODEL`, and `MEMORY_CONNECTION_MODEL`;
+  - optional role overrides: `MEMORY_EXTRACTOR_MODEL`, `MEMORY_VERIFIER_MODEL`, `MEMORY_CONNECTION_MODEL`, and `MEMORY_SECTION_PLANNER_MODEL`;
+- automatic sectioning:
+  - `MEMORY_SECTIONING_ENABLED` (default `true`);
+  - `MEMORY_SECTION_TRIGGER_CHARS` (default `6000`);
+  - `MEMORY_SECTION_TRIGGER_SPANS` (default `20`);
+  - `MEMORY_SECTION_TARGET_CHARS` (default `5000`);
+  - `MEMORY_SECTION_MAX_CHARS` (default `8000`);
+  - `MEMORY_SECTION_MAX_SECTIONS` (default `50`);
 - embeddings:
   - `EMBEDDING_PROVIDER`;
   - `EMBEDDING_BASE_URL`;
@@ -154,3 +163,5 @@ Copy `.env.example` to `.env.local` and populate:
 For Worker runtime secrets, copy `apps/web/.dev.vars.example` to `apps/web/.dev.vars`.
 
 Never commit `.env.local`, `.dev.vars`, database URLs, API keys, or Worker secrets.
+
+The complete normalized source is stored before any model call. Short submissions skip the section planner. Long or dense submissions use the planner only to select ordered evidence-span boundaries; the planner cannot rewrite source text. Invalid or unavailable plans fall back to deterministic, size-bounded sections. Each section is then extracted and verified independently, and cross-section duplicates are consolidated before memory commits. This can add one planning call plus one extractor/verifier sequence per section, so lower thresholds improve recall at higher model cost and processing time.

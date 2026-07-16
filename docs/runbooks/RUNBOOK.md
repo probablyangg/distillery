@@ -38,6 +38,13 @@ OPENROUTER_FALLBACK_TIMEOUT_MS=45000
 MEMORY_EXTRACTOR_MODEL=
 MEMORY_VERIFIER_MODEL=
 MEMORY_CONNECTION_MODEL=
+MEMORY_SECTION_PLANNER_MODEL=
+MEMORY_SECTIONING_ENABLED=true
+MEMORY_SECTION_TRIGGER_CHARS=6000
+MEMORY_SECTION_TRIGGER_SPANS=20
+MEMORY_SECTION_TARGET_CHARS=5000
+MEMORY_SECTION_MAX_CHARS=8000
+MEMORY_SECTION_MAX_SECTIONS=50
 EMBEDDING_PROVIDER=openrouter
 EMBEDDING_BASE_URL=https://openrouter.ai/api/v1
 EMBEDDING_MODEL=google/gemini-embedding-001
@@ -46,7 +53,7 @@ EMBEDDING_ENCODING_FORMAT=float
 DISTILLERY_APP_PASSWORD=...
 ```
 
-The three `MEMORY_*_MODEL` values are optional model-ID overrides. Leave them empty to use `OPENROUTER_MODEL` for that role.
+The four `MEMORY_*_MODEL` values are optional model-ID overrides. Leave them empty to use `OPENROUTER_MODEL` for that role. Section thresholds are positive integers. `TARGET_CHARS` must not exceed `MAX_CHARS`, and `MAX_SECTIONS` cannot exceed 50. Lower section sizes make more model calls and usually take longer.
 
 Worker call sites currently set `maxFallbackModels: 1`. Only the first entry in `OPENROUTER_FALLBACK_MODELS` is attempted by the Worker; later entries remain available to standalone scripts that pass the full list.
 
@@ -111,6 +118,8 @@ psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packag
 psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0013_corpus_wide_brief_synthesis.sql
 psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0014_batch_auto_proposed_events.sql
 psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0015_suppress_redundant_global_synthesis_events.sql
+psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0016_automatic_memory_sectioning.sql
+psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0017_prefer_current_capture_outbox.sql
 ```
 
 Helper for migration `0011` only:
@@ -140,6 +149,8 @@ Current migration set:
 - `0013_corpus_wide_brief_synthesis.sql` — independent enrichment events, versioned overlapping clusters, readiness history, suggested-brief versions, dirty-neighborhood scheduling, durable global scan cursor, and the corrected atomic artifact persistence function.
 - `0014_batch_auto_proposed_events.sql` — one atomic RPC for creating, validating, and committing any number of auto-approved proposed events, avoiding Worker subrequest exhaustion during high-fan-out cluster projection.
 - `0015_suppress_redundant_global_synthesis_events.sql` — one-time cleanup of redundant rollout-era global-sweep outbox rows after unchanged sweep projections became no-ops.
+- `0016_automatic_memory_sectioning.sql` — canonical section plans/checkpoints, section work policies and events, idempotent retry-safe proposal/extraction functions, progress status v3, and section-plan completion tracking.
+- `0017_prefer_current_capture_outbox.sql` — a lease-fenced outbox claim that may prioritize the current capture once before returning to FIFO order, preventing historical derived-work backlog from starving new Remember submissions.
 
 Deployment order is database migration first, then Worker deployment. Roll back the Worker if new synthesis work produces repeated failures, unexpected queue growth, or readiness/draft duplication. Do not drop synthesis tables during an operational rollback. Preserve them for diagnosis and deploy a corrective forward migration. Migration `0015` changes only transport/outbox state for redundant global-sweep events; it does not delete evidence, memory, clusters, readiness evaluations, or briefs.
 
@@ -219,14 +230,16 @@ Manual check:
 3. Confirm memory items appear with `claimType`.
 4. On `/synthesis`, check the pending-memory section. When the verifier marks a candidate `needs_review`, approve or reject its proposal there.
 5. Open the loop status drawer and verify `source_committed`, routed work, policy run, proposal, and commit activity are visible.
-6. Expand `Trace details` and verify entities, relations, schemas, and evidence.
-7. Ask a recall question and confirm `retrievalMetadata.strategy` is `hybrid-graph-ppr-rerank`.
-8. Select memory on `/synthesis`.
-9. Generate a brief draft. Related-memory expansion is the default. To test strict selection-only behavior through the API, call `POST /api/initiative-brief-drafts` with `expandRelatedMemory: false`.
-10. Edit/save a brief.
-11. Approve or reject it.
-12. Open `/graph`.
-13. Rebuild the graph if needed, inspect clusters, and test connection review, conflict resolution, pin, and exclude actions.
+6. Paste a document longer than 6,000 characters or with at least 20 nonempty lines. Verify the drawer shows that sectioning was used, its planned section count, current title, progress counts, and terminal success.
+7. If a section fails, use the Retry button. Verify completed counts do not fall and only unfinished work resumes.
+8. Expand `Trace details` and verify entities, relations, schemas, and evidence.
+9. Ask a recall question and confirm `retrievalMetadata.strategy` is `hybrid-graph-ppr-rerank`.
+10. Select memory on `/synthesis`.
+11. Generate a brief draft. Related-memory expansion is the default. To test strict selection-only behavior through the API, call `POST /api/initiative-brief-drafts` with `expandRelatedMemory: false`.
+12. Edit/save a brief.
+13. Approve or reject it.
+14. Open `/graph`.
+15. Rebuild the graph if needed, inspect clusters, and test connection review, conflict resolution, pin, and exclude actions.
 
 ## Deploy to Cloudflare
 
@@ -242,9 +255,10 @@ The helper:
 - creates the queue if needed;
 - uploads Worker secrets from `.env.local`;
 - deploys the Worker;
+- explicitly applies the configured Cron and Queue triggers;
 - health-checks the deployment.
 
-The Worker configuration includes a one-minute Cron Trigger and a bounded Queue consumer. After migrations through `0015`, each scheduled maintenance pass recovers expired claims, requeues up to 25 recovered work items, schedules up to 4 synthesis scan events, and routes up to 4 outbox rows. Request-triggered routing is also capped at 4 rows. These deployed caps keep external database calls within the Worker invocation budget; PostgreSQL retains the remaining canonical work for later passes. Clustering, readiness, and generation remain policy work, and unchanged global sweeps emit no cluster event. Do not manually change `running` rows while their lease is still valid.
+The Worker configuration includes a one-minute Cron Trigger and a bounded Queue consumer. After migrations through `0017`, each scheduled maintenance pass recovers expired claims, requeues up to 25 recovered work items, schedules up to 4 synthesis scan events, and routes up to 4 outbox rows. Request-triggered routing and post-work downstream routing are also capped at 4 rows. The first request-triggered claim may prefer that new source; later claims remain FIFO. These deployed caps keep external database calls within the Worker invocation budget; PostgreSQL retains the remaining canonical work for later passes. Section work is canonical and independently leased, while each completed queue item gives the next section events a bounded chance to progress immediately. Clustering, readiness, and generation remain policy work, and unchanged global sweeps emit no cluster event. Do not manually change `running` rows while their lease is still valid.
 
 Manual deploy:
 
@@ -293,6 +307,7 @@ Memory Generation and Recall:
 
 - `POST /api/ingestions` — stores text evidence, commits `source_committed`, routes pending work, and wakes the loop runner.
 - `GET /api/ingestions/{id}` — returns ingestion status, evidence, and memory items.
+- `POST /api/ingestions/{id}/retry` — resumes failed sectioned ingestion work while preserving completed section checkpoints.
 - `GET /api/loop-status` — returns UI-safe loop stages, timeline, and recent activity. Optional query params: `ingestionId`, `limit`.
 - `POST /api/queries` — graph-grounded hybrid retrieval plus grounded answer generation. This path does not use the legacy DB lexical answer fallback.
 - `GET /api/memory-proposals` — pending valid memory proposals that require human review. Optional query param: `limit`.

@@ -20,10 +20,14 @@ Queue consumer or inline fallback
   -> claim pending_work by workItemId
   -> hold a fenced worker lease while model work is active
   -> load source/evidence context
-  -> call OpenRouter
+  -> deterministically choose single extraction or sectioning
+  -> for sectioning: request and validate ordered evidence-span boundaries
+  -> fall back to deterministic boundaries if planning is unavailable or invalid
+  -> claim and extract every canonical section independently
   -> parse structured JSON
   -> validate evidence and schema deterministically
   -> optionally verify/correct/classify candidates with a second model
+  -> wait for every required section and deduplicate across boundaries
   -> route uncertain candidates to human review
   -> create memory_proposed
   -> auto-commit valid memory_committed
@@ -73,11 +77,27 @@ Memory Generation writes:
 - `pending_work`;
 - `policy_runs`;
 - `proposed_events`;
+- `memory_section_plans`;
+- `memory_sections`;
 - claim graph projection/review tables populated by migration `0010_claim_graph_memory_upgrade.sql`;
 - `audit_events`;
 - `outbox_events`.
 
 Source versions and evidence spans are immutable. Memory items are correctable through append-only events. Claim graph rows, embeddings, and graph projection rows are derived from evidence-backed memory; they are not more authoritative than the underlying evidence and ledger.
+
+## Automatic sectioning
+
+Distillery stores the complete normalized source before deciding how to extract it. Evidence construction splits very long lines into bounded spans at sentence or word boundaries when possible. Every span keeps exact character offsets into `source_versions.content`; no planner or extractor output replaces that source.
+
+Sectioning is enabled by default. It starts when the normalized source reaches 6,000 characters or contains at least 20 nonempty evidence spans. Sources below both thresholds retain one extraction and do not pay for a planner call.
+
+The planner receives ordered, original evidence spans. Its output contains only section titles and the first and last evidence ID in each section. Runtime validation requires complete, exactly-once source coverage in source order, with no gaps or overlaps and no over-budget multi-span section. An invalid response follows the existing model fallback policy, then uses a deterministic heading-and-size plan if no model returns a valid plan.
+
+Each section is a PostgreSQL checkpoint with one leased work item. Completed sections are not reprocessed when a different section fails. `POST /api/ingestions/{id}/retry` returns failed section work to the queue and preserves completed checkpoints. Consolidation cannot commit memory until every section is complete.
+
+The extractor/verifier receives the section's original evidence spans. A response that reaches the 30-candidate ceiling is split deterministically and retried, up to three levels. After all sections complete, exact normalized duplicate statements are merged while preserving their valid source citations. Similar but nonidentical statements remain separate because small wording differences can reverse a fact. Ordinary connection and contradiction policies run after the resulting `memory_committed` events.
+
+Operators can tune `MEMORY_SECTION_TRIGGER_CHARS`, `MEMORY_SECTION_TRIGGER_SPANS`, `MEMORY_SECTION_TARGET_CHARS`, `MEMORY_SECTION_MAX_CHARS`, and `MEMORY_SECTION_MAX_SECTIONS`, or disable the feature with `MEMORY_SECTIONING_ENABLED=false`. Smaller sections can improve high-recall extraction but increase planner/extractor/verifier calls, elapsed time, and model cost. The existing submission limit remains 50,000 characters; one source can contain at most 50 top-level sections.
 
 ## Memory item contract
 
@@ -157,9 +177,9 @@ openai/gpt-5
   -> anthropic/claude-sonnet-4.5
 ```
 
-The configured fallback list also contains `moonshotai/kimi-k2.7-code` and `~moonshotai/kimi-latest`, but current Worker call sites cap fallback attempts to the first configured model. Extractor, verifier, and connection-scoring roles may use `MEMORY_EXTRACTOR_MODEL`, `MEMORY_VERIFIER_MODEL`, and `MEMORY_CONNECTION_MODEL`; each falls back to `OPENROUTER_MODEL` when unset.
+The configured fallback list also contains `moonshotai/kimi-k2.7-code` and `~moonshotai/kimi-latest`, but current Worker call sites cap fallback attempts to the first configured model. Extractor, verifier, connection-scoring, and section-planning roles may use `MEMORY_EXTRACTOR_MODEL`, `MEMORY_VERIFIER_MODEL`, `MEMORY_CONNECTION_MODEL`, and `MEMORY_SECTION_PLANNER_MODEL`; each falls back to `OPENROUTER_MODEL` when unset.
 
-The extractor and verifier must return structured JSON matching their contracts. They receive evidence spans and may cite only supplied evidence IDs. Deterministic validation remains authoritative.
+The planner, extractor, and verifier must return structured JSON matching their contracts. They receive evidence spans and may cite only supplied evidence IDs. Deterministic validation remains authoritative.
 
 ## Correction model
 

@@ -1,6 +1,6 @@
 # Distillery status and roadmap
 
-Last updated: 2026-07-15
+Last updated: 2026-07-16
 
 This is the canonical prose snapshot of implemented behavior. Executable code/tests and ordered SQL migrations remain authoritative. Implementation PRDs explain design intent and may contain historical baselines; do not use them as current-state checklists without confirming the code.
 
@@ -59,8 +59,16 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 ### Memory Generation
 
 - Immutable source version and evidence-span storage.
+- Evidence construction bounds each nonempty span to 2,000 characters at sentence, word, or hard boundaries while retaining exact normalized-source offsets. This includes one-line inputs up to the existing 50,000-character capture limit.
 - Text capture commits a `source_committed` ledger event and `event_outbox` row in the same RPC path.
+- Request-triggered routing prefers the newly captured source for its first leased outbox claim, then returns to FIFO order. A derived-work backlog therefore cannot starve a new Remember submission.
 - Event router maps committed source events to `extract_memory` pending work.
+- `extract_memory` deterministically selects the single path or semantic sectioning. The default section triggers are 6,000 normalized characters or 20 evidence spans.
+- Section planning uses ordered original evidence spans through `packages/model-gateway`. Deterministic validation rejects unknown IDs, gaps, overlaps, reordering, over-budget multi-span sections, and excessive section counts. Invalid or unavailable model plans fall back to deterministic ordered boundaries.
+- Each planned section has canonical PostgreSQL state and an independently leased `extract_memory_section` work item. Extraction and verification receive original evidence spans, never a rewritten summary.
+- Saturated 30-candidate section responses are subdivided deterministically up to three levels. The 30-item schema limit is per model response, not per complete Remember submission.
+- `consolidate_memory` waits for every section, merges only exact normalized cross-section duplicates, retains original citations, and emits stable proposal and memory IDs in batches of at most 30. Similar-looking but nonidentical facts stay separate.
+- Failed section retries reset and resume only unfinished section work; completed checkpoints are preserved.
 - Policy executor records `policy_runs`, emits `proposed_events`, validates output, and auto-commits valid `memory_committed` events.
 - OpenRouter structured memory generation.
 - Two-stage extraction routing: the extractor proposes candidates, deterministic validation rejects malformed or ungrounded candidates, and an optional verifier classifies remaining candidates.
@@ -132,8 +140,11 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
   - `pending_work`;
   - `policy_runs`;
   - `proposed_events`.
+- Section checkpoint tables:
+  - `memory_section_plans`;
+  - `memory_sections`.
 - Loop status endpoint at `GET /api/loop-status`.
-- Loop status drawer in the capture UI.
+- Loop status drawer in the capture UI, including section strategy, counts, current section, high-level phase, and terminal state.
 - `pgvector` enabled.
 - OpenRouter model gateway.
 - OpenRouter embedding client.
@@ -156,6 +167,18 @@ Capture
   -> event_outbox
   -> event router
   -> pending_work
+
+Short Remember
+  -> one extract_memory model call
+  -> verification and memory proposal
+
+Long or dense Remember
+  -> validated semantic section plan (deterministic fallback on failure)
+  -> memory_section_ready per canonical section
+  -> independently leased extract_memory_section work
+  -> per-section verification and checkpoint
+  -> consolidate_memory only after all sections complete
+  -> cross-section deduplication and memory proposals
 
 Worker queue consumer or inline fallback
   -> claim pending_work by workItemId
@@ -217,7 +240,7 @@ Authoritative state is in PostgreSQL. Lexical indexes, embeddings, and graph pro
 
 ## Current models
 
-Generation, verification, connection scoring, retrieval reranking, grounded answers, and brief drafting use OpenRouter through `packages/model-gateway`.
+Section planning, generation, verification, connection scoring, retrieval reranking, grounded answers, and brief drafting use OpenRouter through `packages/model-gateway`.
 
 ```text
 default primary:  openai/gpt-5
@@ -226,7 +249,7 @@ configured fallback 2: moonshotai/kimi-k2.7-code
 configured fallback 3: ~moonshotai/kimi-latest
 ```
 
-These are repository defaults from `.env.example` and `apps/web/wrangler.toml`, not hard-coded product requirements. `MEMORY_EXTRACTOR_MODEL`, `MEMORY_VERIFIER_MODEL`, and `MEMORY_CONNECTION_MODEL` may override the primary model for those roles. If an override is absent, that role uses `OPENROUTER_MODEL`.
+These are repository defaults from `.env.example` and `apps/web/wrangler.toml`, not hard-coded product requirements. `MEMORY_EXTRACTOR_MODEL`, `MEMORY_VERIFIER_MODEL`, `MEMORY_CONNECTION_MODEL`, and `MEMORY_SECTION_PLANNER_MODEL` may override the primary model for those roles. If an override is absent, that role uses `OPENROUTER_MODEL`.
 
 Current Worker call sites cap fallback attempts to one model, so only the first configured fallback is effective in the Worker. Standalone scripts that construct the model gateway directly may use the full configured list.
 
@@ -237,16 +260,17 @@ google/gemini-embedding-001
 1536 dimensions
 ```
 
-Embedding storage and an independent `update_embeddings` policy exist when embedding env vars are configured. A hybrid graph retrieval implementation is present for Ask and synthesis, with vector/sparse seeds, TypeScript PPR, OpenRouter reranking, and a batch embedding backfill script. Apply migrations through `0015`, then run the backfill before expecting full vector coverage on historical memory.
+Embedding storage and an independent `update_embeddings` policy exist when embedding env vars are configured. A hybrid graph retrieval implementation is present for Ask and synthesis, with vector/sparse seeds, TypeScript PPR, OpenRouter reranking, and a batch embedding backfill script. Apply migrations through `0017`, then run the backfill before expecting full vector coverage on historical memory.
 
 ## Current loop-system limitations
 
-- `extract_memory`, `connect_memory`, `detect_contradiction`, `update_embeddings`, `update_graph`, `recompute_cluster`, `evaluate_synthesis_readiness`, and `synthesize_brief` have real domain logic.
+- `extract_memory`, `extract_memory_section`, `consolidate_memory`, `connect_memory`, `detect_contradiction`, `update_embeddings`, `update_graph`, `recompute_cluster`, `evaluate_synthesis_readiness`, and `synthesize_brief` have real domain logic.
 - `discover_candidate`, `check_freshness`, `rank_candidate`, `draft_artifact`, `gate_output`, and `revise_artifact` are registered policy runners but currently emit placeholder `not_enough_context` proposals.
-- A worker does not drain newly committed downstream outbox rows in the same invocation. The one-minute scheduled router drains them in bounded batches, so progress may pause until the next scheduled invocation but no longer requires another user action.
+- After a queue work item completes, the Worker routes up to four newly available outbox rows before acknowledging the message. The one-minute scheduled router remains the recovery path for backlog and idle periods. Sectioned documents therefore propagate through section completions without requiring a full Cron interval between every step.
 - The deployed Worker limits each scheduled or request-triggered routing pass to 4 outbox rows and requeues up to 25 recovered jobs. Auto-approved proposals commit in one database RPC so high-fan-out cluster projections stay within the Worker subrequest budget.
 - Global sweep events are safety-net scans. An unchanged cluster version is a no-op; enrichment and memory-change events can still force readiness reevaluation without changing membership.
 - SQL/RPC loop behavior has minimal automated coverage. Most loop tests run against `InMemoryLoopPersistence`.
+- Sectioning adds one planner call for triggered sources plus extractor/verifier calls for every section. Lower targets and triggers increase recall opportunities, latency, and model cost. A hard maximum of 50 sections and a three-level saturation subdivision bound prevent unbounded work.
 - The OpenRouter embedding client and `memory_embeddings` table are wired into independently retryable `update_embeddings`; historical embedding backfill is available through `scripts/backfill-memory-embeddings.ts`.
 - Each cluster recomputation loads at most 500 active memories, while the durable global cursor makes every active memory eligible over repeated sweeps. Very large corpora will eventually need partitioned candidate indexes rather than a larger Worker batch.
 - Ask and synthesis are wired to the shared hybrid graph retriever in code. Full runtime success requires migration `0011_hybrid_retrieval_rpcs.sql`, graph projection rebuild, and embedding backfill in the target database. If OpenRouter reranking fails, retrieval degrades to deterministic graph/vector/sparse ranking and reports the reranker failure in metadata.
