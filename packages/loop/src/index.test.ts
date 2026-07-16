@@ -72,6 +72,80 @@ describe("loop system", () => {
     expect([...store.pendingWorkItems.values()]).toHaveLength(1);
   });
 
+  it("routes a committed Slack context bundle once and extracts distinct causes against their exact evidence", async () => {
+    const store = new InMemoryLoopPersistence();
+    store.slackContextBundles.set("sctx_1", slackContextBundle());
+    await store.commitLedgerEventWithOutbox({
+      id: "levt_slack_context",
+      tenantId: "stable",
+      eventType: "slack_context_committed",
+      subjectType: "context_bundle",
+      subjectId: "sctx_1",
+      actorType: "connector",
+      actorLabel: "Slack context assembler",
+      inputVersion: "a".repeat(64),
+      idempotencyKey: "slack-context:csave_1:context-hash",
+      payload: { connectorSaveId: "csave_1", contextBundleId: "sctx_1", contextVersion: 1 },
+    });
+
+    const firstRoute = await routeCommittedEvents({ persistence: store });
+    const replayRoute = await routeCommittedEvents({ persistence: store });
+    expect(firstRoute).toHaveLength(1);
+    expect(firstRoute[0]).toMatchObject({ policy: "extract_slack_context", subjectType: "context_bundle", subjectId: "sctx_1" });
+    expect(replayRoute).toHaveLength(0);
+
+    let receivedSlackContext: unknown;
+    await executeWorkItem({
+      persistence: store,
+      workItemId: firstRoute[0]!.id,
+      policies: createPolicies({
+        persistence: store,
+        memoryModel: {
+          async generateMemory(request) {
+            receivedSlackContext = request.slackContext;
+            return {
+              model: "context-extractor",
+              raw: { ok: true },
+              parsed: { items: [
+                {
+                  temporaryId: "release_cause", claimType: "fact" as const,
+                  statement: "Checkout failures started immediately after release 2.7.0.",
+                  evidenceSpanIds: ["ev_selected"], epistemicStatus: "reported" as const,
+                  qualifiers: { temporalOrder: "reported_after_release" }, stableDomainTags: ["checkout"],
+                  entities: [], relations: [], schemas: [],
+                },
+                {
+                  temporaryId: "provider_cause", claimType: "fact" as const,
+                  statement: "Morpho timeouts were also observed during the checkout incident.",
+                  evidenceSpanIds: ["ev_reply"], epistemicStatus: "reported" as const,
+                  qualifiers: { observedDuring: "incident" }, stableDomainTags: ["checkout", "morpho"],
+                  entities: [], relations: [], schemas: [],
+                },
+              ] },
+            };
+          },
+        },
+        newId: deterministicId(),
+      }),
+      newId: deterministicId(),
+    });
+
+    expect(receivedSlackContext).toMatchObject({
+      selectedMessageTimestamp: "1752624000.000001",
+      classification: { category: "incident", identities: { products: ["StablePay"], releaseVersions: ["2.7.0"] } },
+      items: [
+        { role: "channel_profile", evidenceSpanIds: [] },
+        { role: "selected_message", evidenceSpanIds: ["ev_selected"] },
+        { role: "thread_reply", evidenceSpanIds: ["ev_reply"] },
+      ],
+    });
+    expect(store.committedMemory.map((item) => item.statement)).toEqual([
+      "Checkout failures started immediately after release 2.7.0.",
+      "Morpho timeouts were also observed during the checkout incident.",
+    ]);
+    expect(store.committedMemory.map((item) => item.evidenceSpanIds)).toEqual([["ev_selected"], ["ev_reply"]]);
+  });
+
   it("re-sends an existing pending work id when the first queue wakeup fails", async () => {
     const store = seededStore();
     await commitSource(store);
@@ -1801,6 +1875,87 @@ async function enqueueManualWork(
     inputVersion: `${subjectId}:v1`,
   });
   return result.workItem;
+}
+
+function slackContextBundle() {
+  const selectedText = "StablePay checkout failures started immediately after release 2.7.0.";
+  const replyText = "Morpho timeouts were also observed during the checkout incident.";
+  return {
+    id: "sctx_1",
+    connectorSaveId: "csave_1",
+    previousBundleId: null,
+    version: 1,
+    tenantId: "stable",
+    workspaceId: "T12345678",
+    channelId: "C12345678",
+    selectedMessageTimestamp: "1752624000.000001",
+    threadTimestamp: "1752624000.000001",
+    channelProfile: {
+      workspaceId: "T12345678", channelId: "C12345678", channelName: "incident-room",
+      topic: "StablePay incidents", purpose: "Coordinate recovery", isPublic: true, isPrivate: false,
+      externallyShared: false, slackConnect: false, externalTeamIds: [], capturedAt: "2026-07-16T12:00:00.000Z",
+    },
+    selectionStrategy: "thread" as const,
+    selectionVersion: "slack-context-v1",
+    contentHash: "a".repeat(64),
+    capturedAt: "2026-07-16T12:00:00.000Z",
+    externallyShared: false,
+    truncation: {
+      truncated: false, messageLimitApplied: false, characterLimitApplied: false,
+      originalMessageCount: 2, retainedMessageCount: 2,
+      originalCharacterCount: selectedText.length + replyText.length,
+      retainedCharacterCount: selectedText.length + replyText.length,
+      omittedMessageTimestamps: [],
+    },
+    classification: {
+      category: "incident" as const,
+      rationale: "The thread describes a checkout incident and possible causes.",
+      identities: {
+        products: ["StablePay"], featureComponents: ["Checkout"], externalServices: ["Morpho"],
+        issueTicketIds: [], releaseVersions: ["2.7.0"], environments: ["production"], namedOrganizations: [],
+      },
+    },
+    skippedAttachments: [],
+    selectedIngestionId: "ing_selected",
+    selectedSourceVersionId: "srcv_selected",
+    items: [
+      {
+        id: "sctxi_profile", ordinal: 0, role: "channel_profile" as const,
+        sourceItemId: "src_profile", sourceVersionId: "srcv_profile",
+        externalId: "slack_channel:T12345678:C12345678", selectionReason: "Channel metadata", primary: false,
+        authorId: null, authorLabel: "Slack channel profile", occurredAt: "2026-07-16T12:00:00.000Z",
+        permalink: "https://example.slack.com/archives/C12345678", content: "StablePay incident room",
+        sourceMetadata: {}, evidenceSpans: [],
+      },
+      {
+        id: "sctxi_selected", ordinal: 1, role: "selected_message" as const,
+        sourceItemId: "src_selected", sourceVersionId: "srcv_selected",
+        externalId: "slack_message:T12345678:C12345678:1752624000.000001", selectionReason: "Invoked message", primary: true,
+        authorId: "U12345678", authorLabel: "Ada", occurredAt: "2026-07-16T12:00:00.000Z",
+        permalink: "https://example.slack.com/archives/C12345678/p1752624000000001", content: selectedText,
+        sourceMetadata: { messageTimestamp: "1752624000.000001" },
+        evidenceSpans: [{
+          id: "ev_selected", sourceVersionId: "srcv_selected", startLine: 1, endLine: 1,
+          startChar: 0, endChar: selectedText.length, text: selectedText,
+          locator: { provider: "slack", messageTimestamp: "1752624000.000001" },
+        }],
+      },
+      {
+        id: "sctxi_reply", ordinal: 2, role: "thread_reply" as const,
+        sourceItemId: "src_reply", sourceVersionId: "srcv_reply",
+        externalId: "slack_message:T12345678:C12345678:1752624000.000002", selectionReason: "Thread reply", primary: false,
+        authorId: "U87654321", authorLabel: "Grace", occurredAt: "2026-07-16T12:01:00.000Z",
+        permalink: "https://example.slack.com/archives/C12345678/p1752624000000002", content: replyText,
+        sourceMetadata: { messageTimestamp: "1752624000.000002" },
+        evidenceSpans: [{
+          id: "ev_reply", sourceVersionId: "srcv_reply", startLine: 1, endLine: 1,
+          startChar: 0, endChar: replyText.length, text: replyText,
+          locator: { provider: "slack", messageTimestamp: "1752624000.000002" },
+        }],
+      },
+    ],
+    createdAt: "2026-07-16T12:00:00.000Z",
+  };
 }
 
 function modelWithValidMemory(): StaticMemoryGenerationModel {

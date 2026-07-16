@@ -26,6 +26,7 @@ import {
   type SynthesisReadinessEvaluation,
   type SynthesisSimilaritySignal,
   type SuggestedBrief,
+  type SlackContextBundle,
   type ValidationGateResult,
   type WorkSubjectType,
 } from "@distillery/contracts";
@@ -147,6 +148,10 @@ export type ExtractMemoryInput = PolicyInputEnvelope<{
   memoryGenerationSchema: string;
 }>;
 
+export type ExtractSlackContextInput = PolicyInputEnvelope<{
+  bundle: SlackContextBundle;
+}>;
+
 export type ExtractMemorySectionInput = PolicyInputEnvelope<{
   section: MemorySection;
   plan: StoredMemorySectionPlan;
@@ -261,6 +266,7 @@ export type LoopPersistence = MemoryRetrievalPersistence & {
   rejectProposedEvent(id: string, decision: { reviewerLabel: string; rationale?: string }): Promise<ProposedEvent>;
   commitValidatedProposedEvent(id: string): Promise<LedgerEvent>;
   getIngestionContextBySourceVersionId(sourceVersionId: string): Promise<IngestionContext>;
+  getSlackContextBundle(bundleId: string): Promise<SlackContextBundle>;
   recordExtractionRun(input: {
     id: string;
     ingestionId: string;
@@ -339,6 +345,7 @@ export const DEFAULT_WORK_LEASE_SECONDS = 15 * 60;
 export const DEFAULT_ROUTER_BATCH_SIZE = 25;
 
 export const eventRoutes: EventRoute[] = [
+  route("slack_context_committed", "extract_slack_context", "context_bundle"),
   route("source_committed", "extract_memory", "source"),
   route("memory_section_ready", "extract_memory_section", "section"),
   {
@@ -505,6 +512,12 @@ export function createPolicies(args: {
     ...(args.memoryVerifierModel ? { memoryVerifierModel: args.memoryVerifierModel } : {}),
     ...(args.newId ? { newId: args.newId } : {}),
   });
+  const extractSlackContext = createExtractSlackContextPolicy({
+    persistence: args.persistence,
+    memoryModel: args.memoryModel,
+    ...(args.memoryVerifierModel ? { memoryVerifierModel: args.memoryVerifierModel } : {}),
+    ...(args.newId ? { newId: args.newId } : {}),
+  });
   const extractMemorySection = createExtractMemorySectionPolicy({
     persistence: args.persistence,
     memoryModel: args.memoryModel,
@@ -524,6 +537,7 @@ export function createPolicies(args: {
   const synthesizeBrief = createSynthesizeBriefPolicy(args);
   return {
     ingest_slack_source: connectorSideEffectPolicy("ingest_slack_source", args.connectorPolicyRunner?.ingestSlackSource),
+    extract_slack_context: extractSlackContext as Policy<unknown, PolicyOutput>,
     sync_slack_reaction: connectorSideEffectPolicy("sync_slack_reaction", args.connectorPolicyRunner?.syncSlackReaction),
     extract_memory: extractMemory as Policy<unknown, PolicyOutput>,
     extract_memory_section: extractMemorySection as Policy<unknown, PolicyOutput>,
@@ -1124,6 +1138,7 @@ export class InMemoryLoopPersistence implements LoopPersistence {
   readonly claimConnections = new Map<string, ClaimConnection>();
   readonly conflictGroups = new Map<string, ConflictGroup>();
   readonly ingestionContextsBySourceVersionId = new Map<string, IngestionContext>();
+  readonly slackContextBundles = new Map<string, SlackContextBundle>();
   readonly memorySectionPlansBySourceVersionId = new Map<string, StoredMemorySectionPlan>();
   readonly memorySections = new Map<string, MemorySection>();
   readonly memorySynthesisContext = new Map<string, MemoryWithEvidence>();
@@ -1679,6 +1694,10 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     const context = this.ingestionContextsBySourceVersionId.get(sourceVersionId);
     if (!context) throw new Error(`ingestion context not found for source version: ${sourceVersionId}`);
     return context;
+  }
+
+  async getSlackContextBundle(bundleId: string): Promise<SlackContextBundle> {
+    return this.mustGet(this.slackContextBundles, bundleId, "Slack context bundle");
   }
 
   async getMemorySectionPlan(sourceVersionId: string): Promise<StoredMemorySectionPlan | null> {
@@ -2324,6 +2343,157 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     const cluster = this.synthesisClusters.get(evaluation.clusterId);
     if (cluster?.version === evaluation.clusterVersion) cluster.readiness = evaluation;
   }
+}
+
+function createExtractSlackContextPolicy(args: {
+  persistence: LoopPersistence;
+  memoryModel: MemoryGenerationModel;
+  memoryVerifierModel?: MemoryCandidateVerifierModel;
+  newId?: (prefix: string) => string;
+}): Policy<ExtractSlackContextInput, PolicyOutput> {
+  const newId = args.newId ?? defaultNewId;
+  return {
+    name: "extract_slack_context",
+    version: "extract-slack-context-v1",
+    async buildInput(workItem) {
+      const bundle = await args.persistence.getSlackContextBundle(workItem.subjectId);
+      return {
+        input: { bundle },
+        inputHash: await sha256Hex(JSON.stringify({ bundleId: bundle.id, contentHash: bundle.contentHash })),
+        inputSummary: {
+          contextBundleId: bundle.id,
+          contextVersion: bundle.version,
+          selectedMessageTimestamp: bundle.selectedMessageTimestamp,
+          itemCount: bundle.items.length,
+          evidenceSpanCount: bundle.items.reduce((sum, item) => sum + item.evidenceSpans.length, 0),
+          classification: bundle.classification.category,
+        },
+      };
+    },
+    async run(envelope) {
+      const bundle = envelope.input.bundle;
+      const evidenceSpans = bundle.items
+        .filter((item) => item.role !== "channel_profile")
+        .flatMap((item) => item.evidenceSpans);
+      let generated;
+      let extractorFallbackReason: string | undefined;
+      try {
+        generated = await args.memoryModel.generateMemory({
+          ingestionId: bundle.selectedIngestionId,
+          sourceVersionId: bundle.selectedSourceVersionId,
+          evidenceSpans,
+          slackContext: {
+            selectedMessageTimestamp: bundle.selectedMessageTimestamp,
+            channelProfile: bundle.channelProfile,
+            classification: bundle.classification,
+            items: bundle.items.map((item) => ({
+              role: item.role,
+              ...(typeof item.sourceMetadata.messageTimestamp === "string"
+                ? { messageTimestamp: item.sourceMetadata.messageTimestamp }
+                : {}),
+              ...(item.authorId ? { authorId: item.authorId } : {}),
+              ...(item.authorLabel ? { authorLabel: item.authorLabel } : {}),
+              occurredAt: item.occurredAt,
+              ...(item.permalink ? { permalink: item.permalink } : {}),
+              evidenceSpanIds: item.evidenceSpans.map((span) => span.id),
+            })),
+          },
+        });
+      } catch (error) {
+        extractorFallbackReason = sanitizeError(error);
+        generated = {
+          parsed: { items: [] },
+          raw: { strategy: "deterministic_context_only", reason: extractorFallbackReason },
+          model: "deterministic-context-only",
+        };
+      }
+
+      const extractionRunId = newId("extr");
+      const candidateRouting = await routeGeneratedMemoryCandidates({
+        candidates: generated.parsed.items,
+        allowedEvidenceSpans: evidenceSpans,
+        verifierModel: args.memoryVerifierModel,
+      });
+      const autoItems = candidateRouting.autoItems.map((item) => toCommittableMemoryItem(item, newId));
+      const reviewItems = candidateRouting.reviewItems.map((item) => toCommittableMemoryItem(item, newId));
+      const rawResponse = {
+        contextBundleId: bundle.id,
+        contextVersion: bundle.version,
+        classification: bundle.classification,
+        extractor: generated.raw,
+        verifier: candidateRouting.rawVerifierResponse ?? null,
+        audit: {
+          extractorFallbackReason: extractorFallbackReason ?? null,
+          verifierFallbackReason: candidateRouting.verifierFallbackReason ?? null,
+          rejectedCandidates: candidateRouting.rejectedCandidates,
+          duplicateCandidates: candidateRouting.duplicateCandidates,
+          deterministicIssues: candidateRouting.deterministicIssues,
+        },
+      };
+      await args.persistence.recordExtractionRun({
+        id: extractionRunId,
+        ingestionId: bundle.selectedIngestionId,
+        tenantId: bundle.tenantId,
+        provider: extractorFallbackReason ? "deterministic" : "openrouter",
+        model: candidateRouting.verifierModel
+          ? `${generated.model}+${candidateRouting.verifierModel}`
+          : generated.model,
+        promptVersion: `${MEMORY_PROMPT_VERSION}+slack-context-v1`,
+        schemaVersion: MEMORY_SCHEMA_VERSION,
+        rawResponse,
+        status: "completed",
+      });
+
+      const proposedEvents: ProposedEventDraft[] = [];
+      if (autoItems.length > 0) {
+        proposedEvents.push(memoryProposedDraft({
+          sourceVersionId: bundle.selectedSourceVersionId,
+          ingestionId: bundle.selectedIngestionId,
+          extractionRunId,
+          items: autoItems,
+          requiresHumanApproval: false,
+        }));
+      }
+      if (reviewItems.length > 0) {
+        proposedEvents.push(memoryProposedDraft({
+          sourceVersionId: bundle.selectedSourceVersionId,
+          ingestionId: bundle.selectedIngestionId,
+          extractionRunId,
+          items: reviewItems,
+          requiresHumanApproval: true,
+        }));
+      }
+      return {
+        proposedEvents,
+        provider: extractorFallbackReason ? "deterministic" : "openrouter",
+        model: candidateRouting.verifierModel
+          ? `${generated.model}+${candidateRouting.verifierModel}`
+          : generated.model,
+        fallbackUsed: Boolean(extractorFallbackReason || candidateRouting.verifierFallbackReason),
+        fallbackReason: extractorFallbackReason ?? candidateRouting.verifierFallbackReason,
+        promptVersion: `${MEMORY_PROMPT_VERSION}+slack-context-v1`,
+        schemaVersion: MEMORY_SCHEMA_VERSION,
+        outputSchemaVersion: MEMORY_SCHEMA_VERSION,
+        rawResponse,
+        validationEvidenceSpans: evidenceSpans,
+        policyValidationIssues: proposedEvents.length === 0 && !extractorFallbackReason && candidateRouting.deterministicIssues.length > 0
+          ? candidateRouting.deterministicIssues
+          : undefined,
+      };
+    },
+    async validate(output) {
+      const issues = output.proposedEvents.flatMap((draft) => {
+        if (draft.proposedEventType !== "memory_proposed" || draft.targetEventType !== "memory_committed") {
+          return [{ code: "invalid_slack_context_proposal", message: "Slack context extraction may only emit memory proposals.", path: [] }];
+        }
+        return validateGeneratedMemory({
+          generated: GeneratedMemoryBatchFromPayload(draft.payload),
+          allowedEvidenceSpans: output.validationEvidenceSpans ?? [],
+        }).result.issues;
+      });
+      return { ok: issues.length === 0, issues };
+    },
+  };
 }
 
 function createExtractMemoryPolicy(args: {
