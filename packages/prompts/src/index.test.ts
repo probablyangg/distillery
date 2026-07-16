@@ -9,11 +9,13 @@ import {
   memoryCandidateVerifierSystemPrompt,
   memoryConnectionScorerSystemPrompt,
   memoryGenerationSystemPrompt,
+  memorySectionPlanningSystemPrompt,
   renderMemoryCandidateVerificationInputForModel,
   renderMemoryConnectionScoringInputForModel,
   renderGroundedAnswerInputForModel,
   renderInitiativeBriefDraftInputForModel,
   renderMemoryGenerationInputForModel,
+  renderMemorySectionPlanningInputForModel,
   renderRetrievalRerankInputForModel,
   renderSynthesisIntent,
 } from "./index";
@@ -25,6 +27,7 @@ describe("@distillery/prompts", () => {
     expect(memoryGenerationSystemPrompt()).toContain("Every item must cite one or more supplied evidenceSpanIds exactly.");
     expect(memoryGenerationSystemPrompt()).toContain("Never emit entities like: the, a, an, in, no, yes");
     expect(memoryGenerationSystemPrompt()).toContain("If no meaningful entity exists, return an empty entities array.");
+    expect(memorySectionPlanningSystemPrompt()).toContain("Never rewrite, quote, summarize, or invent source content.");
     expect(memoryCandidateVerifierSystemPrompt()).toContain("verified, needs_review, corrected, duplicate, or unsupported");
     expect(memoryCandidateVerifierSystemPrompt()).toContain("Use needs_review when");
     expect(memoryConnectionScorerSystemPrompt()).toContain("direct, supporting, contextual, or weak");
@@ -33,6 +36,18 @@ describe("@distillery/prompts", () => {
     expect(initiativeBriefDraftSystemPrompt()).toContain("Use every selected memoryItemId and every selected evidenceSpanId exactly as supplied.");
     expect(groundedAnswerSystemPrompt()).toContain("Use only the supplied claims, evidence, and conflicts.");
     expect(groundedAnswerSystemPrompt()).toContain("Cite only supplied evidenceSpanIds and claim IDs.");
+  });
+
+  it("renders section-planning budgets and original evidence IDs", () => {
+    const rendered = renderMemorySectionPlanningInputForModel({
+      sourceVersionId: "srcv_1",
+      targetChars: 5_000,
+      maxChars: 8_000,
+      maxSections: 50,
+      evidenceSpans: [{ id: "ev_1", sourceVersionId: "srcv_1", startLine: 1, endLine: 1, startChar: 0, endChar: 8, text: "Overview" }],
+    });
+    expect(rendered).toContain('maxChars="8000"');
+    expect(rendered).toContain('<evidence id="ev_1"');
   });
 
   it("includes current claim type and epistemic status enums in the memory prompt", () => {

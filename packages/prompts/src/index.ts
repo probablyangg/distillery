@@ -12,6 +12,7 @@ import {
 } from "@distillery/contracts";
 
 export const MEMORY_PROMPT_VERSION = "stable-memory-prompt-v0.2";
+export const MEMORY_SECTION_PROMPT_VERSION = "memory-section-plan-v0.1";
 
 const RERANK_STATEMENT_MAX_CHARS = 400;
 const RERANK_EVIDENCE_MAX_ITEMS = 2;
@@ -19,6 +20,14 @@ const RERANK_EVIDENCE_MAX_CHARS = 250;
 
 export type MemoryGenerationPromptInput = {
   evidenceSpans: EvidenceSpan[];
+};
+
+export type MemorySectionPlanningPromptInput = {
+  sourceVersionId: string;
+  evidenceSpans: EvidenceSpan[];
+  targetChars: number;
+  maxChars: number;
+  maxSections: number;
 };
 
 export type MemoryCandidateVerificationPromptInput = {
@@ -104,6 +113,20 @@ export function memoryGenerationSystemPrompt(): string {
     "Output must be a single minified JSON object.",
     "Do not include markdown, comments, trailing commas, or unescaped line breaks inside strings.",
     "Return valid JSON matching the requested schema.",
+  ].join("\n");
+}
+
+export function memorySectionPlanningSystemPrompt(): string {
+  return [
+    "You organize a document into meaningful semantic sections for evidence extraction.",
+    "Return only an ordered section plan using the supplied evidence span IDs.",
+    "Never rewrite, quote, summarize, or invent source content.",
+    "Every supplied evidence span must appear in exactly one contiguous section.",
+    "Sections must preserve source order, must not overlap, and must not leave gaps.",
+    "Prefer document headings and topic changes such as overview, features, compatibility, and deferred work.",
+    "Keep each section within the supplied maximum character budget unless it contains one indivisible span.",
+    "Titles are short organizational labels and are not evidence.",
+    "Return only valid JSON matching the requested schema.",
   ].join("\n");
 }
 
@@ -196,6 +219,14 @@ export function renderEvidenceForModel(spans: EvidenceSpan[]): string {
 
 export function renderMemoryGenerationInputForModel(input: MemoryGenerationPromptInput): string {
   return renderEvidenceForModel(input.evidenceSpans);
+}
+
+export function renderMemorySectionPlanningInputForModel(input: MemorySectionPlanningPromptInput): string {
+  return [
+    `<sectioning sourceVersionId="${escapeAttribute(input.sourceVersionId)}" targetChars="${input.targetChars}" maxChars="${input.maxChars}" maxSections="${input.maxSections}">`,
+    renderEvidenceForModel(input.evidenceSpans),
+    "</sectioning>",
+  ].join("\n");
 }
 
 export function renderMemoryCandidateVerificationInputForModel(input: MemoryCandidateVerificationPromptInput): string {
