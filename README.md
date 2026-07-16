@@ -27,6 +27,8 @@ Implemented in the current repository:
 - password-gated capture/recall app at `/`;
 - password-gated synthesis surface at `/synthesis`;
 - password-gated graph review surface at `/graph`;
+- password-gated, read-only generated brief surface at `/briefs`;
+- allowlisted Slack message shortcut ingestion for the private pilot, including text-based PDF and DOCX attachments;
 - text-only ingestion;
 - immutable source versions and evidence spans;
 - automatic semantic sectioning for documents that reach 6,000 normalized characters or 20 evidence spans, with deterministic fallback boundaries;
@@ -83,7 +85,9 @@ pnpm install
 pnpm build
 ```
 
-Before running against a database, apply every SQL file in `packages/db/migrations/` in filename order. The current schema requires migrations `0001` through `0017`; see the [runbook](./docs/runbooks/RUNBOOK.md#database-migrations).
+Before running against a database, apply every SQL file in `packages/db/migrations/` in filename order. The current schema requires migrations `0001` through `0018`; see the [runbook](./docs/runbooks/RUNBOOK.md#database-migrations).
+
+The Slack private-pilot setup is documented in [Slack pilot setup](./docs/runbooks/SLACK_PILOT.md).
 
 Run locally:
 
@@ -159,6 +163,14 @@ Copy `.env.example` to `.env.local` and populate:
   - `EMBEDDING_ENCODING_FORMAT`;
 - app access:
   - `DISTILLERY_APP_PASSWORD`.
+- Slack private pilot:
+  - `SLACK_BOT_TOKEN`;
+  - `SLACK_SIGNING_SECRET`;
+  - `SLACK_ALLOWED_TEAM_ID`;
+  - comma-separated `SLACK_ALLOWED_CHANNEL_IDS`;
+  - comma-separated `SLACK_ALLOWED_USER_IDS`;
+  - `SLACK_SAVED_REACTION=factory` (Slack's built-in 🏭 reaction).
+  - `SLACK_PROCESSING_REACTION=hourglass_flowing_sand` (Slack's built-in processing reaction).
 
 For Worker runtime secrets, copy `apps/web/.dev.vars.example` to `apps/web/.dev.vars`.
 

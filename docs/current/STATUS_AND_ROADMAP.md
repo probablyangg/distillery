@@ -24,6 +24,14 @@ Graph review app
   inspect claim clusters
   review connections and conflicts
   pin or exclude claims for synthesis
+
+Leadership brief reader
+  read Distillery-generated draft and approved briefs
+  inspect exact source citations and Slack links
+
+Slack private-pilot connector
+  save one allowlisted message and supported PDF/DOCX attachments
+  continue through the canonical event loop after immutable evidence commit
 ```
 
 Live Worker:
@@ -31,6 +39,8 @@ Live Worker:
 ```text
 https://distillery-v0.angela-f4b.workers.dev
 ```
+
+Migration `0018` and the Worker code for the Slack connector and `/briefs` reader were deployed on 2026-07-16. The generated brief reader passed authenticated read-only smoke checks. The Slack app is installed with the required scopes, `#fren-home` and the two pilot users are allowlisted, and a real shortcut save completed successfully. Migration `0019` and the two-stage reaction lifecycle are deployed; one fresh shortcut click remains for live observation of the hourglass-to-factory transition.
 
 The default starter seed command produces:
 
@@ -52,9 +62,12 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 - `/` capture and recall screen.
 - `/synthesis` reviewer screen.
 - `/graph` claim graph reviewer screen.
+- `/briefs` read-only generated brief list and detail screens.
+- `Save to Distillery` Slack message shortcut receiver and worker policy, gated by workspace, channel, and user allowlists.
 - Text-only braindump ingestion.
 - No initiative suggestions on the ingestion screen.
 - No formal auth, SSO, RBAC, or per-source ACLs.
+- Slack ingestion is deliberately single-workspace and deny-by-default; direct messages, group direct messages, Slack Connect, nonmember channels, and nonallowlisted actions are rejected.
 
 ### Memory Generation
 
@@ -152,6 +165,9 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 - Deterministic retrieval fixture validation.
 - Standalone extraction-quality and connection-density evaluators. The extraction evaluator calls live OpenRouter; the connection evaluator is local and deterministic.
 - Stable seed script.
+- Additive migration `0018` for durable connector saves, Slack source metadata/evidence locators, reaction retry state, and generated leadership brief projections.
+- Version-controlled Slack app manifest and Slack's built-in `:factory:` saved marker.
+- Additive migration `0019` and Worker lifecycle support for immediate `:hourglass_flowing_sand:`, removed and replaced by `:factory:` only after every source finishes extraction.
 - Legacy direct database/model smoke script. It is not a deployed Worker/browser smoke and must use an isolated disposable database because its cleanup does not cover asynchronous corpus-synthesis rows.
 
 ## Current architecture

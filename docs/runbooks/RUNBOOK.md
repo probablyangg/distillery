@@ -10,6 +10,7 @@ Use this document for local setup, database migration, seed/reset, deployment, a
 - Supabase project
 - Cloudflare account with Workers and Queues
 - OpenRouter API key
+- Slack workspace administrator access for the optional Slack private pilot
 
 Corpus-wide synthesis adds no service, account, hosted dependency, API key, graph database, or paid package. It reuses PostgreSQL/Supabase, Cloudflare Worker/Queue/Cron, the existing OpenRouter-compatible gateway, pgvector, and the existing TypeScript packages.
 
@@ -51,6 +52,13 @@ EMBEDDING_MODEL=google/gemini-embedding-001
 EMBEDDING_DIMENSIONS=1536
 EMBEDDING_ENCODING_FORMAT=float
 DISTILLERY_APP_PASSWORD=...
+SLACK_BOT_TOKEN=...
+SLACK_SIGNING_SECRET=...
+SLACK_ALLOWED_TEAM_ID=...
+SLACK_ALLOWED_CHANNEL_IDS=C01234567,C07654321
+SLACK_ALLOWED_USER_IDS=U01234567,U07654321
+SLACK_SAVED_REACTION=factory
+SLACK_PROCESSING_REACTION=hourglass_flowing_sand
 ```
 
 The four `MEMORY_*_MODEL` values are optional model-ID overrides. Leave them empty to use `OPENROUTER_MODEL` for that role. Section thresholds are positive integers. `TARGET_CHARS` must not exceed `MAX_CHARS`, and `MAX_SECTIONS` cannot exceed 50. Lower section sizes make more model calls and usually take longer.
@@ -64,6 +72,13 @@ DISTILLERY_APP_PASSWORD=...
 SUPABASE_URL=...
 SUPABASE_SECRET_KEY=...
 OPENROUTER_API_KEY=...
+SLACK_BOT_TOKEN=...
+SLACK_SIGNING_SECRET=...
+SLACK_ALLOWED_TEAM_ID=...
+SLACK_ALLOWED_CHANNEL_IDS=...
+SLACK_ALLOWED_USER_IDS=...
+SLACK_SAVED_REACTION=factory
+SLACK_PROCESSING_REACTION=hourglass_flowing_sand
 ```
 
 Never commit `.env.local`, `.dev.vars`, database URLs, API keys, or Worker secrets.
@@ -100,6 +115,14 @@ pnpm exec tsx evals/runners/evaluate-memory-extraction.ts
 
 The evaluators report measurements; they are not pass/fail build gates. The extraction evaluator requires `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, and `OPENROUTER_MODEL` in the process environment or `.env.local`.
 
+The Slack database integration test starts its own disposable `pgvector/pgvector:pg16` Docker container, applies every migration, verifies replay/concurrent idempotency, transactional rollback, file re-share deduplication, and generated-brief projection, then stops the container:
+
+```bash
+pnpm test:slack-db
+```
+
+It never connects to the configured pilot database.
+
 ## Database migrations
 
 Apply all migrations to a fresh database:
@@ -120,6 +143,7 @@ psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packag
 psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0015_suppress_redundant_global_synthesis_events.sql
 psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0016_automatic_memory_sectioning.sql
 psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0017_prefer_current_capture_outbox.sql
+psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0018_slack_connector_and_brief_reader.sql
 ```
 
 Helper for migration `0011` only:
@@ -131,6 +155,12 @@ pnpm retrieval:migrate
 `pnpm retrieval:migrate` always applies only `0011_hybrid_retrieval_rpcs.sql`. It does not apply later migrations and is not a general migration runner. Apply every missing migration in filename order.
 
 Do not run migrations from the Cloudflare Worker. Migrations require `DATABASE_DIRECT_URL` from local/CI.
+
+After applying migration `0018`, verify its read-only PostgREST projections without changing pilot data:
+
+```bash
+pnpm pilot:verify-schema
+```
 
 Current migration set:
 
@@ -151,6 +181,8 @@ Current migration set:
 - `0015_suppress_redundant_global_synthesis_events.sql` — one-time cleanup of redundant rollout-era global-sweep outbox rows after unchanged sweep projections became no-ops.
 - `0016_automatic_memory_sectioning.sql` — canonical section plans/checkpoints, section work policies and events, idempotent retry-safe proposal/extraction functions, progress status v3, and section-plan completion tracking.
 - `0017_prefer_current_capture_outbox.sql` — a lease-fenced outbox claim that may prioritize the current capture once before returning to FIFO order, preventing historical derived-work backlog from starving new Remember submissions.
+- `0018_slack_connector_and_brief_reader.sql` — durable idempotent Slack connector saves, immutable Slack message/document source metadata and locators, independent reaction retries, and generated-only leadership brief read projections.
+- `0019_slack_reaction_lifecycle.sql` — immediate processing feedback and a canonical, retryable transition to the factory reaction after all Slack extraction work completes.
 
 Deployment order is database migration first, then Worker deployment. Roll back the Worker if new synthesis work produces repeated failures, unexpected queue growth, or readiness/draft duplication. Do not drop synthesis tables during an operational rollback. Preserve them for diagnosis and deploy a corrective forward migration. Migration `0015` changes only transport/outbox state for redundant global-sweep events; it does not delete evidence, memory, clusters, readiness evaluations, or briefs.
 
@@ -240,6 +272,9 @@ Manual check:
 13. Approve or reject it.
 14. Open `/graph`.
 15. Rebuild the graph if needed, inspect clusters, and test connection review, conflict resolution, pin, and exclude actions.
+16. Open `/briefs`; confirm only Distillery-generated draft or approved briefs appear and every citation opens its Slack source.
+
+For Slack app installation, allowlists, the built-in `:factory:` reaction, and the exact click test, follow [Slack pilot setup](./SLACK_PILOT.md).
 
 ## Deploy to Cloudflare
 
@@ -268,6 +303,12 @@ pnpm exec wrangler secret put DISTILLERY_APP_PASSWORD --config apps/web/wrangler
 pnpm exec wrangler secret put SUPABASE_URL --config apps/web/wrangler.toml
 pnpm exec wrangler secret put SUPABASE_SECRET_KEY --config apps/web/wrangler.toml
 pnpm exec wrangler secret put OPENROUTER_API_KEY --config apps/web/wrangler.toml
+pnpm exec wrangler secret put SLACK_BOT_TOKEN --config apps/web/wrangler.toml
+pnpm exec wrangler secret put SLACK_SIGNING_SECRET --config apps/web/wrangler.toml
+pnpm exec wrangler secret put SLACK_ALLOWED_TEAM_ID --config apps/web/wrangler.toml
+pnpm exec wrangler secret put SLACK_ALLOWED_CHANNEL_IDS --config apps/web/wrangler.toml
+pnpm exec wrangler secret put SLACK_ALLOWED_USER_IDS --config apps/web/wrangler.toml
+pnpm exec wrangler secret put SLACK_SAVED_REACTION --config apps/web/wrangler.toml
 pnpm deploy
 ```
 
@@ -287,6 +328,12 @@ This is a legacy direct Supabase/model integration smoke. It does not exercise t
 
 For a production-safe readiness check, use read-only requests: verify `/health`, load `/`, `/synthesis`, and `/graph`, log in, then call `GET /api/session`, `GET /api/loop-status`, `GET /api/memory-items`, `GET /api/synthesis/opportunities`, `GET /api/initiative-briefs`, and `GET /api/graph/clusters`. Inspect Worker logs for a successful scheduled pass and Queue messages before starting manual testing.
 
+The generated brief reader has a dedicated deployed, read-only smoke check. It verifies health, the `/briefs` shell, unauthenticated denial, authenticated list/detail responses, and the Slack endpoint's fail-closed behavior:
+
+```bash
+pnpm smoke:deployed
+```
+
 ## API reference
 
 App routes:
@@ -295,6 +342,8 @@ App routes:
 - `GET /` — capture/recall UI.
 - `GET /synthesis` — synthesis/brief review UI.
 - `GET /graph` — claim graph review UI.
+- `GET /briefs` and `GET /briefs/{id}` — shared-password, read-only leadership brief UI.
+- `POST /api/slack/interactions` — public Slack interactivity receiver; verifies Slack signatures and strict allowlists before atomically registering canonical work.
 - `GET /assets/d3-local.js` — locally vendored D3 asset for the graph UI.
 
 Session:
@@ -320,6 +369,9 @@ Memory review:
 - `GET /api/memory-items/{id}/history` — memory correction history.
 
 Memory Synthesis:
+
+- `GET /api/briefs` — newest-first Distillery-generated draft and approved briefs for the read-only leadership surface.
+- `GET /api/briefs/{id}` — one generated brief with exact evidence citations and source links.
 
 - `GET /api/synthesis/opportunities` — ranked cluster opportunities with readiness reasons and bounded dossiers.
 - The opportunities response also includes saved suggested versions, their current review status, and the fields changed since the prior version.

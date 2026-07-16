@@ -1,7 +1,7 @@
 flowchart TB
 
 %% DISTILLERY CURRENT SYSTEM
-%% Status: implemented private pilot through migration 0015 as of 2026-07-15.
+%% Status: implemented private pilot through migration 0018 as of 2026-07-16.
 %% PostgreSQL is canonical. Cloudflare Queue messages are wakeups only.
 
 subgraph USER["Human user"]
@@ -9,6 +9,8 @@ subgraph USER["Human user"]
   U1["/ capture + recall<br/>text braindump or cited question"]
   U2["/synthesis<br/>memory selection, draft review, approval"]
   U3["/graph<br/>claim clusters, connection review, conflicts"]
+  U4["/briefs<br/>read-only generated briefs and citations"]
+  U5["Slack message shortcut<br/>Save to Distillery"]
 end
 
 subgraph CF["Cloudflare"]
@@ -30,6 +32,8 @@ subgraph APP["Worker application modules"]
   A8["Graph APIs<br/>clusters, claims, rebuild,<br/>review, resolve, preferences"]
   A9["Memory proposal review<br/>verifier-routed approve/reject"]
   A10["Scheduled maintenance<br/>recover, requeue, scan, route<br/>bounded batches"]
+  A11["Slack connector<br/>signature + allowlists, durable save,<br/>PDF/DOCX parsing, reaction receipt"]
+  A12["Brief reader APIs<br/>generated draft/approved projection,<br/>exact evidence and source links"]
 end
 
 subgraph MODEL["OpenRouter"]
@@ -51,16 +55,21 @@ subgraph DB["Supabase PostgreSQL via RPC"]
   D6["Derived retrieval data<br/>full-text indexes, memory_embeddings"]
   D7["Claim graph pilot<br/>observations, claims, claim_evidence,<br/>claim_connections, conflict groups,<br/>graph_nodes, graph_edges, preferences"]
   D8["Corpus synthesis projection<br/>enrichment, clusters and versions,<br/>memberships, readiness, suggested briefs,<br/>dirty neighborhoods, scan cursor"]
+  D9["Connector state<br/>connector_saves, replay receipts,<br/>source-native metadata and locators"]
 end
 
 U1 --> W
 U2 --> W
 U3 --> W
+U4 --> W
+U5 --> W
 W --> A1
 W --> A2
 W --> A3
 W --> A8
 W --> A9
+W --> A11
+W --> A12
 W --> A4
 Q --> W
 W --> Q
@@ -68,6 +77,13 @@ CRON --> A10
 A10 --> D5
 A10 --> D8
 A10 --> Q
+
+A11 --> D9
+A11 --> D1
+A11 --> D5
+A11 --> Q
+A12 --> D4
+A12 --> D1
 
 A1 --> D1
 A1 --> D5
