@@ -243,6 +243,82 @@ describe("retrieveMemoryContext", () => {
     expect(context.metadata.degraded).toBe(true);
     expect(context.metadata.reranker).toMatchObject({ used: false });
   });
+
+  it("keeps strong direct sparse claims in the bounded reranker window", async () => {
+    const claimIds = Array.from({ length: 11 }, (_, index) => `mem_${index + 1}`);
+    let rerankedCandidateIds: string[] = [];
+    const persistence: MemoryRetrievalPersistence = {
+      async getRetrievalVectorCandidates(): Promise<RetrievalCandidate[]> {
+        return claimIds.slice(0, 10).map((claimId) => ({
+          source: "vector",
+          targetType: "claim",
+          targetId: claimId,
+          claimId,
+          nodeId: `claim:${claimId}`,
+          score: 1,
+        }));
+      },
+      async getRetrievalSparseCandidates(): Promise<RetrievalCandidate[]> {
+        return [{
+          source: "sparse",
+          targetType: "claim",
+          targetId: "mem_11",
+          claimId: "mem_11",
+          nodeId: "claim:mem_11",
+          score: 1,
+        }];
+      },
+      async getRetrievalGraphSnapshot(): Promise<RetrievalGraphSnapshot> {
+        return {
+          nodes: claimIds.map((claimId) => ({
+            id: `claim:${claimId}`,
+            tenantId: "stable",
+            nodeType: "claim",
+            refId: claimId,
+            label: claimId,
+            properties: {},
+          })),
+          edges: [],
+        };
+      },
+      async hydrateRetrievalClaims(input: { rankedClaims: RankedClaimInput[] }) {
+        return {
+          claims: input.rankedClaims.map((ranked) => ({
+            claim: memoryItem(ranked.claimId, `${ranked.claimId} statement.`),
+            evidenceSpans: [evidence],
+            rank: ranked.rank,
+            graphScore: ranked.graphScore,
+            vectorScore: ranked.vectorScore,
+            lexicalScore: ranked.lexicalScore,
+            connectionIds: [],
+          })),
+          conflicts: [],
+        };
+      },
+    };
+
+    const context = await retrieveMemoryContext({
+      tenantId: "stable",
+      profile: "ask",
+      queryText: "exact phrase only mem 11 contains",
+      persistence,
+      embeddingModel: {
+        async embed() {
+          return { vectors: [[1, 0, 0]], model: "test-embedding" };
+        },
+      },
+      rerankerModel: {
+        async rerankRetrieval(input) {
+          rerankedCandidateIds = input.candidates.map((candidate) => candidate.claimId);
+          return { rankedClaimIds: rerankedCandidateIds, rationaleByClaimId: {}, model: "test-reranker" };
+        },
+      },
+    });
+
+    expect(rerankedCandidateIds).toContain("mem_11");
+    expect(context.claims.map((claim) => claim.claim.id)).toContain("mem_11");
+    expect(context.claims.find((claim) => claim.claim.id === "mem_11")?.lexicalScore).toBe(1);
+  });
 });
 
 describe("RETRIEVAL_PROFILE_CONFIG", () => {

@@ -230,14 +230,7 @@ export async function retrieveMemoryContext(input: RetrieveMemoryContextInput): 
     };
   }
 
-  const prerank = scoreByClaim
-    .sort((left, right) =>
-      right.graphScore - left.graphScore ||
-      right.vectorScore - left.vectorScore ||
-      right.lexicalScore - left.lexicalScore ||
-      left.claimId.localeCompare(right.claimId)
-    )
-    .slice(0, config.rerankCandidateClaims)
+  const prerank = selectPrerankClaims(scoreByClaim, config.rerankCandidateClaims)
     .map((claim, index) => ({ ...claim, rank: index + 1 }));
 
   let hydrated = await input.persistence.hydrateRetrievalClaims({
@@ -292,6 +285,43 @@ export async function retrieveMemoryContext(input: RetrieveMemoryContextInput): 
       returnedClaimCount: finalClaims.length,
     },
   };
+}
+
+function selectPrerankClaims(claims: RankedClaimInput[], limit: number): RankedClaimInput[] {
+  const graphRanked = [...claims].sort((left, right) =>
+    right.graphScore - left.graphScore ||
+    right.vectorScore - left.vectorScore ||
+    right.lexicalScore - left.lexicalScore ||
+    left.claimId.localeCompare(right.claimId)
+  );
+
+  // PageRank is useful for discovering related context, but a large connected
+  // neighborhood can otherwise crowd exact full-text matches out before the
+  // optional reranker sees them. Reserve a small, bounded part of the rerank
+  // window for the strongest direct sparse/explicit-seed claims.
+  const directClaimLimit = Math.min(limit, Math.max(1, Math.min(12, Math.ceil(limit * 0.3))));
+  const directClaimIds = new Set(
+    [...claims]
+      .filter((claim) => claim.lexicalScore > 0)
+      .sort((left, right) =>
+        right.lexicalScore - left.lexicalScore ||
+        right.graphScore - left.graphScore ||
+        left.claimId.localeCompare(right.claimId)
+      )
+      .slice(0, directClaimLimit)
+      .map((claim) => claim.claimId),
+  );
+
+  const selectedIds = new Set<string>();
+  for (const claim of graphRanked) {
+    if (directClaimIds.has(claim.claimId)) selectedIds.add(claim.claimId);
+  }
+  for (const claim of graphRanked) {
+    if (selectedIds.size >= limit) break;
+    selectedIds.add(claim.claimId);
+  }
+
+  return graphRanked.filter((claim) => selectedIds.has(claim.claimId)).slice(0, limit);
 }
 
 export function runPersonalizedPageRank(input: {
