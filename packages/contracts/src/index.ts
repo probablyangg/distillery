@@ -92,6 +92,7 @@ export const SUGGESTED_BRIEF_STATUSES = [
 
 export const POLICY_NAMES = [
   "ingest_slack_source",
+  "extract_slack_context",
   "sync_slack_reaction",
   "extract_memory",
   "extract_memory_section",
@@ -113,6 +114,7 @@ export const POLICY_NAMES = [
 
 export const EVENT_TYPES = [
   "slack_save_requested",
+  "slack_context_committed",
   "slack_extraction_completed",
   "slack_reaction_retry_requested",
   "source_committed",
@@ -169,6 +171,7 @@ export const ACTOR_TYPES = [
 
 export const WORK_SUBJECT_TYPES = [
   "connector_save",
+  "context_bundle",
   "source",
   "section",
   "memory",
@@ -285,8 +288,31 @@ export const GRAPH_NODE_TYPES = ["claim", "entity", "schema", "evidence", "confl
 export const SOURCE_TYPES = [
   "text_braindump",
   "slack_message",
+  "slack_channel_profile",
   "slack_file_pdf",
   "slack_file_docx",
+] as const;
+
+export const SLACK_CONTEXT_ROLES = [
+  "selected_message",
+  "thread_root",
+  "thread_reply",
+  "nearby_context",
+  "channel_profile",
+  "supported_attachment",
+  "linked_artifact",
+] as const;
+
+export const SLACK_CONVERSATION_CLASSIFICATIONS = [
+  "bug",
+  "suggestion",
+  "incident",
+  "status_update",
+  "decision",
+  "question",
+  "resolution",
+  "mixed",
+  "unknown",
 ] as const;
 
 export const CONNECTOR_SAVE_STATUSES = [
@@ -716,11 +742,15 @@ export const SlackMessageShortcutPayloadSchema = z.object({
   }).passthrough(),
   message: z.object({
     type: z.literal("message"),
-    user: SlackIdSchema,
+    user: SlackIdSchema.optional(),
+    bot_id: z.string().trim().min(1).max(80).optional(),
+    username: z.string().trim().min(1).max(255).optional(),
     ts: SlackTimestampSchema,
     thread_ts: SlackTimestampSchema.optional(),
     text: z.string().max(200_000).default(""),
     files: z.array(SlackShortcutFileSchema).max(100).optional(),
+    blocks: z.array(z.record(z.string(), z.unknown())).optional(),
+    attachments: z.array(z.record(z.string(), z.unknown())).optional(),
   }).passthrough(),
 }).passthrough();
 export type SlackMessageShortcutPayload = z.infer<typeof SlackMessageShortcutPayloadSchema>;
@@ -730,6 +760,157 @@ export type ConnectorSaveStatus = z.infer<typeof ConnectorSaveStatusSchema>;
 
 export const ConnectorReactionStatusSchema = z.enum(CONNECTOR_REACTION_STATUSES);
 export type ConnectorReactionStatus = z.infer<typeof ConnectorReactionStatusSchema>;
+
+export const SlackContextRoleSchema = z.enum(SLACK_CONTEXT_ROLES);
+export type SlackContextRole = z.infer<typeof SlackContextRoleSchema>;
+
+export const SlackConversationClassificationKindSchema = z.enum(SLACK_CONVERSATION_CLASSIFICATIONS);
+export type SlackConversationClassificationKind = z.infer<typeof SlackConversationClassificationKindSchema>;
+
+const SlackClassificationIdentityListSchema = z.array(z.string().trim().min(1).max(240)).max(20).default([]);
+
+export const SlackConversationClassificationSchema = z.object({
+  category: SlackConversationClassificationKindSchema,
+  rationale: z.string().trim().max(500).default(""),
+  identities: z.object({
+    products: SlackClassificationIdentityListSchema,
+    featureComponents: SlackClassificationIdentityListSchema,
+    externalServices: SlackClassificationIdentityListSchema,
+    issueTicketIds: SlackClassificationIdentityListSchema,
+    releaseVersions: SlackClassificationIdentityListSchema,
+    environments: SlackClassificationIdentityListSchema,
+    namedOrganizations: SlackClassificationIdentityListSchema,
+  }).strict(),
+}).strict();
+export type SlackConversationClassification = z.infer<typeof SlackConversationClassificationSchema>;
+
+export const SlackNearbyContextSelectionSchema = z.object({
+  selected: z.array(z.object({
+    messageId: SlackTimestampSchema,
+    reason: z.string().trim().min(1).max(300),
+  }).strict()).max(4),
+}).strict();
+export type SlackNearbyContextSelection = z.infer<typeof SlackNearbyContextSelectionSchema>;
+
+export const SlackChannelProfileSchema = z.object({
+  workspaceId: SlackIdSchema,
+  channelId: SlackIdSchema,
+  channelName: z.string().max(255),
+  topic: z.string().max(2_000),
+  purpose: z.string().max(2_000),
+  isPublic: z.boolean(),
+  isPrivate: z.boolean(),
+  externallyShared: z.boolean(),
+  slackConnect: z.boolean(),
+  externalTeamIds: z.array(SlackIdSchema).max(100).default([]),
+  capturedAt: IsoDateTimeStringSchema,
+}).strict();
+export type SlackChannelProfile = z.infer<typeof SlackChannelProfileSchema>;
+
+export const SlackSkippedAttachmentSchema = z.object({
+  fileId: SlackIdSchema,
+  filename: z.string().min(1).max(512),
+  mimeType: z.string().min(1).max(160),
+  size: z.number().int().min(0),
+  permalink: z.url().nullable().optional(),
+  messageTimestamp: SlackTimestampSchema,
+  reason: z.enum(["unsupported_media", "attachment_limit", "size_limit", "missing_download_url"]),
+}).strict();
+export type SlackSkippedAttachment = z.infer<typeof SlackSkippedAttachmentSchema>;
+
+export const SlackContextTruncationSchema = z.object({
+  truncated: z.boolean(),
+  messageLimitApplied: z.boolean(),
+  characterLimitApplied: z.boolean(),
+  originalMessageCount: z.number().int().min(0),
+  retainedMessageCount: z.number().int().min(0),
+  originalCharacterCount: z.number().int().min(0),
+  retainedCharacterCount: z.number().int().min(0),
+  omittedMessageTimestamps: z.array(SlackTimestampSchema).default([]),
+}).strict();
+export type SlackContextTruncation = z.infer<typeof SlackContextTruncationSchema>;
+
+export const SlackContextBundleItemInputSchema = z.object({
+  id: z.string().min(1),
+  ordinal: z.number().int().min(0),
+  role: SlackContextRoleSchema,
+  requestedSourceVersionId: z.string().min(1),
+  externalId: z.string().min(1),
+  selectionReason: z.string().max(500).nullable().optional(),
+  primary: z.boolean(),
+}).strict();
+export type SlackContextBundleItemInput = z.infer<typeof SlackContextBundleItemInputSchema>;
+
+export const SlackContextCommitInputSchema = z.object({
+  id: z.string().min(1),
+  saveId: z.string().min(1),
+  selectedMessageTimestamp: SlackTimestampSchema,
+  threadTimestamp: SlackTimestampSchema.nullable().optional(),
+  channelProfile: SlackChannelProfileSchema,
+  selectionStrategy: z.enum(["thread", "nearby", "selected_only"]),
+  selectionVersion: z.string().min(1).max(80),
+  contentHash: z.string().regex(/^[a-f0-9]{64}$/u),
+  capturedAt: IsoDateTimeStringSchema,
+  externallyShared: z.boolean(),
+  truncation: SlackContextTruncationSchema,
+  classification: SlackConversationClassificationSchema,
+  skippedAttachments: z.array(SlackSkippedAttachmentSchema).max(100).default([]),
+  sources: z.array(z.lazy(() => ConnectorSourceInputSchema)).min(2).max(60),
+  items: z.array(SlackContextBundleItemInputSchema).min(2).max(70),
+}).strict();
+export type SlackContextCommitInput = z.infer<typeof SlackContextCommitInputSchema>;
+
+export const SlackContextBundleItemSchema = z.object({
+  id: z.string().min(1),
+  ordinal: z.number().int().min(0),
+  role: SlackContextRoleSchema,
+  sourceItemId: z.string().min(1),
+  sourceVersionId: z.string().min(1),
+  externalId: z.string().min(1),
+  selectionReason: z.string().max(500).nullable().optional(),
+  primary: z.boolean(),
+  authorId: z.string().nullable().optional(),
+  authorLabel: z.string().nullable().optional(),
+  occurredAt: IsoDateTimeStringSchema,
+  permalink: z.url().nullable().optional(),
+  content: z.string().max(200_000),
+  sourceMetadata: z.record(z.string(), z.unknown()).default({}),
+  evidenceSpans: z.array(EvidenceSpanSchema).default([]),
+}).strict();
+export type SlackContextBundleItem = z.infer<typeof SlackContextBundleItemSchema>;
+
+export const SlackContextBundleSchema = z.object({
+  id: z.string().min(1),
+  connectorSaveId: z.string().min(1),
+  previousBundleId: z.string().nullable().optional(),
+  version: z.number().int().min(1),
+  tenantId: z.string().min(1),
+  workspaceId: SlackIdSchema,
+  channelId: SlackIdSchema,
+  selectedMessageTimestamp: SlackTimestampSchema,
+  threadTimestamp: SlackTimestampSchema.nullable().optional(),
+  channelProfile: SlackChannelProfileSchema,
+  selectionStrategy: z.enum(["thread", "nearby", "selected_only"]),
+  selectionVersion: z.string().min(1).max(80),
+  contentHash: z.string().regex(/^[a-f0-9]{64}$/u),
+  capturedAt: IsoDateTimeStringSchema,
+  externallyShared: z.boolean(),
+  truncation: SlackContextTruncationSchema,
+  classification: SlackConversationClassificationSchema,
+  skippedAttachments: z.array(SlackSkippedAttachmentSchema).default([]),
+  selectedIngestionId: z.string().min(1),
+  selectedSourceVersionId: z.string().min(1),
+  items: z.array(SlackContextBundleItemSchema).min(2),
+  createdAt: IsoDateTimeStringSchema,
+}).strict();
+export type SlackContextBundle = z.infer<typeof SlackContextBundleSchema>;
+
+export const SlackContextBundleCommitResultSchema = z.object({
+  bundle: SlackContextBundleSchema,
+  created: z.boolean(),
+  changed: z.boolean(),
+}).strict();
+export type SlackContextBundleCommitResult = z.infer<typeof SlackContextBundleCommitResultSchema>;
 
 export const SlackConnectorSaveSchema = z.object({
   id: z.string().min(1),
@@ -746,6 +927,8 @@ export const SlackConnectorSaveSchema = z.object({
   workItemId: z.string().nullable().optional(),
   messageSourceId: z.string().nullable().optional(),
   attachmentSourceIds: z.array(z.string().min(1)).default([]),
+  currentContextBundleId: z.string().nullable().optional(),
+  contextVersion: z.number().int().min(0).optional(),
   reactionStatus: ConnectorReactionStatusSchema,
   retryCount: z.number().int().min(0),
   reactionRetryCount: z.number().int().min(0),
