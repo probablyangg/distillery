@@ -78,11 +78,11 @@ describe("policy contracts", () => {
     expect(PolicyNameSchema.parse("synthesize_brief")).toBe("synthesize_brief");
   });
 
-  it("keeps manual draft expansion disabled by default", () => {
+  it("uses corpus expansion by default for manual drafts", () => {
     const parsed = InitiativeBriefDraftInputSchema.parse({
       memoryItemIds: ["mem_1"],
     });
 
-    expect(parsed.expandRelatedMemory).toBe(false);
+    expect(parsed.expandRelatedMemory).toBe(true);
   });
 });

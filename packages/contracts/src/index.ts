@@ -61,12 +61,45 @@ export const INITIATIVE_BRIEF_DECISIONS = [
   "reject",
 ] as const;
 
+export const SYNTHESIS_CLUSTER_RESOLUTIONS = [
+  "narrow_decision",
+  "initiative",
+  "strategic_theme",
+] as const;
+
+export const SYNTHESIS_ENRICHMENT_FACETS = [
+  "connections",
+  "contradictions",
+  "embeddings",
+  "graph",
+] as const;
+
+export const SYNTHESIS_READINESS_STATES = [
+  "pending_enrichment",
+  "not_ready",
+  "ready",
+  "draft_generated",
+  "superseded",
+  "failed",
+] as const;
+
+export const SUGGESTED_BRIEF_STATUSES = [
+  "suggested",
+  "approved",
+  "rejected",
+  "superseded",
+] as const;
+
 export const POLICY_NAMES = [
   "extract_memory",
   "connect_memory",
   "discover_candidate",
   "check_freshness",
   "detect_contradiction",
+  "update_embeddings",
+  "update_graph",
+  "recompute_cluster",
+  "evaluate_synthesis_readiness",
   "synthesize_brief",
   "rank_candidate",
   "draft_artifact",
@@ -78,6 +111,15 @@ export const EVENT_TYPES = [
   "source_committed",
   "memory_committed",
   "memory_connected",
+  "connections_updated",
+  "contradictions_updated",
+  "embeddings_updated",
+  "graph_updated",
+  "memory_review_changed",
+  "synthesis_neighborhood_dirty",
+  "cluster_changed",
+  "cluster_readiness_changed",
+  "synthesis_ready",
   "memory_confirmed",
   "memory_edited",
   "memory_removed",
@@ -101,6 +143,9 @@ export const PROPOSED_EVENT_TYPES = [
   "artifact_draft_proposed",
   "freshness_warning_proposed",
   "contradiction_proposed",
+  "enrichment_update_proposed",
+  "cluster_projection_proposed",
+  "readiness_evaluation_proposed",
   "decision_record_proposed",
 ] as const;
 
@@ -119,6 +164,7 @@ export const WORK_SUBJECT_TYPES = [
   "artifact",
   "decision",
   "system",
+  "cluster",
 ] as const;
 
 export const WORK_STATUSES = [
@@ -273,6 +319,18 @@ export type InitiativeBriefStatus = z.infer<typeof InitiativeBriefStatusSchema>;
 
 export const InitiativeBriefDecisionSchema = z.enum(INITIATIVE_BRIEF_DECISIONS);
 export type InitiativeBriefDecision = z.infer<typeof InitiativeBriefDecisionSchema>;
+
+export const SynthesisClusterResolutionSchema = z.enum(SYNTHESIS_CLUSTER_RESOLUTIONS);
+export type SynthesisClusterResolution = z.infer<typeof SynthesisClusterResolutionSchema>;
+
+export const SynthesisEnrichmentFacetSchema = z.enum(SYNTHESIS_ENRICHMENT_FACETS);
+export type SynthesisEnrichmentFacet = z.infer<typeof SynthesisEnrichmentFacetSchema>;
+
+export const SynthesisReadinessStateSchema = z.enum(SYNTHESIS_READINESS_STATES);
+export type SynthesisReadinessState = z.infer<typeof SynthesisReadinessStateSchema>;
+
+export const SuggestedBriefStatusSchema = z.enum(SUGGESTED_BRIEF_STATUSES);
+export type SuggestedBriefStatus = z.infer<typeof SuggestedBriefStatusSchema>;
 
 export const PolicyNameSchema = z.enum(POLICY_NAMES);
 export type PolicyName = z.infer<typeof PolicyNameSchema>;
@@ -764,6 +822,129 @@ export const GraphClusterSchema = z.object({
 });
 export type GraphCluster = z.infer<typeof GraphClusterSchema>;
 
+export const SynthesisClusterMembershipSchema = z.object({
+  memoryItemId: z.string().min(1),
+  score: z.number().min(0).max(1),
+  reasons: z.array(z.string().min(1)).min(1),
+  role: z.enum(["core", "supporting", "context"]).default("supporting"),
+});
+export type SynthesisClusterMembership = z.infer<typeof SynthesisClusterMembershipSchema>;
+
+export const SynthesisEnrichmentStateSchema = z.object({
+  memoryItemId: z.string().min(1),
+  inputVersion: z.string().min(1),
+  completedFacets: z.array(SynthesisEnrichmentFacetSchema).default([]),
+  failedFacets: z.array(SynthesisEnrichmentFacetSchema).default([]),
+  updatedAt: IsoDateTimeStringSchema,
+});
+export type SynthesisEnrichmentState = z.infer<typeof SynthesisEnrichmentStateSchema>;
+
+export const SynthesisSimilaritySignalSchema = z.object({
+  fromMemoryItemId: z.string().min(1),
+  toMemoryItemId: z.string().min(1),
+  vectorScore: z.number().min(0).max(1).default(0),
+  sparseScore: z.number().min(0).max(1).default(0),
+  reasons: z.array(z.string().min(1)).min(1),
+});
+export type SynthesisSimilaritySignal = z.infer<typeof SynthesisSimilaritySignalSchema>;
+
+export const SynthesisOpportunityBreakdownSchema = z.object({
+  cohesion: z.number().min(0).max(1),
+  evidenceBreadth: z.number().min(0).max(1),
+  evidenceQuality: z.number().min(0).max(1),
+  sourceDiversity: z.number().min(0).max(1),
+  actionability: z.number().min(0).max(1),
+  strategicImportance: z.number().min(0).max(1),
+  recentMomentum: z.number().min(0).max(1),
+  urgency: z.number().min(0).max(1),
+  novelty: z.number().min(0).max(1),
+  completeness: z.number().min(0).max(1),
+  contradictionPenalty: z.number().min(0).max(1),
+  duplicationPenalty: z.number().min(0).max(1),
+  stalenessPenalty: z.number().min(0).max(1),
+  existingBriefPenalty: z.number().min(0).max(1),
+});
+export type SynthesisOpportunityBreakdown = z.infer<typeof SynthesisOpportunityBreakdownSchema>;
+
+export const SynthesisReadinessEvaluationSchema = z.object({
+  id: z.string().min(1),
+  clusterId: z.string().min(1),
+  clusterVersion: z.string().min(1),
+  generationIntent: z.string().min(1).default("initiative_brief"),
+  state: SynthesisReadinessStateSchema,
+  score: z.number().min(0).max(100),
+  breakdown: SynthesisOpportunityBreakdownSchema,
+  reasons: z.array(z.string()).default([]),
+  warnings: z.array(z.string()).default([]),
+  missingInformation: z.array(z.string()).default([]),
+  evaluatedAt: IsoDateTimeStringSchema,
+});
+export type SynthesisReadinessEvaluation = z.infer<typeof SynthesisReadinessEvaluationSchema>;
+
+export const SynthesisClusterSchema = z.object({
+  id: z.string().min(1),
+  tenantId: z.string().min(1),
+  resolution: SynthesisClusterResolutionSchema,
+  meaningKey: z.string().min(1),
+  label: z.string().min(1),
+  version: z.string().min(1),
+  membershipHash: z.string().min(1),
+  memberships: z.array(SynthesisClusterMembershipSchema).min(2),
+  coreEntities: z.array(z.string()).default([]),
+  coreTopics: z.array(z.string()).default([]),
+  evidenceSpanIds: z.array(z.string().min(1)).default([]),
+  sourceVersionIds: z.array(z.string().min(1)).default([]),
+  contradictionIds: z.array(z.string().min(1)).default([]),
+  lastMeaningfulChangeAt: IsoDateTimeStringSchema,
+  readiness: SynthesisReadinessEvaluationSchema.optional(),
+});
+export type SynthesisCluster = z.infer<typeof SynthesisClusterSchema>;
+
+export const SynthesisClusterDossierSchema = z.object({
+  clusterId: z.string().min(1),
+  clusterVersion: z.string().min(1),
+  resolution: SynthesisClusterResolutionSchema,
+  label: z.string().min(1),
+  selectedMemory: z.array(MemoryWithEvidenceSchema).min(1),
+  selectedEvidenceSpans: z.array(EvidenceSpanSchema).min(1),
+  entities: z.array(z.string()).default([]),
+  topics: z.array(z.string()).default([]),
+  relationships: z.array(ClaimConnectionSchema).default([]),
+  dependencies: z.array(z.string()).default([]),
+  contradictions: z.array(ConflictGroupSchema).default([]),
+  decisions: z.array(z.record(z.string(), z.unknown())).default([]),
+  risks: z.array(z.string()).default([]),
+  temporalSignals: z.array(z.string()).default([]),
+  membershipReasons: z.record(z.string(), z.array(z.string())).default({}),
+  excludedMemoryItemIds: z.array(z.string()).default([]),
+  missingInformation: z.array(z.string()).default([]),
+  retrievalMetadata: z.record(z.string(), z.unknown()).default({}),
+});
+export type SynthesisClusterDossier = z.infer<typeof SynthesisClusterDossierSchema>;
+
+export const SuggestedBriefSchema = z.object({
+  id: z.string().min(1),
+  initiativeBriefId: z.string().min(1),
+  tenantId: z.string().min(1),
+  clusterId: z.string().min(1),
+  clusterVersion: z.string().min(1),
+  generationIntent: z.string().min(1),
+  version: z.number().int().min(1),
+  status: SuggestedBriefStatusSchema,
+  draft: z.lazy(() => InitiativeBriefDraftSchema),
+  origin: z.enum(["generated", "human_edit"]).default("generated"),
+  previousVersion: z.object({
+    version: z.number().int().min(1),
+    draft: z.lazy(() => InitiativeBriefDraftSchema),
+  }).optional(),
+  contradictions: z.array(z.string()).default([]),
+  uncertainties: z.array(z.string()).default([]),
+  modelMetadata: z.record(z.string(), z.unknown()).default({}),
+  createdAt: IsoDateTimeStringSchema,
+  updatedAt: IsoDateTimeStringSchema,
+});
+export type SuggestedBrief = z.infer<typeof SuggestedBriefSchema>;
+
 export const GraphRecallContextSchema = z.object({
   question: z.string().min(1),
   claims: z.array(GraphRetrievalClaimSchema),
@@ -849,10 +1030,19 @@ export const CreateInitiativeBriefInputSchema = z.object({
 });
 export type CreateInitiativeBriefInput = z.infer<typeof CreateInitiativeBriefInputSchema>;
 
+export const UpdateInitiativeBriefInputSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  problem: z.string().trim().min(1).max(4_000),
+  proposal: z.string().trim().min(1).max(4_000),
+  successMetric: z.string().trim().min(1).max(2_000),
+  risksAndDependencies: z.string().trim().max(3_000).optional(),
+});
+export type UpdateInitiativeBriefInput = z.infer<typeof UpdateInitiativeBriefInputSchema>;
+
 export const InitiativeBriefDraftInputSchema = z.object({
-  memoryItemIds: z.array(z.string().min(1)).min(1).max(8),
+  memoryItemIds: z.array(z.string().min(1)).min(1).max(20),
   intent: z.string().trim().max(1_000).optional(),
-  expandRelatedMemory: z.boolean().default(false),
+  expandRelatedMemory: z.boolean().default(true),
 }).superRefine((value, context) => {
   const seen = new Set<string>();
   for (const [index, memoryItemId] of value.memoryItemIds.entries()) {
@@ -872,8 +1062,10 @@ export const InitiativeBriefDraftSchema = z.object({
   title: z.string().trim().min(1).max(200),
   problem: z.string().trim().min(1).max(4_000),
   proposal: z.string().trim().min(1).max(4_000),
+  scope: z.string().trim().max(3_000).optional(),
   successMetric: z.string().trim().min(1).max(2_000),
   risksAndDependencies: z.string().trim().max(3_000).optional(),
+  contradictionsOrUncertainties: z.array(z.string().trim().min(1).max(1_000)).optional(),
   memoryItemIds: z.array(z.string().min(1)).min(1).max(50),
   evidenceSpanIds: z.array(z.string().min(1)).min(1),
 }).superRefine((value, context) => {
