@@ -91,6 +91,8 @@ export const SUGGESTED_BRIEF_STATUSES = [
 ] as const;
 
 export const POLICY_NAMES = [
+  "ingest_slack_source",
+  "sync_slack_reaction",
   "extract_memory",
   "extract_memory_section",
   "consolidate_memory",
@@ -110,6 +112,9 @@ export const POLICY_NAMES = [
 ] as const;
 
 export const EVENT_TYPES = [
+  "slack_save_requested",
+  "slack_extraction_completed",
+  "slack_reaction_retry_requested",
   "source_committed",
   "memory_section_ready",
   "memory_section_completed",
@@ -163,6 +168,7 @@ export const ACTOR_TYPES = [
 ] as const;
 
 export const WORK_SUBJECT_TYPES = [
+  "connector_save",
   "source",
   "section",
   "memory",
@@ -275,6 +281,26 @@ export const CONFLICT_TYPES = [
 export const CONFLICT_SEVERITIES = ["blocking", "warning"] as const;
 export const CONFLICT_STATUSES = ["open", "resolved", "dismissed"] as const;
 export const GRAPH_NODE_TYPES = ["claim", "entity", "schema", "evidence", "conflict"] as const;
+
+export const SOURCE_TYPES = [
+  "text_braindump",
+  "slack_message",
+  "slack_file_pdf",
+  "slack_file_docx",
+] as const;
+
+export const CONNECTOR_SAVE_STATUSES = [
+  "pending",
+  "processing",
+  "completed",
+  "failed",
+] as const;
+
+export const CONNECTOR_REACTION_STATUSES = [
+  "pending",
+  "added",
+  "failed",
+] as const;
 
 export const CaptureModeSchema = z.enum(["remember", "ask"]);
 export type CaptureMode = z.infer<typeof CaptureModeSchema>;
@@ -621,6 +647,21 @@ export const RecallQueryInputSchema = z.object({
 });
 export type RecallQueryInput = z.infer<typeof RecallQueryInputSchema>;
 
+export const SourceTypeSchema = z.enum(SOURCE_TYPES);
+export type SourceType = z.infer<typeof SourceTypeSchema>;
+
+export const EvidenceLocatorSchema = z.object({
+  provider: z.string().trim().min(1).max(80).optional(),
+  messageTimestamp: z.string().trim().min(1).max(40).optional(),
+  permalink: z.url().optional(),
+  pageNumber: z.number().int().min(1).optional(),
+  paragraphNumber: z.number().int().min(1).optional(),
+  blockNumber: z.number().int().min(1).optional(),
+  startChar: z.number().int().min(0).optional(),
+  endChar: z.number().int().min(0).optional(),
+}).catchall(z.unknown());
+export type EvidenceLocator = z.infer<typeof EvidenceLocatorSchema>;
+
 export const EvidenceSpanSchema = z.object({
   id: z.string().min(1),
   sourceVersionId: z.string().min(1),
@@ -629,8 +670,119 @@ export const EvidenceSpanSchema = z.object({
   startChar: z.number().int().min(0),
   endChar: z.number().int().min(0),
   text: z.string(),
+  locator: EvidenceLocatorSchema.optional(),
 });
 export type EvidenceSpan = z.infer<typeof EvidenceSpanSchema>;
+
+const SlackIdSchema = z.string().trim().regex(/^[A-Z][A-Z0-9]{7,20}$/u);
+const SlackTimestampSchema = z.string().trim().regex(/^\d{10,16}\.\d{6}$/u);
+
+export const SlackShortcutFileSchema = z.object({
+  id: SlackIdSchema,
+  name: z.string().trim().min(1).max(512).optional(),
+  title: z.string().trim().min(1).max(512).optional(),
+  mimetype: z.string().trim().min(1).max(160).optional(),
+  filetype: z.string().trim().min(1).max(80).optional(),
+  size: z.number().int().min(0).optional(),
+  permalink: z.url().optional(),
+  url_private: z.url().optional(),
+  url_private_download: z.url().optional(),
+  mode: z.string().trim().max(80).optional(),
+  is_external: z.boolean().optional(),
+}).passthrough();
+export type SlackShortcutFile = z.infer<typeof SlackShortcutFileSchema>;
+
+export const SlackMessageShortcutPayloadSchema = z.object({
+  type: z.literal("message_action"),
+  callback_id: z.literal("save_to_distillery"),
+  action_ts: SlackTimestampSchema.optional(),
+  trigger_id: z.string().trim().min(1).max(255),
+  response_url: z.url().refine((value) => new URL(value).hostname === "hooks.slack.com", {
+    message: "Slack response URL must use hooks.slack.com.",
+  }).optional(),
+  team: z.object({
+    id: SlackIdSchema,
+    domain: z.string().trim().min(1).max(255).optional(),
+  }).passthrough(),
+  channel: z.object({
+    id: SlackIdSchema,
+    name: z.string().trim().min(1).max(255).optional(),
+  }).passthrough(),
+  user: z.object({
+    id: SlackIdSchema,
+    username: z.string().trim().min(1).max(255).optional(),
+    name: z.string().trim().min(1).max(255).optional(),
+    team_id: SlackIdSchema.optional(),
+  }).passthrough(),
+  message: z.object({
+    type: z.literal("message"),
+    user: SlackIdSchema,
+    ts: SlackTimestampSchema,
+    thread_ts: SlackTimestampSchema.optional(),
+    text: z.string().max(200_000).default(""),
+    files: z.array(SlackShortcutFileSchema).max(100).optional(),
+  }).passthrough(),
+}).passthrough();
+export type SlackMessageShortcutPayload = z.infer<typeof SlackMessageShortcutPayloadSchema>;
+
+export const ConnectorSaveStatusSchema = z.enum(CONNECTOR_SAVE_STATUSES);
+export type ConnectorSaveStatus = z.infer<typeof ConnectorSaveStatusSchema>;
+
+export const ConnectorReactionStatusSchema = z.enum(CONNECTOR_REACTION_STATUSES);
+export type ConnectorReactionStatus = z.infer<typeof ConnectorReactionStatusSchema>;
+
+export const SlackConnectorSaveSchema = z.object({
+  id: z.string().min(1),
+  tenantId: z.string().min(1),
+  provider: z.literal("slack"),
+  workspaceId: SlackIdSchema,
+  channelId: SlackIdSchema,
+  messageTimestamp: SlackTimestampSchema,
+  threadTimestamp: SlackTimestampSchema.nullable().optional(),
+  invokingUserId: SlackIdSchema,
+  responseUrl: z.url().nullable().optional(),
+  externalSourceId: z.string().min(1),
+  status: ConnectorSaveStatusSchema,
+  workItemId: z.string().nullable().optional(),
+  messageSourceId: z.string().nullable().optional(),
+  attachmentSourceIds: z.array(z.string().min(1)).default([]),
+  reactionStatus: ConnectorReactionStatusSchema,
+  retryCount: z.number().int().min(0),
+  reactionRetryCount: z.number().int().min(0),
+  lastError: z.string().nullable().optional(),
+  createdAt: IsoDateTimeStringSchema,
+  updatedAt: IsoDateTimeStringSchema,
+  completedAt: IsoDateTimeStringSchema.nullable().optional(),
+}).strict();
+export type SlackConnectorSave = z.infer<typeof SlackConnectorSaveSchema>;
+
+export const SlackSaveRegistrationResultSchema = z.object({
+  save: SlackConnectorSaveSchema,
+  workItemId: z.string().nullable().optional(),
+  created: z.boolean(),
+  replayed: z.boolean(),
+}).strict();
+export type SlackSaveRegistrationResult = z.infer<typeof SlackSaveRegistrationResultSchema>;
+
+export const ConnectorSourceInputSchema = z.object({
+  sourceItemId: z.string().min(1),
+  sourceVersionId: z.string().min(1),
+  ingestionId: z.string().min(1),
+  sourceType: SourceTypeSchema,
+  provider: z.literal("slack"),
+  externalId: z.string().min(1),
+  canonicalUrl: z.url(),
+  authorId: z.string().min(1).nullable().optional(),
+  authorLabel: z.string().min(1).max(255).nullable().optional(),
+  occurredAt: IsoDateTimeStringSchema,
+  mimeType: z.string().min(1).max(160),
+  originalFilename: z.string().min(1).max(512).nullable().optional(),
+  content: z.string().max(200_000),
+  contentHash: z.string().regex(/^[a-f0-9]{64}$/u),
+  sourceMetadata: z.record(z.string(), z.unknown()),
+  evidenceSpans: z.array(EvidenceSpanSchema),
+}).strict();
+export type ConnectorSourceInput = z.infer<typeof ConnectorSourceInputSchema>;
 
 export const MemorySectionPlanItemSchema = z.object({
   temporaryId: z.string().trim().min(1).max(80),
@@ -1203,3 +1355,37 @@ export const InitiativeBriefSchema = z.object({
   decisions: z.array(InitiativeBriefDecisionRecordSchema).default([]),
 });
 export type InitiativeBrief = z.infer<typeof InitiativeBriefSchema>;
+
+export const LeadershipBriefCitationSchema = z.object({
+  evidenceSpanId: z.string().min(1),
+  sourceVersionId: z.string().min(1),
+  sourceType: SourceTypeSchema,
+  authorOrTitle: z.string().min(1),
+  occurredAt: IsoDateTimeStringSchema,
+  exactText: z.string(),
+  locator: EvidenceLocatorSchema.default({}),
+  originalUrl: z.url().nullable().optional(),
+}).strict();
+export type LeadershipBriefCitation = z.infer<typeof LeadershipBriefCitationSchema>;
+
+export const LeadershipBriefSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  summary: z.string().min(1),
+  whyGenerated: z.string().min(1),
+  status: z.enum(["draft", "approved"]),
+  supportingSourceCount: z.number().int().min(0),
+  createdAt: IsoDateTimeStringSchema,
+  updatedAt: IsoDateTimeStringSchema,
+  executiveSummary: z.string().min(1),
+  whatIsHappening: z.string().min(1),
+  decisionsAndCommitments: z.string().min(1),
+  risks: z.array(z.string()).default([]),
+  dependencies: z.array(z.string()).default([]),
+  openQuestions: z.array(z.string()).default([]),
+  conflictingEvidence: z.array(z.string()).default([]),
+  citations: z.array(LeadershipBriefCitationSchema).default([]),
+  memoryItemIds: z.array(z.string().min(1)).default([]),
+  evidenceSpanIds: z.array(z.string().min(1)).default([]),
+}).strict();
+export type LeadershipBrief = z.infer<typeof LeadershipBriefSchema>;
