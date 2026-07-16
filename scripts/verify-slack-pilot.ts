@@ -16,7 +16,6 @@ const REQUIRED_SCOPES = [
 async function main(): Promise<void> {
   const botToken = requiredEnv("SLACK_BOT_TOKEN");
   const allowedTeamId = requiredEnv("SLACK_ALLOWED_TEAM_ID");
-  const channelIds = csvEnv("SLACK_ALLOWED_CHANNEL_IDS");
   const userIds = csvEnv("SLACK_ALLOWED_USER_IDS");
   const reaction = envValue("SLACK_SAVED_REACTION") || "factory";
   const processingReaction = envValue("SLACK_PROCESSING_REACTION") || "hourglass_flowing_sand";
@@ -44,20 +43,6 @@ async function main(): Promise<void> {
     throw new Error(`Slack token belongs to workspace ${identity.teamId}, not allowlisted workspace ${allowedTeamId}.`);
   }
   console.log(`workspace=ok (${identity.teamName ?? identity.teamId})`);
-
-  for (const channelId of channelIds) {
-    const channel = await slack.getConversation(channelId);
-    if (channel.is_im || channel.is_mpim) {
-      throw new Error(`Allowlisted channel ${channelId} is a direct-message conversation.`);
-    }
-    if (channel.is_ext_shared || channel.is_ext_ws_shared || channel.is_pending_ext_shared) {
-      throw new Error(`Allowlisted channel ${channelId} is Slack Connect or externally shared.`);
-    }
-    if (channel.is_member !== true) {
-      throw new Error(`Distillery bot is not a member of allowlisted channel ${channelId}.`);
-    }
-    console.log(`channel=ok (${channel.name ?? channel.id})`);
-  }
 
   for (const userId of userIds) {
     const label = await slack.getUserLabel(userId);

@@ -27,8 +27,17 @@ async function main(): Promise<void> {
   if (!Array.isArray(briefs) || !Array.isArray(connectorWork) || extractionComplete !== false || !Array.isArray(reactionWork)) {
     throw new Error("Pilot schema verification returned an unexpected response shape.");
   }
+  let contextRpcVisible = false;
+  try {
+    await rpc.rpc("distillery_get_slack_context_bundle", { p_bundle_id: "sctx_schema_probe_not_found" });
+  } catch (error) {
+    contextRpcVisible = error instanceof Error && error.message.includes("Slack context bundle not found");
+  }
+  if (!contextRpcVisible) throw new Error("Migration 0020 context RPC is not visible through PostgREST.");
   console.log("migration_0018=ok");
   console.log("migration_0019=ok");
+  console.log("migration_0020=ok");
+  console.log("migration_0021=verify_with_preflight");
   console.log(`generated_brief_projection=ok (sample_count=${briefs.length})`);
   console.log(`connector_recovery_projection=ok (sample_count=${connectorWork.length})`);
 }

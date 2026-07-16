@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { SupabaseLoopPersistence, SupabaseRpcClient } from "@distillery/db";
 import { createPolicies, executeWorkItem, routeCommittedEvents } from "@distillery/loop";
 import { ingestSlackSource, SlackWebClient, syncSlackReaction } from "@distillery/slack-connector";
+import { OpenRouterSlackContextModel } from "@distillery/model-gateway";
 
 const workItemId = requiredFlag("--work-item");
 const fallbackSaveId = flagValue("--save-id");
@@ -29,6 +30,11 @@ const persistence = new SupabaseLoopPersistence(new SupabaseRpcClient({
 const slack = new SlackWebClient(slackBotToken);
 const reaction = requiredEnv("SLACK_SAVED_REACTION");
 const processingReaction = process.env.SLACK_PROCESSING_REACTION?.trim() || "hourglass_flowing_sand";
+const contextModel = new OpenRouterSlackContextModel({
+  apiKey: requiredEnv("OPENROUTER_API_KEY"),
+  baseUrl: requiredEnv("OPENROUTER_BASE_URL"),
+  model: process.env.SLACK_CONTEXT_MODEL?.trim() || requiredEnv("OPENROUTER_MODEL"),
+});
 const policies = createPolicies({
   persistence,
   memoryModel: {} as never,
@@ -37,6 +43,10 @@ const policies = createPolicies({
       saveId,
       persistence,
       slack,
+      contextModel,
+      allowedExternalChannelIds: new Set(
+        (process.env.SLACK_ALLOWED_EXTERNAL_CHANNEL_IDS ?? "").split(",").map((value) => value.trim()).filter(Boolean),
+      ),
       reaction,
       processingReaction,
       queue,
@@ -55,26 +65,7 @@ const policies = createPolicies({
 const executed = await executeWorkItem({ persistence, policies, workItemId });
 const saveId = executed?.workItem.subjectId ?? fallbackSaveId;
 if (!saveId) throw new Error("Canonical work item was unavailable; pass --save-id to route its committed sources.");
-const save = await persistence.getSlackConnectorSave(saveId);
-const sourceItemIds = [save.messageSourceId, ...save.attachmentSourceIds].filter((id): id is string => Boolean(id));
-for (const sourceItemId of sourceItemIds) {
-  const url = new URL(`${supabaseUrl.replace(/\/$/u, "")}/rest/v1/source_versions`);
-  url.searchParams.set("select", "id");
-  url.searchParams.set("source_item_id", `eq.${sourceItemId}`);
-  url.searchParams.set("order", "version.desc");
-  url.searchParams.set("limit", "1");
-  const response = await fetch(url, {
-    headers: {
-      apikey: supabaseSecretKey,
-      Authorization: `Bearer ${supabaseSecretKey}`,
-    },
-  });
-  if (!response.ok) throw new Error(`Source-version lookup failed with ${response.status}.`);
-  const rows = await response.json() as Array<{ id: string }>;
-  const sourceVersionId = rows[0]?.id;
-  if (!sourceVersionId) throw new Error(`No source version exists for ${sourceItemId}.`);
-  await routeCommittedEvents({ persistence, queue, maxRows: 1, preferredSubjectId: sourceVersionId });
-}
+await routeCommittedEvents({ persistence, queue, maxRows: 4 });
 
 console.log(`work_item=completed (${workItemId})`);
 console.log(`follow_up_work_items=canonical (${followUpWorkItemIds.length})`);

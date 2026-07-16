@@ -48,7 +48,7 @@ async function main(): Promise<void> {
     throw new Error(`Deployed Slack endpoint returned ${response.status}: ${responseBody.slice(0, 300)}`);
   }
   console.log(`endpoint=ok (${response.status})`);
-  console.log(`external_source=slack:${workspaceId}:${channelId}:${messageTimestamp}`);
+  console.log(`external_source=slack_message:${workspaceId}:${channelId}:${messageTimestamp}`);
   console.log("synthetic_request=accepted");
   console.log("Check PostgreSQL canonical state and the Slack reaction before calling the worker path verified.");
 }

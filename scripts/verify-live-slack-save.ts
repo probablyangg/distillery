@@ -5,120 +5,146 @@ const env = readLocalEnv();
 const databaseUrl = env.DATABASE_DIRECT_URL ?? process.env.DATABASE_DIRECT_URL?.trim();
 if (!databaseUrl) throw new Error("Missing DATABASE_DIRECT_URL.");
 
-const teamId = requiredFlag("--team");
+const teamId = flagValue("--team");
 const channelId = requiredFlag("--channel");
-const messageTimestamp = requiredFlag("--message-ts");
-const expectedAttachments = Number(flagValue("--expected-attachments") ?? "0");
-const expectedPdfSources = Number(flagValue("--expected-pdf-sources") ?? "0");
-const expectedDocxSources = Number(flagValue("--expected-docx-sources") ?? "0");
+const messageTimestamp = flagValue("--message-ts");
+const useLatest = process.argv.includes("--latest");
+const minimumMessages = integerFlag("--minimum-messages", 1);
+const expectedSupportedAttachments = integerFlag("--expected-supported-attachments", 0);
+const expectedSkippedAttachments = integerFlag("--expected-skipped-attachments", 0);
+const expectedContextVersion = integerFlag("--expected-context-version", 1);
+const expectExternal = process.argv.includes("--expect-external");
 
-if (!/^T[A-Z0-9]+$/u.test(teamId)) throw new Error("--team must be a Slack team ID.");
+if (teamId && !/^T[A-Z0-9]+$/u.test(teamId)) throw new Error("--team must be a Slack team ID.");
 if (!/^[CG][A-Z0-9]+$/u.test(channelId)) throw new Error("--channel must be a Slack channel ID.");
-if (!/^\d+\.\d+$/u.test(messageTimestamp)) throw new Error("--message-ts must be a Slack timestamp.");
-if (!Number.isSafeInteger(expectedAttachments) || expectedAttachments < 0) {
-  throw new Error("--expected-attachments must be a non-negative integer.");
-}
-if (!Number.isSafeInteger(expectedPdfSources) || expectedPdfSources < 0) {
-  throw new Error("--expected-pdf-sources must be a non-negative integer.");
-}
-if (!Number.isSafeInteger(expectedDocxSources) || expectedDocxSources < 0) {
-  throw new Error("--expected-docx-sources must be a non-negative integer.");
-}
-if (expectedPdfSources + expectedDocxSources !== expectedAttachments) {
-  throw new Error("Expected PDF and DOCX source counts must add up to --expected-attachments.");
-}
+if (!messageTimestamp && !useLatest) throw new Error("Provide --message-ts or --latest.");
+if (messageTimestamp && !/^\d+\.\d+$/u.test(messageTimestamp)) throw new Error("--message-ts must be a Slack timestamp.");
 
-const externalSourceId = `slack:${teamId}:${channelId}:${messageTimestamp}`;
 const sql = `
 with target_save as (
   select * from connector_saves
-  where tenant_id = 'stable'
-    and provider = 'slack'
-    and external_source_id = '${externalSourceId}'
-), source_ids as (
-  select message_source_id as id from target_save where message_source_id is not null
-  union all
-  select value as id
-  from target_save cross join lateral jsonb_array_elements_text(attachment_source_ids)
-), version_ids as (
-  select sv.id
-  from source_versions sv join source_ids si on si.id = sv.source_item_id
+  where tenant_id = 'stable' and provider = 'slack'
+    ${teamId ? `and workspace_id = '${teamId}'` : ""}
+    and channel_id = '${channelId}'
+    ${messageTimestamp ? `and message_timestamp = '${messageTimestamp}'` : ""}
+  order by updated_at desc
+  limit 1
+), target_bundle as (
+  select bundle.* from slack_context_bundles bundle
+  join target_save save on save.current_context_bundle_id = bundle.id
+), bundle_items as (
+  select item.*, source.source_type, source.external_id, version.source_metadata
+  from slack_context_bundle_items item
+  join target_bundle bundle on bundle.id = item.bundle_id
+  join source_items source on source.id = item.source_item_id
+  join source_versions version on version.id = item.source_version_id
+), bundle_versions as (
+  select distinct source_version_id as id from bundle_items
+), bundle_spans as (
+  select span.* from evidence_spans span join bundle_versions version on version.id = span.source_version_id
 )
 select jsonb_build_object(
   'saveCount', (select count(*) from target_save),
   'saveId', (select id from target_save limit 1),
+  'messageTimestamp', (select message_timestamp from target_save limit 1),
+  'createdAt', (select created_at from target_save limit 1),
+  'updatedAt', (select updated_at from target_save limit 1),
   'workItemId', (select work_item_id from target_save limit 1),
   'status', (select status from target_save limit 1),
+  'lastError', (select last_error from target_save limit 1),
   'reactionStatus', (select reaction_status from target_save limit 1),
-  'retryCount', (select retry_count from target_save limit 1),
-  'reactionRetryCount', (select reaction_retry_count from target_save limit 1),
-  'sourceCount', (select count(*) from source_items s join source_ids si on si.id = s.id),
-  'pdfSourceCount', (
-    select count(*) from source_items s join source_ids si on si.id = s.id
-    where s.source_type = 'slack_file_pdf'
+  'contextVersion', (select context_version from target_save limit 1),
+  'bundleId', (select id from target_bundle limit 1),
+  'previousBundleId', (select previous_bundle_id from target_bundle limit 1),
+  'externallyShared', (select externally_shared from target_bundle limit 1),
+  'selectionStrategy', (select selection_strategy from target_bundle limit 1),
+  'classification', (select classification->>'category' from target_bundle limit 1),
+  'truncated', (select (truncation->>'truncated')::boolean from target_bundle limit 1),
+  'skippedAttachmentCount', (select jsonb_array_length(skipped_attachments) from target_bundle limit 1),
+  'itemCount', (select count(*) from bundle_items),
+  'messageCount', (select count(*) from bundle_items where source_type = 'slack_message'),
+  'channelProfileCount', (select count(*) from bundle_items where role = 'channel_profile'),
+  'selectedMessageCount', (select count(*) from bundle_items where role = 'selected_message' and is_primary),
+  'threadRootCount', (select count(*) from bundle_items where role = 'thread_root'),
+  'threadReplyCount', (select count(*) from bundle_items where role = 'thread_reply'),
+  'nearbyContextCount', (select count(*) from bundle_items where role = 'nearby_context'),
+  'supportedAttachmentCount', (select count(*) from bundle_items where role = 'supported_attachment'),
+  'sourceVersionCount', (select count(*) from bundle_versions),
+  'evidenceSpanCount', (select count(*) from bundle_spans),
+  'messagePermalinkEvidenceCount', (
+    select count(*) from bundle_spans span
+    join bundle_items item on item.source_version_id = span.source_version_id
+    where item.source_type = 'slack_message' and span.locator->>'permalink' like 'https://%.slack.com/%'
   ),
-  'docxSourceCount', (
-    select count(*) from source_items s join source_ids si on si.id = s.id
-    where s.source_type = 'slack_file_docx'
-  ),
-  'sourceVersionCount', (select count(*) from version_ids),
-  'evidenceSpanCount', (
-    select count(*) from evidence_spans es join version_ids vi on vi.id = es.source_version_id
-  ),
-  'pdfEvidenceCount', (
-    select count(*)
-    from evidence_spans es
-    join source_versions sv on sv.id = es.source_version_id
-    join source_items si on si.id = sv.source_item_id
-    join source_ids selected on selected.id = si.id
-    where si.source_type = 'slack_file_pdf'
-  ),
-  'pdfPageLocatedCount', (
-    select count(*)
-    from evidence_spans es
-    join source_versions sv on sv.id = es.source_version_id
-    join source_items si on si.id = sv.source_item_id
-    join source_ids selected on selected.id = si.id
-    where si.source_type = 'slack_file_pdf'
-      and (es.locator->>'pageNumber')::integer >= 1
-      and (es.locator->>'startChar')::integer >= 0
-      and (es.locator->>'endChar')::integer > (es.locator->>'startChar')::integer
-  ),
-  'docxEvidenceCount', (
-    select count(*)
-    from evidence_spans es
-    join source_versions sv on sv.id = es.source_version_id
-    join source_items si on si.id = sv.source_item_id
-    join source_ids selected on selected.id = si.id
-    where si.source_type = 'slack_file_docx'
-  ),
-  'docxParagraphLocatedCount', (
-    select count(*)
-    from evidence_spans es
-    join source_versions sv on sv.id = es.source_version_id
-    join source_items si on si.id = sv.source_item_id
-    join source_ids selected on selected.id = si.id
-    where si.source_type = 'slack_file_docx'
-      and (es.locator->>'paragraphNumber')::integer >= 1
-      and (es.locator->>'blockNumber')::integer >= 1
-      and (es.locator->>'startChar')::integer >= 0
-      and (es.locator->>'endChar')::integer > (es.locator->>'startChar')::integer
-  ),
-  'sourceCommittedEventCount', (
-    select count(*) from ledger_events le join version_ids vi on vi.id = le.subject_id
-    where le.event_type = 'source_committed'
+  'contextEventCount', (
+    select count(*) from ledger_events event
+    join slack_context_bundles bundle on bundle.id = event.subject_id
+    join target_save save on save.id = bundle.connector_save_id
+    where event.event_type = 'slack_context_committed'
   ),
   'ingestionWorkCount', (
-    select count(*) from pending_work pw join target_save ts on ts.id = pw.subject_id
-    where pw.policy = 'ingest_slack_source'
+    select count(*) from pending_work work join target_save save on save.id = work.subject_id
+    where work.policy = 'ingest_slack_source'
   ),
-  'ingestionWorkStatus', (
-    select pw.status from pending_work pw join target_save ts on ts.id = pw.subject_id
-    where pw.policy = 'ingest_slack_source' limit 1
+  'reactionSyncWorkCount', (
+    select count(*) from pending_work work join target_save save on save.id = work.subject_id
+    where work.policy = 'sync_slack_reaction'
   ),
-  'extractionWorkCount', (
-    select count(*) from pending_work pw join version_ids vi on vi.id = pw.subject_id
-    where pw.policy = 'extract_memory'
+  'reactionCompletionEventCount', (
+    select count(*) from ledger_events event join target_save save on save.id = event.subject_id
+    where event.event_type = 'slack_extraction_completed'
+  ),
+  'latestReactionWorkStatus', (
+    select work.status from pending_work work join target_save save on save.id = work.subject_id
+    where work.policy = 'sync_slack_reaction' order by work.created_at desc limit 1
+  ),
+  'currentExtractionWorkCount', (
+    select count(*) from pending_work work join target_bundle bundle on bundle.id = work.subject_id
+    where work.policy = 'extract_slack_context'
+  ),
+  'currentExtractionStatus', (
+    select work.status from pending_work work join target_bundle bundle on bundle.id = work.subject_id
+    where work.policy = 'extract_slack_context' order by work.created_at desc limit 1
+  ),
+  'currentExtractionAttempts', (
+    select work.attempts from pending_work work join target_bundle bundle on bundle.id = work.subject_id
+    where work.policy = 'extract_slack_context' order by work.created_at desc limit 1
+  ),
+  'currentExtractionLastError', (
+    select work.last_error from pending_work work join target_bundle bundle on bundle.id = work.subject_id
+    where work.policy = 'extract_slack_context' order by work.created_at desc limit 1
+  ),
+  'currentExtractionLeaseExpiresAt', (
+    select work.lease_expires_at from pending_work work join target_bundle bundle on bundle.id = work.subject_id
+    where work.policy = 'extract_slack_context' order by work.created_at desc limit 1
+  ),
+  'currentPolicyRunStatus', (
+    select run.status from policy_runs run
+    join pending_work work on work.id = run.work_item_id
+    join target_bundle bundle on bundle.id = work.subject_id
+    where work.policy = 'extract_slack_context' order by run.created_at desc limit 1
+  ),
+  'currentPolicyRunProvider', (
+    select run.provider from policy_runs run
+    join pending_work work on work.id = run.work_item_id
+    join target_bundle bundle on bundle.id = work.subject_id
+    where work.policy = 'extract_slack_context' order by run.created_at desc limit 1
+  ),
+  'currentPolicyRunModel', (
+    select run.model from policy_runs run
+    join pending_work work on work.id = run.work_item_id
+    join target_bundle bundle on bundle.id = work.subject_id
+    where work.policy = 'extract_slack_context' order by run.created_at desc limit 1
+  ),
+  'contextOutboxStatus', (
+    select outbox.status from event_outbox outbox
+    join ledger_events event on event.id = outbox.ledger_event_id
+    join target_bundle bundle on bundle.id = event.subject_id
+    where event.event_type = 'slack_context_committed' order by outbox.created_at desc limit 1
+  ),
+  'currentMemoryCount', (
+    select count(distinct binding.memory_item_id)
+    from memory_item_evidence binding join bundle_spans span on span.id = binding.evidence_span_id
   )
 );
 `;
@@ -132,7 +158,7 @@ const result = spawnSync("psql", [
 ], { encoding: "utf8" });
 
 if (result.status !== 0) {
-  throw new Error(`Live Slack save query failed: ${(result.stderr || result.stdout).trim()}`);
+  throw new Error(`Live Slack context query failed: ${(result.stderr || result.stdout).trim()}`);
 }
 
 const snapshot = JSON.parse(result.stdout.trim()) as Record<string, unknown>;
@@ -140,35 +166,45 @@ if (process.argv.includes("--report-only")) {
   console.log(JSON.stringify(snapshot, null, 2));
   process.exit(0);
 }
-const expectedSources = expectedAttachments + 1;
+
 assertEqual(snapshot, "saveCount", 1);
 assertEqual(snapshot, "status", "completed");
 assertEqual(snapshot, "reactionStatus", "added");
-assertEqual(snapshot, "sourceCount", expectedSources);
-assertEqual(snapshot, "pdfSourceCount", expectedPdfSources);
-assertEqual(snapshot, "docxSourceCount", expectedDocxSources);
-assertEqual(snapshot, "sourceVersionCount", expectedSources);
-assertAtLeast(snapshot, "evidenceSpanCount", expectedSources);
-assertEqual(snapshot, "pdfPageLocatedCount", snapshot.pdfEvidenceCount);
-assertEqual(snapshot, "docxParagraphLocatedCount", snapshot.docxEvidenceCount);
-assertEqual(snapshot, "sourceCommittedEventCount", expectedSources);
-assertAtLeast(snapshot, "ingestionWorkCount", 1);
-assertEqual(snapshot, "extractionWorkCount", expectedSources);
+assertEqual(snapshot, "contextVersion", expectedContextVersion);
+assertEqual(snapshot, "externallyShared", expectExternal);
+assertEqual(snapshot, "channelProfileCount", 1);
+assertEqual(snapshot, "selectedMessageCount", 1);
+assertAtLeast(snapshot, "messageCount", minimumMessages);
+assertEqual(snapshot, "supportedAttachmentCount", expectedSupportedAttachments);
+assertEqual(snapshot, "skippedAttachmentCount", expectedSkippedAttachments);
+assertAtLeast(snapshot, "sourceVersionCount", minimumMessages + 1 + expectedSupportedAttachments);
+assertAtLeast(snapshot, "evidenceSpanCount", minimumMessages);
+assertAtLeast(snapshot, "messagePermalinkEvidenceCount", minimumMessages);
+assertEqual(snapshot, "contextEventCount", expectedContextVersion);
+assertAtLeast(snapshot, "ingestionWorkCount", expectedContextVersion);
+assertEqual(snapshot, "currentExtractionWorkCount", 1);
+assertEqual(snapshot, "currentExtractionStatus", "completed");
 
 console.log(`save=ok (${String(snapshot.saveId)})`);
-console.log(`canonical_sources=ok (${expectedSources})`);
-console.log(`source_versions=ok (${expectedSources})`);
+console.log(`context_bundle=ok (${String(snapshot.bundleId)}, version=${String(snapshot.contextVersion)})`);
+console.log(`roles=ok (messages=${String(snapshot.messageCount)}, strategy=${String(snapshot.selectionStrategy)})`);
+console.log(`source_versions=ok (${String(snapshot.sourceVersionCount)})`);
 console.log(`evidence_spans=ok (${String(snapshot.evidenceSpanCount)})`);
-if (expectedPdfSources > 0) console.log(`pdf_page_locators=ok (${String(snapshot.pdfPageLocatedCount)})`);
-if (expectedDocxSources > 0) console.log(`docx_paragraph_locators=ok (${String(snapshot.docxParagraphLocatedCount)})`);
-console.log(`source_committed_events=ok (${expectedSources})`);
-console.log(`extraction_work=ok (${expectedSources})`);
-console.log("reaction=ok (:hourglass_flowing_sand: replaced by :factory: after extraction completed)");
-console.log("live_slack_save=ok");
+console.log(`classification=ok (${String(snapshot.classification)})`);
+console.log(`attachments=ok (supported=${String(snapshot.supportedAttachmentCount)}, skipped=${String(snapshot.skippedAttachmentCount)})`);
+console.log(`extraction=ok (memory=${String(snapshot.currentMemoryCount)})`);
+console.log("reaction=ok (:hourglass_flowing_sand: replaced by :factory: after context extraction completed)");
+console.log("live_slack_context=ok");
 
 function requiredFlag(name: string): string {
   const value = flagValue(name);
   if (!value) throw new Error(`Missing required flag: ${name}`);
+  return value;
+}
+
+function integerFlag(name: string, fallback: number): number {
+  const value = Number(flagValue(name) ?? fallback);
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer.`);
   return value;
 }
 

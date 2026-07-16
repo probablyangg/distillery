@@ -3,6 +3,8 @@ import { execFile, spawnSync } from "node:child_process";
 
 const container = `distillery-slack-db-test-${process.pid}`;
 const image = "pgvector/pgvector:pg16";
+const workspaceId = "T12345678";
+const channelId = "C12345678";
 
 async function main(): Promise<void> {
   requireCommand("docker", ["version"]);
@@ -15,208 +17,163 @@ async function main(): Promise<void> {
 
   try {
     await waitForPostgres();
-    for (const migration of fs.readdirSync("packages/db/migrations")
+    const migrations = fs.readdirSync("packages/db/migrations")
       .filter((name) => name.endsWith(".sql"))
-      .sort()) {
-      const sql = fs.readFileSync(`packages/db/migrations/${migration}`, "utf8");
-      run("docker", [
-        "exec", "--interactive", "--user", "postgres", container,
-        "psql", "--dbname", "postgres", "--set", "ON_ERROR_STOP=1", "--single-transaction", "--file", "-",
-      ], sql);
-    }
+      .sort();
+    const contextMigration = "0020_context_aware_slack_ingestion.sql";
+    const contextMigrationIndex = migrations.indexOf(contextMigration);
+    if (contextMigrationIndex < 0) throw new Error(`Missing ${contextMigration}.`);
+    for (const migration of migrations.slice(0, contextMigrationIndex)) applyMigration(migration);
+
+    // Prove that migration 0020 upgrades an existing pilot database without rewriting history.
+    const legacy = JSON.parse(psql(
+      `select distillery_create_or_get_slack_save('stable', repeat('0', 64), '${workspaceId}', '${channelId}', '1752623999.000001', null, 'U12345678', null, 'slack:${workspaceId}:${channelId}:1752623999.000001')`,
+    )) as Registration;
+    const legacySaveId = saveId(legacy);
+    psql(`select distillery_commit_slack_connector_sources('${legacySaveId}', '${sqlLiteral(JSON.stringify([
+      source({
+        prefix: "legacy",
+        sourceType: "slack_message",
+        externalId: `slack:${workspaceId}:${channelId}:1752623999.000001`,
+        content: "Legacy pilot evidence remains immutable.",
+        contentHash: "1".repeat(64),
+        timestamp: "1752623999.000001",
+      }),
+    ]))}'::jsonb)`);
+    applyMigration(contextMigration);
+    for (const migration of migrations.slice(contextMigrationIndex + 1)) applyMigration(migration);
+    assertScalar("select count(*) from source_versions where id = 'srcv_legacy'", "1", "legacy source history after additive migration");
+    assertScalar("select content from source_versions where id = 'srcv_legacy'", "Legacy pilot evidence remains immutable.", "legacy source content after additive migration");
+    console.log("additive_migration=ok");
     console.log("fresh_migrations=ok");
 
-    const first = register("a", "1752624000.000001");
+    const timestamp = "1752624000.000001";
+    const first = register("a", timestamp);
     assert(first.created === true && first.replayed === false && typeof first.workItemId === "string", "first save did not create canonical work");
-    const replay = register("a", "1752624000.000001");
+    const replay = register("a", timestamp);
     assert(replay.replayed === true && replay.workItemId === null, "exact replay created work");
-    assertScalar("select count(*) from connector_saves", "1", "first save connector count");
-    assertScalar("select count(*) from pending_work where policy = 'ingest_slack_source'", "1", "first save work count");
     const invalidIdentity = runAllowFailure("docker", psqlArgs(
-      "select distillery_create_or_get_slack_save('stable', repeat('9', 64), 'T12345678', 'C12345678', '1752624999.000001', null, 'U12345678', null, 'slack:forged')",
+      `select distillery_create_or_get_slack_save('stable', repeat('9', 64), '${workspaceId}', '${channelId}', '1752624999.000001', null, 'U12345678', null, 'slack:forged')`,
     ));
     assert(invalidIdentity.status !== 0, "forged external identity was accepted");
-    assertScalar("select count(*) from connector_saves", "1", "forged identity wrote connector state");
 
-    const concurrentSql = (letter: string) => registerSql(letter, "1752624001.000001");
     const [concurrentOne, concurrentTwo] = await Promise.all([
-      psqlAsync(concurrentSql("c")),
-      psqlAsync(concurrentSql("d")),
+      psqlAsync(registerSql("c", "1752624001.000001")),
+      psqlAsync(registerSql("d", "1752624001.000001")),
     ]);
-    const concurrentWorkOne = (JSON.parse(concurrentOne) as Registration).workItemId;
-    const concurrentWorkTwo = (JSON.parse(concurrentTwo) as Registration).workItemId;
-    assert(concurrentWorkOne === concurrentWorkTwo, "concurrent saves returned different work items");
+    const concurrentRegistrationOne = JSON.parse(concurrentOne) as Registration;
+    const concurrentRegistrationTwo = JSON.parse(concurrentTwo) as Registration;
+    assert(concurrentRegistrationOne.workItemId === concurrentRegistrationTwo.workItemId, "concurrent clicks returned different active ingestion work");
     assertScalar("select count(*) from connector_saves where message_timestamp = '1752624001.000001'", "1", "concurrent connector count");
-    assertScalar("select count(*) from pending_work where subject_id = (select id from connector_saves where message_timestamp = '1752624001.000001')", "1", "concurrent work count");
+    assertScalar(`select count(*) from pending_work where policy = 'ingest_slack_source' and subject_id = '${saveId(concurrentRegistrationOne)}'`, "1", "concurrent ingestion work count");
     console.log("registration_idempotency=ok");
 
-    const firstSaveId = String((first.save as Record<string, unknown>).id);
-    const firstSources = [
-      source({
-        sourceItemId: "src_message_1",
-        sourceVersionId: "srcv_message_1",
-        ingestionId: "ing_message_1",
-        sourceType: "slack_message",
-        externalId: "slack:T12345678:C12345678:1752624000.000001",
-        canonicalUrl: "https://example.slack.com/archives/C12345678/p1752624000000001",
-        mimeType: "text/plain",
-        content: "Decision text.",
-        contentHash: "b".repeat(64),
-        spanId: "span_message_1",
-        locator: { provider: "slack", messageTimestamp: "1752624000.000001", permalink: "https://example.slack.com/archives/C12345678/p1752624000000001" },
-      }),
-      source({
-        sourceItemId: "src_file_1",
-        sourceVersionId: "srcv_file_1",
-        ingestionId: "ing_file_1",
-        sourceType: "slack_file_pdf",
-        externalId: "slack_file:T12345678:F12345678",
-        canonicalUrl: "https://example.slack.com/files/F12345678",
-        mimeType: "application/pdf",
-        originalFilename: "decision.pdf",
-        content: "PDF evidence text.",
-        contentHash: "e".repeat(64),
-        spanId: "span_file_1",
-        locator: { provider: "slack", pageNumber: 2, startChar: 0, endChar: 18, permalink: "https://example.slack.com/files/F12345678" },
-      }),
-    ];
-    commit(firstSaveId, firstSources);
-    assertScalar("select count(*) from source_items", "2", "initial source count");
-    assertScalar("select count(*) from source_versions", "2", "initial source version count");
-    assertScalar("select count(*) from evidence_spans", "2", "initial evidence count");
-    assertScalar("select count(*) from ledger_events where event_type = 'source_committed'", "2", "downstream source event count");
+    const firstSaveId = saveId(first);
+    const firstContext = context({
+      saveId: firstSaveId,
+      suffix: "v1",
+      timestamp,
+      contentHash: "b".repeat(64),
+      selectedText: "Checkout failures started after release 2.7.0.",
+    });
+    const firstCommit = commit(firstContext);
+    assert(firstCommit.created === true && firstCommit.changed === true, "first context bundle was not created");
+    assertScalar(`select context_version from connector_saves where id = '${firstSaveId}'`, "1", "first context version");
+    assertScalar("select count(*) from slack_context_bundles where connector_save_id = '" + firstSaveId + "'", "1", "first context bundle count");
+    assertScalar("select count(*) from ledger_events where event_type = 'slack_context_committed' and subject_id = 'bundle_v1'", "1", "first context event count");
+    assertScalar(`select count(*) from pending_work where policy = 'sync_slack_reaction' and subject_id = '${firstSaveId}'`, "0", "reaction scheduled before context extraction existed");
 
-    const repeated = register("f", "1752624000.000001");
-    assert(typeof repeated.workItemId === "string", "completed repeat did not create reaction sync work");
-    assertScalar("select count(*) from source_versions", "2", "repeat changed source versions");
-    assertScalar("select count(*) from ledger_events where event_type = 'source_committed'", "2", "repeat created downstream extraction event");
-    assertScalar("select count(*) from pending_work where policy = 'sync_slack_reaction'", "1", "repeat reaction work count");
-
-    const reshare = register("1", "1752624002.000001");
-    const reshareSaveId = String((reshare.save as Record<string, unknown>).id);
-    commit(reshareSaveId, [
-      source({
-        sourceItemId: "src_message_2", sourceVersionId: "srcv_message_2", ingestionId: "ing_message_2",
-        sourceType: "slack_message", externalId: "slack:T12345678:C12345678:1752624002.000001",
-        canonicalUrl: "https://example.slack.com/archives/C12345678/p1752624002000001", mimeType: "text/plain",
-        content: "The file was shared again.", contentHash: "2".repeat(64), spanId: "span_message_2",
-        locator: { provider: "slack", messageTimestamp: "1752624002.000001" },
-      }),
-      source({
-        sourceItemId: "src_file_duplicate", sourceVersionId: "srcv_file_duplicate", ingestionId: "ing_file_duplicate",
-        sourceType: "slack_file_pdf", externalId: "slack_file:T12345678:F12345678",
-        canonicalUrl: "https://example.slack.com/files/F12345678", mimeType: "application/pdf", originalFilename: "decision.pdf",
-        content: "PDF evidence text.", contentHash: "e".repeat(64), spanId: "span_file_duplicate",
-        locator: { provider: "slack", pageNumber: 2 },
-      }),
-    ]);
-    assertScalar("select count(*) from source_items where external_id = 'slack_file:T12345678:F12345678'", "1", "reshared file item count");
-    assertScalar("select count(*) from source_versions where source_item_id = 'src_file_1'", "1", "reshared file version count");
-    assertScalar("select content from source_versions where id = 'srcv_file_1'", "PDF evidence text.", "reshared file immutable content");
-
-    const concurrentFileSaveOne = register("5", "1752624010.000001");
-    const concurrentFileSaveTwo = register("6", "1752624011.000001");
-    const concurrentFileSources = (ordinal: number, timestamp: string) => [
-      source({
-        sourceItemId: `src_concurrent_message_${ordinal}`, sourceVersionId: `srcv_concurrent_message_${ordinal}`, ingestionId: `ing_concurrent_message_${ordinal}`,
-        sourceType: "slack_message", externalId: `slack:T12345678:C12345678:${timestamp}`,
-        canonicalUrl: `https://example.slack.com/archives/C12345678/p${timestamp.replace(".", "")}`, mimeType: "text/plain",
-        content: `Concurrent message ${ordinal}.`, contentHash: String(ordinal + 6).repeat(64), spanId: `span_concurrent_message_${ordinal}`,
-        locator: { provider: "slack", messageTimestamp: timestamp },
-      }),
-      source({
-        sourceItemId: `src_concurrent_file_${ordinal}`, sourceVersionId: `srcv_concurrent_file_${ordinal}`, ingestionId: `ing_concurrent_file_${ordinal}`,
-        sourceType: "slack_file_pdf", externalId: "slack_file:T12345678:FCONCURR1",
-        canonicalUrl: "https://example.slack.com/files/FCONCURR1", mimeType: "application/pdf", originalFilename: "concurrent.pdf",
-        content: "One concurrent file version.", contentHash: "8".repeat(64), spanId: `span_concurrent_file_${ordinal}`,
-        locator: { provider: "slack", pageNumber: 1 },
-      }),
-    ];
-    await Promise.all([
-      psqlAsync(commitSql(String((concurrentFileSaveOne.save as Record<string, unknown>).id), concurrentFileSources(1, "1752624010.000001"))),
-      psqlAsync(commitSql(String((concurrentFileSaveTwo.save as Record<string, unknown>).id), concurrentFileSources(2, "1752624011.000001"))),
-    ]);
-    assertScalar("select count(*) from source_items where external_id = 'slack_file:T12345678:FCONCURR1'", "1", "concurrent reshared file item count");
-    assertScalar("select count(*) from source_versions sv join source_items si on si.id = sv.source_item_id where si.external_id = 'slack_file:T12345678:FCONCURR1'", "1", "concurrent reshared file version count");
-    console.log("source_deduplication=ok");
-
-    const atomic = register("3", "1752624003.000001");
-    const atomicSaveId = String((atomic.save as Record<string, unknown>).id);
-    const invalidSources = [source({
-      sourceItemId: "src_atomic_message", sourceVersionId: "srcv_atomic_message", ingestionId: "ing_atomic_message",
-      sourceType: "slack_message", externalId: "slack:T12345678:C12345678:1752624003.000001",
-      canonicalUrl: "https://example.slack.com/archives/C12345678/p1752624003000001", mimeType: "text/plain",
-      content: "Must roll back.", contentHash: "4".repeat(64), spanId: "span_atomic_message",
-      locator: { provider: "slack", messageTimestamp: "1752624003.000001" },
-    })];
-    invalidSources[0]!.evidenceSpans[0]!.text = "does not match";
-    const failedCommit = runAllowFailure("docker", psqlArgs(commitSql(atomicSaveId, invalidSources)));
-    assert(failedCommit.status !== 0, "invalid evidence commit unexpectedly succeeded");
-    assertScalar("select count(*) from source_items where external_id = 'slack:T12345678:C12345678:1752624003.000001'", "0", "failed atomic source rollback");
-    assertScalar(`select status from connector_saves where id = '${atomicSaveId}'`, "pending", "failed atomic connector status");
-    console.log("transactional_atomicity=ok");
-
-    const lifecycle = register("7", "1752624020.000001");
-    const lifecycleSaveId = String((lifecycle.save as Record<string, unknown>).id);
-    commit(lifecycleSaveId, [
-      source({
-        sourceItemId: "src_lifecycle_message", sourceVersionId: "srcv_lifecycle_message", ingestionId: "ing_lifecycle_message",
-        sourceType: "slack_message", externalId: "slack:T12345678:C12345678:1752624020.000001",
-        canonicalUrl: "https://example.slack.com/archives/C12345678/p1752624020000001", mimeType: "text/plain",
-        content: "Lifecycle message.", contentHash: "a".repeat(64), spanId: "span_lifecycle_message",
-        locator: { provider: "slack", messageTimestamp: "1752624020.000001" },
-      }),
-      source({
-        sourceItemId: "src_lifecycle_file", sourceVersionId: "srcv_lifecycle_file", ingestionId: "ing_lifecycle_file",
-        sourceType: "slack_file_pdf", externalId: "slack_file:T12345678:FLIFECYCLE",
-        canonicalUrl: "https://example.slack.com/files/FLIFECYCLE", mimeType: "application/pdf", originalFilename: "lifecycle.pdf",
-        content: "Sectioned lifecycle file.", contentHash: "9".repeat(64), spanId: "span_lifecycle_file",
-        locator: { provider: "slack", pageNumber: 1 },
-      }),
-    ]);
-    psql(`
-      insert into memory_section_plans(
-        id, tenant_id, ingestion_id, source_version_id, used_sectioning, strategy,
-        trigger_chars, trigger_spans, target_chars, max_chars, max_sections
-      ) values
-        ('mplan_lifecycle_message', 'stable', 'ing_lifecycle_message', 'srcv_lifecycle_message', false, 'single', 6000, 20, 5000, 8000, 50),
-        ('mplan_lifecycle_file', 'stable', 'ing_lifecycle_file', 'srcv_lifecycle_file', true, 'model', 6000, 20, 5000, 8000, 50);
-      insert into pending_work(
-        id, tenant_id, policy, subject_type, subject_id, caused_by_event_id, input_version,
-        status, attempts, lease_token, lease_expires_at
-      ) values
-        ('work_lifecycle_message', 'stable', 'extract_memory', 'source', 'srcv_lifecycle_message',
-          (select id from ledger_events where event_type = 'source_committed' and subject_id = 'srcv_lifecycle_message'),
-          'lifecycle-message', 'running', 1, 'lease-message', now() + interval '15 minutes'),
-        ('work_lifecycle_file', 'stable', 'consolidate_memory', 'source', 'srcv_lifecycle_file',
-          (select id from ledger_events where event_type = 'source_committed' and subject_id = 'srcv_lifecycle_file'),
-          'lifecycle-file', 'running', 1, 'lease-file', now() + interval '15 minutes');
-    `);
-    assertScalar(`select distillery_is_slack_connector_extraction_complete('${lifecycleSaveId}')`, "f", "lifecycle readiness before extraction");
-    psql("select distillery_complete_pending_work('work_lifecycle_message', 'lease-message')");
-    assertScalar(`select distillery_is_slack_connector_extraction_complete('${lifecycleSaveId}')`, "f", "lifecycle readiness after one source");
-    assertScalar(`select count(*) from pending_work where policy = 'sync_slack_reaction' and subject_id = '${lifecycleSaveId}'`, "0", "premature lifecycle reaction work");
-    psql("select distillery_complete_pending_work('work_lifecycle_file', 'lease-file')");
-    assertScalar(`select distillery_is_slack_connector_extraction_complete('${lifecycleSaveId}')`, "t", "lifecycle readiness after every source");
-    assertScalar(`select count(*) from pending_work where policy = 'sync_slack_reaction' and subject_id = '${lifecycleSaveId}' and status = 'pending'`, "1", "completed lifecycle reaction work");
-    assertScalar(`select count(*) from ledger_events where event_type = 'slack_extraction_completed' and subject_id = '${lifecycleSaveId}'`, "1", "lifecycle completion event");
-    const lifecycleReactionWork = JSON.parse(psql(`select distillery_list_slack_reaction_work_for_completed_work('work_lifecycle_file')`)) as unknown[];
-    assert(lifecycleReactionWork.length === 1, "completed extraction did not expose its reaction wakeup");
+    completeWork(first.workItemId!);
+    const extractionV1 = createExtractionWork("extract_v1", "bundle_v1");
+    assertScalar(`select distillery_is_slack_connector_extraction_complete('${firstSaveId}')`, "f", "readiness before context extraction");
+    completeWork(extractionV1);
+    assertScalar(`select distillery_is_slack_connector_extraction_complete('${firstSaveId}')`, "t", "readiness after context extraction");
+    assertScalar(`select count(*) from pending_work where policy = 'sync_slack_reaction' and subject_id = '${firstSaveId}' and status = 'pending'`, "1", "reaction work after context extraction");
     console.log("reaction_lifecycle=ok");
 
-    psql(`insert into initiative_briefs(id, tenant_id, title, problem, proposal, success_metric, status, created_by_label, origin, generation_reason, updated_at) values
-      ('brief_manual', 'stable', 'Manual', 'Manual problem.', 'Manual proposal.', 'Metric', 'approved', 'Human', 'manual', null, '2026-07-16T04:00:00Z'),
-      ('brief_generated_old', 'stable', 'Generated old', 'Old evidence. Extra sentence.', 'Old action. Extra proposal.', 'Metric', 'draft', 'Distillery', 'distillery_generated', 'Old readiness reason.', '2026-07-16T01:00:00Z'),
-      ('brief_generated_new', 'stable', 'Generated new', 'New evidence. Extra sentence.', 'New action! Extra proposal.', 'Metric', 'approved', 'Distillery', 'distillery_generated', 'New readiness reason.', '2026-07-16T03:00:00Z'),
-      ('brief_rejected', 'stable', 'Rejected', 'Rejected evidence.', 'Rejected action.', 'Metric', 'rejected', 'Distillery', 'distillery_generated', 'Rejected reason.', '2026-07-16T05:00:00Z');
-      insert into initiative_brief_evidence(brief_id, evidence_span_id, tenant_id) values ('brief_generated_new', 'span_message_1', 'stable');`);
-    const projected = JSON.parse(psql("select distillery_list_leadership_briefs('stable', 50)")) as Array<Record<string, unknown>>;
-    assert(projected.length === 2, "manual or rejected briefs leaked into leadership projection");
-    assert(projected[0]?.id === "brief_generated_new" && projected[1]?.id === "brief_generated_old", "leadership briefs were not newest first");
-    assert(projected[0]?.summary === "New evidence. New action!", "leadership summary was not exactly two sentences");
-    const citations = projected[0]?.citations as Array<Record<string, unknown>>;
-    assert(citations[0]?.exactText === "Decision text.", "exact evidence citation was not projected");
-    console.log("leadership_projection=ok");
+    const initialReactionWorkId = psql(`select id from pending_work where policy = 'sync_slack_reaction' and subject_id = '${firstSaveId}' and status = 'pending'`);
+    completeWork(initialReactionWorkId);
+    psql(`update connector_saves set reaction_status = 'added' where id = '${firstSaveId}'`);
+
+    // A later click always refreshes Slack. An unchanged snapshot reuses the same bundle and source versions.
+    const unchanged = register("e", timestamp);
+    assert(typeof unchanged.workItemId === "string", "unchanged refresh did not create ingestion work");
+    const unchangedCommit = commit({ ...firstContext, id: "bundle_v1_retry", capturedAt: "2026-07-16T12:05:00.000Z" });
+    assert(unchangedCommit.created === false && unchangedCommit.changed === false, "unchanged context created a new bundle");
+    assertScalar(`select count(*) from slack_context_bundles where connector_save_id = '${firstSaveId}'`, "1", "unchanged context bundle count");
+    assertScalar("select count(*) from source_versions where source_item_id in (select id from source_items where external_id in ('slack_channel_profile:T12345678:C12345678', 'slack_message:T12345678:C12345678:1752624000.000001'))", "2", "unchanged context source version count");
+    assertScalar("select count(*) from ledger_events where event_type = 'slack_context_committed' and subject_id = 'bundle_v1'", "1", "unchanged context event count");
+    completeWork(unchanged.workItemId!);
+    assertScalar(`select count(*) from pending_work where policy = 'sync_slack_reaction' and subject_id = '${firstSaveId}'`, "2", "unchanged refresh reaction synchronization count");
+    assertScalar(`select count(*) from pending_work where policy = 'sync_slack_reaction' and subject_id = '${firstSaveId}' and status = 'pending'`, "1", "unchanged refresh pending reaction synchronization");
+    assertScalar(`select count(*) from ledger_events where event_type = 'slack_extraction_completed' and subject_id = '${firstSaveId}'`, "2", "unchanged refresh completion observation count");
+    console.log("unchanged_refresh=ok");
+
+    // A new reply creates bundle v2 while retaining every v1 source version.
+    const changed = register("f", timestamp);
+    const changedContext = context({
+      saveId: firstSaveId,
+      suffix: "v2",
+      timestamp,
+      contentHash: "c".repeat(64),
+      selectedText: "Checkout failures started after release 2.7.0.",
+      replyText: "Rollback completed; checkout success recovered at 12:14 UTC.",
+    });
+    const changedCommit = commit(changedContext);
+    assert(changedCommit.created === true && changedCommit.changed === true, "new reply did not create a context version");
+    assertScalar(`select context_version from connector_saves where id = '${firstSaveId}'`, "2", "new reply context version");
+    assertScalar("select previous_bundle_id from slack_context_bundles where id = 'bundle_v2'", "bundle_v1", "context version history link");
+    assertScalar("select count(*) from source_items where external_id = 'slack_message:T12345678:C12345678:1752624000.000002'", "1", "new reply source item count");
+    assertScalar("select content from source_versions where id = 'srcv_selected_v1'", "Checkout failures started after release 2.7.0.", "v1 selected source immutability");
+    completeWork(changed.workItemId!);
+
+    // Editing the selected Slack message creates source version 2 under the same stable identity.
+    const edited = register("7", timestamp);
+    const editedContext = context({
+      saveId: firstSaveId,
+      suffix: "v3",
+      timestamp,
+      contentHash: "d".repeat(64),
+      selectedText: "Checkout failures started after release 2.7.1, not 2.7.0.",
+      selectedContentHash: "e".repeat(64),
+      replyText: "Rollback completed; checkout success recovered at 12:14 UTC.",
+    });
+    commit(editedContext);
+    assertScalar(`select context_version from connector_saves where id = '${firstSaveId}'`, "3", "edited message context version");
+    assertScalar("select count(*) from source_items where external_id = 'slack_message:T12345678:C12345678:1752624000.000001'", "1", "edited message stable source identity");
+    assertScalar("select count(*) from source_versions sv join source_items si on si.id = sv.source_item_id where si.external_id = 'slack_message:T12345678:C12345678:1752624000.000001'", "2", "edited message version count");
+    assertScalar("select content from source_versions where id = 'srcv_selected_v1'", "Checkout failures started after release 2.7.0.", "edited message did not mutate old version");
+    completeWork(edited.workItemId!);
+    console.log("context_versioning=ok");
+
+    // Two workers committing the same snapshot converge on one bundle and one source version per content hash.
+    const concurrentSave = register("8", "1752624010.000001");
+    const concurrentContext = context({
+      saveId: saveId(concurrentSave), suffix: "concurrent", timestamp: "1752624010.000001",
+      contentHash: "8".repeat(64), selectedText: "Concurrent context commit.",
+    });
+    const [commitOne, commitTwo] = await Promise.all([
+      psqlAsync(commitSql(concurrentContext)),
+      psqlAsync(commitSql(concurrentContext)),
+    ]);
+    assert((JSON.parse(commitOne) as ContextCommit).created !== (JSON.parse(commitTwo) as ContextCommit).created, "concurrent commits did not converge");
+    assertScalar(`select count(*) from slack_context_bundles where connector_save_id = '${saveId(concurrentSave)}'`, "1", "concurrent bundle count");
+    assertScalar("select count(*) from source_versions sv join source_items si on si.id = sv.source_item_id where si.external_id in ('slack_channel_profile:T12345678:C12345678', 'slack_message:T12345678:C12345678:1752624010.000001')", "2", "concurrent source version count");
+    console.log("concurrent_commit=ok");
+
+    // A bad evidence offset must roll back the entire bundle transaction.
+    const atomicSave = register("9", "1752624020.000001");
+    const invalidContext = context({
+      saveId: saveId(atomicSave), suffix: "atomic", timestamp: "1752624020.000001",
+      contentHash: "9".repeat(64), selectedText: "Must roll back.",
+    });
+    invalidContext.sources[1]!.evidenceSpans[0]!.text = "does not match";
+    const failedCommit = runAllowFailure("docker", psqlArgs(commitSql(invalidContext)));
+    assert(failedCommit.status !== 0, "invalid evidence commit unexpectedly succeeded");
+    assertScalar("select count(*) from source_items where external_id = 'slack_message:T12345678:C12345678:1752624020.000001'", "0", "failed context source rollback");
+    assertScalar(`select status from connector_saves where id = '${saveId(atomicSave)}'`, "pending", "failed context connector status");
+    console.log("transactional_atomicity=ok");
+
     console.log("slack_database_integration=ok");
   } finally {
     runAllowFailure("docker", ["stop", container]);
@@ -224,58 +181,172 @@ async function main(): Promise<void> {
 }
 
 type Registration = { save: unknown; workItemId: string | null; created: boolean; replayed: boolean };
+type ContextCommit = { bundle: Record<string, unknown>; created: boolean; changed: boolean };
+type SourceInput = ReturnType<typeof source>;
+type ContextInput = ReturnType<typeof context>;
+
+function applyMigration(name: string): void {
+  const sql = fs.readFileSync(`packages/db/migrations/${name}`, "utf8");
+  run("docker", [
+    "exec", "--interactive", "--user", "postgres", container,
+    "psql", "--dbname", "postgres", "--set", "ON_ERROR_STOP=1", "--single-transaction", "--file", "-",
+  ], sql);
+}
+
+function saveId(registration: Registration): string {
+  return String((registration.save as Record<string, unknown>).id);
+}
 
 function register(hashCharacter: string, timestamp: string): Registration {
   return JSON.parse(psql(registerSql(hashCharacter, timestamp))) as Registration;
 }
 
 function registerSql(hashCharacter: string, timestamp: string): string {
-  return `select distillery_create_or_get_slack_save('stable', repeat('${hashCharacter}', 64), 'T12345678', 'C12345678', '${timestamp}', null, 'U12345678', null, 'slack:T12345678:C12345678:${timestamp}')`;
+  return `select distillery_create_or_get_slack_save('stable', repeat('${hashCharacter}', 64), '${workspaceId}', '${channelId}', '${timestamp}', null, 'U12345678', null, 'slack_message:${workspaceId}:${channelId}:${timestamp}')`;
 }
 
-function commit(saveId: string, sources: SourceInput[]): void {
-  psql(commitSql(saveId, sources));
+function commit(input: ContextInput): ContextCommit {
+  return JSON.parse(psql(commitSql(input))) as ContextCommit;
 }
 
-function commitSql(saveId: string, sources: SourceInput[]): string {
-  return `select distillery_commit_slack_connector_sources('${saveId}', '${sqlLiteral(JSON.stringify(sources))}'::jsonb)`;
+function commitSql(input: ContextInput): string {
+  return `select distillery_commit_slack_context_bundle('${sqlLiteral(JSON.stringify(input))}'::jsonb)`;
 }
 
-type SourceInput = ReturnType<typeof source>;
+function context(input: {
+  saveId: string;
+  suffix: string;
+  timestamp: string;
+  contentHash: string;
+  selectedText: string;
+  selectedContentHash?: string;
+  replyText?: string;
+}) {
+  const profile = source({
+    prefix: `profile_${input.suffix}`,
+    sourceType: "slack_channel_profile",
+    externalId: `slack_channel_profile:${workspaceId}:${channelId}`,
+    content: "#incident-room\nTopic: Live incident coordination.",
+    contentHash: "2".repeat(64),
+    timestamp: input.timestamp,
+  });
+  const selected = source({
+    prefix: `selected_${input.suffix}`,
+    sourceType: "slack_message",
+    externalId: `slack_message:${workspaceId}:${channelId}:${input.timestamp}`,
+    content: input.selectedText,
+    contentHash: input.selectedContentHash ?? "3".repeat(64),
+    timestamp: input.timestamp,
+  });
+  const sources: SourceInput[] = [profile, selected];
+  const items = [
+    { id: `bundle_item_profile_${input.suffix}`, ordinal: 0, role: "channel_profile", requestedSourceVersionId: profile.sourceVersionId, externalId: profile.externalId, selectionReason: "Channel metadata", primary: false },
+    { id: `bundle_item_selected_${input.suffix}`, ordinal: 1, role: "selected_message", requestedSourceVersionId: selected.sourceVersionId, externalId: selected.externalId, selectionReason: "Invoked message", primary: true },
+  ];
+  if (input.replyText) {
+    const replyTimestamp = "1752624000.000002";
+    const reply = source({
+      prefix: `reply_${input.suffix}`,
+      sourceType: "slack_message",
+      externalId: `slack_message:${workspaceId}:${channelId}:${replyTimestamp}`,
+      content: input.replyText,
+      contentHash: "4".repeat(64),
+      timestamp: replyTimestamp,
+    });
+    sources.push(reply);
+    items.push({
+      id: `bundle_item_reply_${input.suffix}`, ordinal: 2, role: "thread_reply",
+      requestedSourceVersionId: reply.sourceVersionId, externalId: reply.externalId,
+      selectionReason: "Reply in selected thread", primary: false,
+    });
+  }
+  return {
+    id: `bundle_${input.suffix}`,
+    saveId: input.saveId,
+    selectedMessageTimestamp: input.timestamp,
+    threadTimestamp: input.replyText ? input.timestamp : null,
+    channelProfile: {
+      workspaceId, channelId, name: "incident-room", topic: "Live incident coordination.", purpose: "Resolve production incidents.",
+      isPublic: true, isPrivate: false, externallyShared: false, slackConnect: false, externalTeamIds: [],
+      capturedAt: "2026-07-16T12:00:00.000Z",
+    },
+    selectionStrategy: input.replyText ? "thread" : "selected_only",
+    selectionVersion: "slack-context-v1",
+    contentHash: input.contentHash,
+    capturedAt: "2026-07-16T12:00:00.000Z",
+    externallyShared: false,
+    truncation: {
+      truncated: false, messageLimitApplied: false, characterLimitApplied: false,
+      originalMessageCount: sources.length - 1, retainedMessageCount: sources.length - 1,
+      originalCharacterCount: input.selectedText.length + (input.replyText?.length ?? 0),
+      retainedCharacterCount: input.selectedText.length + (input.replyText?.length ?? 0),
+      omittedMessageTimestamps: [],
+    },
+    classification: {
+      category: "incident", rationale: "The messages describe and resolve a production failure.",
+      identities: { products: ["StablePay"], featureComponents: ["Checkout"], externalServices: [], issueTicketIds: [], releaseVersions: ["2.7.0"], environments: ["production"], namedOrganizations: [] },
+    },
+    skippedAttachments: [],
+    sources,
+    items,
+  };
+}
 
 function source(input: {
-  sourceItemId: string; sourceVersionId: string; ingestionId: string;
-  sourceType: "slack_message" | "slack_file_pdf" | "slack_file_docx";
-  externalId: string; canonicalUrl: string; mimeType: string; originalFilename?: string;
-  content: string; contentHash: string; spanId: string; locator: Record<string, unknown>;
+  prefix: string;
+  sourceType: "slack_message" | "slack_channel_profile" | "slack_file_pdf" | "slack_file_docx";
+  externalId: string;
+  content: string;
+  contentHash: string;
+  timestamp: string;
 }) {
+  const canonicalUrl = input.sourceType === "slack_channel_profile"
+    ? `https://example.slack.com/archives/${channelId}`
+    : `https://example.slack.com/archives/${channelId}/p${input.timestamp.replace(".", "")}`;
   return {
-    sourceItemId: input.sourceItemId,
-    sourceVersionId: input.sourceVersionId,
-    ingestionId: input.ingestionId,
+    sourceItemId: `src_${input.prefix}`,
+    sourceVersionId: `srcv_${input.prefix}`,
+    ingestionId: `ing_${input.prefix}`,
     sourceType: input.sourceType,
     provider: "slack",
     externalId: input.externalId,
-    canonicalUrl: input.canonicalUrl,
-    authorId: "U87654321",
-    authorLabel: "Ada Lovelace",
-    occurredAt: "2026-07-16T00:00:00.000Z",
-    mimeType: input.mimeType,
-    originalFilename: input.originalFilename ?? null,
+    canonicalUrl,
+    authorId: input.sourceType === "slack_channel_profile" ? null : "U87654321",
+    authorLabel: input.sourceType === "slack_channel_profile" ? "Slack channel profile" : "Ada Lovelace",
+    occurredAt: "2026-07-16T12:00:00.000Z",
+    mimeType: "text/plain",
+    originalFilename: null,
     content: input.content,
     contentHash: input.contentHash,
-    sourceMetadata: { workspaceId: "T12345678", channelId: "C12345678" },
+    sourceMetadata: {
+      workspaceId, channelId, messageTimestamp: input.timestamp,
+      permalink: canonicalUrl, authorId: "U87654321", authorLabel: "Ada Lovelace", occurredAt: "2026-07-16T12:00:00.000Z",
+    },
     evidenceSpans: [{
-      id: input.spanId,
-      sourceVersionId: input.sourceVersionId,
-      startLine: 1,
-      endLine: 1,
-      startChar: 0,
-      endChar: input.content.length,
+      id: `span_${input.prefix}`,
+      sourceVersionId: `srcv_${input.prefix}`,
+      startLine: 1, endLine: 1, startChar: 0, endChar: input.content.length,
       text: input.content,
-      locator: input.locator,
+      locator: { provider: "slack", channelId, messageTimestamp: input.timestamp, permalink: canonicalUrl },
     }],
   };
+}
+
+function createExtractionWork(id: string, bundleId: string): string {
+  psql(`insert into pending_work(
+    id, tenant_id, policy, subject_type, subject_id, caused_by_event_id, input_version,
+    status, attempts, lease_token, lease_expires_at
+  ) values (
+    '${id}', 'stable', 'extract_slack_context', 'context_bundle', '${bundleId}',
+    (select id from ledger_events where event_type = 'slack_context_committed' and subject_id = '${bundleId}'),
+    'extract:${bundleId}', 'running', 1, 'lease-${id}', now() + interval '15 minutes'
+  )`);
+  return id;
+}
+
+function completeWork(id: string): void {
+  psql(`update pending_work set status = 'running', attempts = greatest(attempts, 1), lease_token = 'lease-${id}', lease_expires_at = now() + interval '15 minutes' where id = '${id}' and status = 'pending'`);
+  psql(`select distillery_complete_pending_work('${id}', 'lease-${id}')`);
 }
 
 function psql(sql: string): string {

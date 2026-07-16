@@ -11,9 +11,14 @@ const SECRET_KEYS = [
   "SLACK_BOT_TOKEN",
   "SLACK_SIGNING_SECRET",
   "SLACK_ALLOWED_TEAM_ID",
-  "SLACK_ALLOWED_CHANNEL_IDS",
   "SLACK_ALLOWED_USER_IDS",
   "SLACK_SAVED_REACTION",
+] as const;
+const REQUIRED_LOCAL_SECRET_KEYS = [
+  "DISTILLERY_APP_PASSWORD",
+  "SUPABASE_URL",
+  "SUPABASE_SECRET_KEY",
+  "OPENROUTER_API_KEY",
 ] as const;
 
 type LocalEnv = Record<string, string>;
@@ -88,29 +93,24 @@ function run(label: string, args: string[], options: { input?: string; allowAlre
 
 async function main(): Promise<void> {
   const env = readLocalEnv();
-  requireEnv(env, "DISTILLERY_APP_PASSWORD");
-  requireEnv(env, "SUPABASE_URL");
-  requireEnv(env, "SUPABASE_SECRET_KEY");
-  requireEnv(env, "OPENROUTER_API_KEY");
-  requireEnv(env, "SLACK_BOT_TOKEN");
-  requireEnv(env, "SLACK_SIGNING_SECRET");
-  requireEnv(env, "SLACK_ALLOWED_TEAM_ID");
-  requireEnv(env, "SLACK_ALLOWED_CHANNEL_IDS");
-  requireEnv(env, "SLACK_ALLOWED_USER_IDS");
-  requireEnv(env, "SLACK_SAVED_REACTION");
+  for (const key of REQUIRED_LOCAL_SECRET_KEYS) requireEnv(env, key);
 
   run("cloudflare_auth", ["whoami"]);
   run("queue_create", ["queues", "create", QUEUE_NAME], { allowAlreadyExists: true });
 
   run("secrets", ["secret", "bulk", "--config", CONFIG_PATH], {
     input: JSON.stringify(Object.fromEntries(
-      SECRET_KEYS.map((key) => [key, requireEnv(env, key)]),
+      SECRET_KEYS.flatMap((key) => {
+        const value = env[key] ?? process.env[key];
+        return value ? [[key, value]] : [];
+      }),
     )),
   });
 
   const deployOutput = run("deploy", ["deploy", "--config", CONFIG_PATH]);
   run("triggers", ["triggers", "deploy", "--config", CONFIG_PATH]);
   const url = deployOutput.match(/https:\/\/[^\s]+\.workers\.dev/)?.[0];
+  const versionId = deployOutput.match(/Version ID:\s*([a-f0-9-]+)/i)?.[1];
 
   if (url) {
     const response = await fetch(`${url}/health`);
@@ -120,6 +120,7 @@ async function main(): Promise<void> {
 
     console.log(`health=ok`);
     console.log(`url=${url}`);
+    if (versionId) console.log(`version_id=${versionId}`);
   } else {
     console.log("url=not_found_in_wrangler_output");
   }

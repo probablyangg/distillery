@@ -34,6 +34,22 @@ async function main(): Promise<void> {
   const briefs = LeadershipBriefSchema.array().parse(await list.json());
   console.log(`briefs_authenticated=ok (count=${briefs.length})`);
 
+  const slackStatusResponse = await fetch(`${BASE_URL}/api/slack/status`, { headers: { cookie } });
+  if (!slackStatusResponse.ok) throw new Error(`Authenticated Slack status failed with ${slackStatusResponse.status}.`);
+  const slackStatus = await slackStatusResponse.json() as {
+    configured?: boolean; allowedTeamMatches?: boolean; exactScopes?: boolean;
+    allowedExternalChannelIds?: string[]; botUserId?: string;
+    savedReaction?: string; processingReaction?: string;
+  };
+  if (
+    !slackStatus.configured || !slackStatus.allowedTeamMatches || !slackStatus.exactScopes ||
+    !slackStatus.allowedExternalChannelIds?.includes("C0BG2JXTG77") ||
+    slackStatus.savedReaction !== "factory" || slackStatus.processingReaction !== "hourglass_flowing_sand"
+  ) {
+    throw new Error("Deployed Slack identity, scopes, reactions, or external-channel opt-in are not ready.");
+  }
+  console.log(`slack_status=ok (bot=${slackStatus.botUserId ?? "unknown"}, external_channels=${slackStatus.allowedExternalChannelIds.length})`);
+
   const first = briefs[0];
   if (first) {
     const detailShell = await fetch(`${BASE_URL}/briefs/${encodeURIComponent(first.id)}`);
