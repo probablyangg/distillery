@@ -24,6 +24,11 @@ import {
   ProposedEventSchema,
   CitedAnswerSchema,
   RecallMatchSchema,
+  UpdateInitiativeBriefInputSchema,
+  SynthesisClusterSchema,
+  SynthesisEnrichmentStateSchema,
+  SynthesisSimilaritySignalSchema,
+  SuggestedBriefSchema,
   type EvidenceSpan,
   type IngestionReceipt,
   type IngestionResult,
@@ -49,9 +54,10 @@ import {
   type PolicyRun,
   type PolicyName,
   type ProposedEvent,
+  type UpdateInitiativeBriefInput,
   type WorkSubjectType,
 } from "@distillery/contracts";
-import type { LoopPersistence, LoopRecoveryResult } from "@distillery/loop";
+import type { CorpusSynthesisState, LoopPersistence, LoopRecoveryResult } from "@distillery/loop";
 import type {
   HydratedRetrievalClaims,
   RetrievalCandidate,
@@ -295,6 +301,23 @@ export class SupabaseMemoryGenerationRepository implements MemoryGenerationRepos
     return parseTraceableBrief(result);
   }
 
+  async updateInitiativeBrief(input: {
+    briefId: string;
+    brief: UpdateInitiativeBriefInput;
+  }): Promise<InitiativeBrief> {
+    const brief = UpdateInitiativeBriefInputSchema.parse(input.brief);
+    const result = await this.rpcClient.rpc<unknown>("distillery_update_initiative_brief", {
+      p_tenant_id: "stable",
+      p_brief_id: input.briefId,
+      p_title: brief.title,
+      p_problem: brief.problem,
+      p_proposal: brief.proposal,
+      p_success_metric: brief.successMetric,
+      p_risks_and_dependencies: brief.risksAndDependencies ?? null,
+    });
+    return parseTraceableBrief(result);
+  }
+
   async recordInitiativeBriefDecision(input: {
     briefId: string;
     decisionId: string;
@@ -470,6 +493,16 @@ export class SupabaseLoopPersistence implements LoopPersistence {
     return ProposedEventSchema.parse(result);
   }
 
+  async commitAutoApprovedProposedEvents(
+    inputs: Array<Omit<ProposedEvent, "createdAt" | "updatedAt" | "validationStatus" | "validationIssues" | "reviewStatus" | "committedLedgerEventId">>,
+  ): Promise<ProposedEvent[]> {
+    if (inputs.length === 0) return [];
+    const result = await this.rpcClient.rpc<unknown>("distillery_commit_auto_proposed_events", {
+      p_proposed_events: inputs,
+    });
+    return ProposedEventSchema.array().parse(result);
+  }
+
   async markProposedEventValid(id: string): Promise<void> {
     await this.rpcClient.rpc("distillery_mark_proposed_event_valid", { p_id: id });
   }
@@ -575,6 +608,23 @@ export class SupabaseLoopPersistence implements LoopPersistence {
       p_limit: input.limit,
     });
     return MemoryWithEvidenceSchema.array().parse(result);
+  }
+
+  async getCorpusSynthesisState(input: { tenantId: string; limit: number; seedMemoryItemIds?: string[] }): Promise<CorpusSynthesisState> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_get_corpus_synthesis_state", {
+      p_tenant_id: input.tenantId,
+      p_limit: input.limit,
+      p_seed_memory_item_ids: input.seedMemoryItemIds ?? [],
+    });
+    return CorpusSynthesisStateResponseSchema.parse(result);
+  }
+
+  async scheduleSynthesisScanEvents(input: { tenantId: string; limit: number }): Promise<number> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_schedule_synthesis_scan_events", {
+      p_tenant_id: input.tenantId,
+      p_limit: input.limit,
+    });
+    return z.number().int().min(0).parse(result);
   }
 
   async getRetrievalVectorCandidates(input: {
@@ -819,4 +869,14 @@ const RetrievalGraphSnapshotSchema = z.object({
 const HydratedRetrievalClaimsSchema = z.object({
   claims: GraphRetrievalClaimSchema.array(),
   conflicts: ConflictGroupSchema.array().default([]),
+});
+
+const CorpusSynthesisStateResponseSchema = z.object({
+  memory: MemoryWithEvidenceSchema.array(),
+  connections: ClaimConnectionSchema.array().default([]),
+  similarities: SynthesisSimilaritySignalSchema.array().default([]),
+  conflicts: ConflictGroupSchema.array().default([]),
+  clusters: SynthesisClusterSchema.array().default([]),
+  enrichment: SynthesisEnrichmentStateSchema.array().default([]),
+  suggestedBriefs: SuggestedBriefSchema.array().default([]),
 });
