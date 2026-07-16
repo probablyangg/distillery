@@ -144,6 +144,86 @@ describe("loop system", () => {
     expect([...store.eventOutboxRows.values()].every((row) => row.status === "processed")).toBe(true);
   });
 
+  it("scheduled maintenance re-sends canonical pending connector work after a lost initial queue wakeup", async () => {
+    const store = new InMemoryLoopPersistence();
+    const event = await store.commitLedgerEventWithOutbox({
+      id: "levt_slack_save",
+      tenantId: "stable",
+      eventType: "slack_save_requested",
+      subjectType: "connector_save",
+      subjectId: "csave_1",
+      actorType: "connector",
+      inputVersion: "request_hash",
+      idempotencyKey: "slack-interaction:request_hash",
+      payload: { connectorSaveId: "csave_1" },
+    });
+    const { workItem } = await store.enqueuePendingWork({
+      tenantId: "stable",
+      policy: "ingest_slack_source",
+      subjectType: "connector_save",
+      subjectId: "csave_1",
+      causedByEventId: event.id,
+      inputVersion: "request_hash",
+    });
+    const messages: string[] = [];
+
+    await maintainLoop({
+      persistence: store,
+      queue: { async send(message) { messages.push(message.workItemId); } },
+      tenantId: "stable",
+      maxRows: 4,
+    });
+
+    expect(messages).toContain(workItem.id);
+    expect(store.pendingWorkItems.get(workItem.id)?.status).toBe("pending");
+  });
+
+  it("executes Slack connector work through the real policy registry without proposed domain events", async () => {
+    const store = new InMemoryLoopPersistence();
+    const event = await store.commitLedgerEventWithOutbox({
+      id: "levt_slack_policy",
+      tenantId: "stable",
+      eventType: "slack_save_requested",
+      subjectType: "connector_save",
+      subjectId: "csave_policy",
+      actorType: "connector",
+      inputVersion: "request_hash",
+      idempotencyKey: "slack-interaction:policy-request",
+      payload: { connectorSaveId: "csave_policy" },
+    });
+    const { workItem } = await store.enqueuePendingWork({
+      tenantId: "stable",
+      policy: "ingest_slack_source",
+      subjectType: "connector_save",
+      subjectId: "csave_policy",
+      causedByEventId: event.id,
+      inputVersion: "request_hash",
+    });
+    const calls: string[] = [];
+    const result = await executeWorkItem({
+      persistence: store,
+      policies: createPolicies({
+        persistence: store,
+        memoryModel: modelWithValidMemory(),
+        connectorPolicyRunner: {
+          async ingestSlackSource(saveId) { calls.push(`ingest:${saveId}`); return { sourceCount: 2 }; },
+          async syncSlackReaction(saveId) { calls.push(`reaction:${saveId}`); },
+        },
+      }),
+      workItemId: workItem.id,
+      newId: deterministicId(),
+    });
+
+    expect(calls).toEqual(["ingest:csave_policy"]);
+    expect(result?.proposedEvents).toEqual([]);
+    expect(store.pendingWorkItems.get(workItem.id)?.status).toBe("completed");
+    expect([...store.policyRuns.values()][0]).toMatchObject({
+      policyName: "ingest_slack_source",
+      status: "completed",
+      provider: "slack",
+    });
+  });
+
   it("recovers stale running work, closes its policy run, and requeues the work id", async () => {
     const store = new InMemoryLoopPersistence();
     const messages: string[] = [];

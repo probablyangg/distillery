@@ -133,6 +133,11 @@ export type PolicyInputEnvelope<T> = {
   inputSummary: Record<string, unknown>;
 };
 
+export type ConnectorPolicyRunner = {
+  ingestSlackSource(saveId: string): Promise<Record<string, unknown> | void>;
+  syncSlackReaction(saveId: string): Promise<Record<string, unknown> | void>;
+};
+
 export type ExtractMemoryInput = PolicyInputEnvelope<{
   ingestionId: string;
   tenantId: string;
@@ -221,6 +226,7 @@ export type LoopPersistence = MemoryRetrievalPersistence & {
     maxWorkAttempts?: number;
   }): Promise<LoopRecoveryResult>;
   listRecoveredPendingWork(input: { tenantId: string; limit: number }): Promise<PendingWorkItem[]>;
+  listPendingConnectorWork(input: { tenantId: string; limit: number }): Promise<PendingWorkItem[]>;
   createPolicyRun(input: Omit<PolicyRun, "createdAt"> & { createdAt?: string }): Promise<PolicyRun>;
   completePolicyRun(
     id: string,
@@ -453,7 +459,14 @@ export async function maintainLoop(args: {
     tenantId: args.tenantId,
     limit: args.recoveredWorkLimit ?? args.maxRows ?? DEFAULT_ROUTER_BATCH_SIZE,
   });
-  for (const workItem of recoveredPendingWork) {
+  const pendingConnectorWork = await args.persistence.listPendingConnectorWork({
+    tenantId: args.tenantId,
+    limit: args.recoveredWorkLimit ?? args.maxRows ?? DEFAULT_ROUTER_BATCH_SIZE,
+  });
+  const wakeups = new Map(
+    [...recoveredPendingWork, ...pendingConnectorWork].map((workItem) => [workItem.id, workItem]),
+  );
+  for (const workItem of wakeups.values()) {
     await args.queue.send({ workItemId: workItem.id });
   }
 
@@ -481,6 +494,7 @@ export function createPolicies(args: {
   embeddingModel?: EmbeddingModel;
   retrievalRerankerModel?: RetrievalRerankerModel;
   initiativeBriefDraftModel?: InitiativeBriefDraftModel;
+  connectorPolicyRunner?: ConnectorPolicyRunner;
   newId?: (prefix: string) => string;
 }): Record<PolicyName, Policy<unknown, PolicyOutput>> {
   const extractMemory = createExtractMemoryPolicy({
@@ -509,6 +523,8 @@ export function createPolicies(args: {
   const evaluateReadiness = createEvaluateSynthesisReadinessPolicy(args);
   const synthesizeBrief = createSynthesizeBriefPolicy(args);
   return {
+    ingest_slack_source: connectorSideEffectPolicy("ingest_slack_source", args.connectorPolicyRunner?.ingestSlackSource),
+    sync_slack_reaction: connectorSideEffectPolicy("sync_slack_reaction", args.connectorPolicyRunner?.syncSlackReaction),
     extract_memory: extractMemory as Policy<unknown, PolicyOutput>,
     extract_memory_section: extractMemorySection as Policy<unknown, PolicyOutput>,
     consolidate_memory: consolidateMemory as Policy<unknown, PolicyOutput>,
@@ -525,6 +541,40 @@ export function createPolicies(args: {
     draft_artifact: deterministicNoopPolicy("draft_artifact", "artifact_draft_proposed", "artifact_drafted"),
     gate_output: deterministicNoopPolicy("gate_output", "decision_record_proposed", "decision_committed"),
     revise_artifact: deterministicNoopPolicy("revise_artifact", "artifact_draft_proposed", "artifact_drafted"),
+  };
+}
+
+function connectorSideEffectPolicy(
+  name: "ingest_slack_source" | "sync_slack_reaction",
+  runner: ((saveId: string) => Promise<Record<string, unknown> | void>) | undefined,
+): Policy<PolicyInputEnvelope<{ saveId: string }>, PolicyOutput> {
+  return {
+    name,
+    version: `${name}-v1`,
+    async buildInput(workItem) {
+      const input = { saveId: workItem.subjectId };
+      return {
+        input,
+        inputHash: await sha256Hex(JSON.stringify(input)),
+        inputSummary: { connectorSaveId: workItem.subjectId },
+      };
+    },
+    async run(envelope) {
+      if (!runner) throw new Error(`${name} requires a connector policy runner.`);
+      const result = await runner(envelope.input.saveId);
+      return {
+        proposedEvents: [],
+        provider: "slack",
+        model: name,
+        promptVersion: "slack-connector-v1",
+        schemaVersion: "slack-connector-v1",
+        outputSchemaVersion: "slack-connector-v1",
+        ...(result ? { rawResponse: result } : {}),
+      };
+    },
+    async validate() {
+      return { ok: true, issues: [] };
+    },
   };
 }
 
@@ -1811,6 +1861,17 @@ export class InMemoryLoopPersistence implements LoopPersistence {
         const rightSeed = seedSet.has(right.memoryItem.id) ? 0 : 1;
         return leftSeed - rightSeed || left.memoryItem.id.localeCompare(right.memoryItem.id);
       })
+      .slice(0, input.limit);
+  }
+
+  async listPendingConnectorWork(input: { tenantId: string; limit: number }): Promise<PendingWorkItem[]> {
+    return [...this.pendingWorkItems.values()]
+      .filter((work) =>
+        work.tenantId === input.tenantId &&
+        work.status === "pending" &&
+        (work.policy === "ingest_slack_source" || work.policy === "sync_slack_reaction")
+      )
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
       .slice(0, input.limit);
   }
 
