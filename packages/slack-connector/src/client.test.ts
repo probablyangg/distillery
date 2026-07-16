@@ -91,6 +91,39 @@ describe("SlackWebClient", () => {
     });
   });
 
+  it("paginates the bounded nearby history window and returns unique top-level messages chronologically", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = formBody(init);
+      bodies.push(body);
+      return body.cursor
+        ? slackResponse({ messages: [message("1752623999.000001")] })
+        : slackResponse({
+          messages: [
+            message("1752624001.000001"),
+            { ...message("1752623998.000001"), thread_ts: "1752623990.000001" },
+          ],
+          response_metadata: { next_cursor: "next-page" },
+        });
+    });
+    const client = new SlackWebClient("xoxb-test", fetchImpl);
+    await expect(client.getNearbyTopLevelMessages({
+      channelId: "C12345678",
+      messageTimestamp: "1752624000.000001",
+      windowSeconds: 1_800,
+    })).resolves.toMatchObject([
+      { ts: "1752623999.000001" },
+      { ts: "1752624001.000001" },
+    ]);
+    expect(bodies).toEqual([
+      expect.objectContaining({
+        channel: "C12345678", oldest: "1752622200.000001", latest: "1752625800.000001",
+        inclusive: "true", limit: "100",
+      }),
+      expect.objectContaining({ cursor: "next-page" }),
+    ]);
+  });
+
   it("treats already_reacted as a successful idempotent reaction", async () => {
     const fetchImpl = vi.fn(async () => slackResponse({}, { ok: false, error: "already_reacted" }));
     const client = new SlackWebClient("xoxb-test", fetchImpl);

@@ -95,7 +95,7 @@ describe("Slack message shortcut handler", () => {
       workspaceId: "T12345678",
       channelId: "C12345678",
       messageTimestamp: "1752624000.000001",
-      externalSourceId: "slack:T12345678:C12345678:1752624000.000001",
+      externalSourceId: "slack_message:T12345678:C12345678:1752624000.000001",
     }));
     expect(send).toHaveBeenCalledWith({ workItemId: "work_slack_1" });
     expect(background).toHaveLength(1);
@@ -152,7 +152,6 @@ describe("Slack message shortcut handler", () => {
 
   it.each([
     ["workspace", { team: { id: "T99999999" } }],
-    ["channel", { channel: { id: "C99999999" } }],
     ["user", { user: { id: "U99999999" } }],
     ["direct message", { channel: { id: "D12345678" } }],
   ])("fails closed for a disallowed %s and sends a private error", async (_label, patch) => {
@@ -161,7 +160,7 @@ describe("Slack message shortcut handler", () => {
     const background: Promise<unknown>[] = [];
     const response = await handleSlackInteraction({
       request: signedRequest(payload(patch)),
-      config: config({ allowedChannelIds: new Set(["C12345678", "D12345678"]) }),
+      config: config(),
       tenantId: "stable",
       persistence: { createOrGetSlackSave },
       waitUntil: (promise) => background.push(promise),
@@ -177,8 +176,25 @@ describe("Slack message shortcut handler", () => {
     );
   });
 
-  it("rejects unsupported attachments without writing canonical state", async () => {
-    const createOrGetSlackSave = vi.fn();
+  it("registers any workspace channel and leaves membership validation to ingestion", async () => {
+    const createOrGetSlackSave = vi.fn(async () => registration());
+    const response = await handleSlackInteraction({
+      request: signedRequest(payload({ channel: { id: "C99999999", name: "another-channel" } })),
+      config: config(),
+      tenantId: "stable",
+      persistence: { createOrGetSlackSave },
+      now: NOW_MS,
+    });
+
+    expect(response.status).toBe(200);
+    expect(createOrGetSlackSave).toHaveBeenCalledWith(expect.objectContaining({
+      channelId: "C99999999",
+      externalSourceId: "slack_message:T12345678:C99999999:1752624000.000001",
+    }));
+  });
+
+  it("durably registers text even when the shortcut payload mentions unsupported media", async () => {
+    const createOrGetSlackSave = vi.fn(async () => registration());
     const response = await handleSlackInteraction({
       request: signedRequest(payload({
         message: {
@@ -192,7 +208,7 @@ describe("Slack message shortcut handler", () => {
       now: NOW_MS,
     });
     expect(response.status).toBe(200);
-    expect(createOrGetSlackSave).not.toHaveBeenCalled();
+    expect(createOrGetSlackSave).toHaveBeenCalledOnce();
   });
 
   it("returns 503 and no false success when atomic registration fails", async () => {
@@ -290,7 +306,6 @@ function config(overrides: Partial<Parameters<typeof handleSlackInteraction>[0][
   return {
     signingSecret: SIGNING_SECRET,
     allowedTeamId: "T12345678",
-    allowedChannelIds: new Set(["C12345678"]),
     allowedUserIds: new Set(["U12345678"]),
     ...overrides,
   };
@@ -305,7 +320,7 @@ function registration(overrides: Partial<SlackSaveRegistrationResult> = {}): Sla
     channelId: "C12345678",
     messageTimestamp: "1752624000.000001",
     invokingUserId: "U12345678",
-    externalSourceId: "slack:T12345678:C12345678:1752624000.000001",
+    externalSourceId: "slack_message:T12345678:C12345678:1752624000.000001",
     status: "pending",
     workItemId: "work_slack_1",
     attachmentSourceIds: [],

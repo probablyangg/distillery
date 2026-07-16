@@ -18,9 +18,15 @@ const SlackConversationSchema = z.object({
   is_im: z.boolean().optional(),
   is_mpim: z.boolean().optional(),
   is_member: z.boolean().optional(),
+  is_private: z.boolean().optional(),
   is_ext_shared: z.boolean().optional(),
   is_ext_ws_shared: z.boolean().optional(),
   is_pending_ext_shared: z.boolean().optional(),
+  is_org_shared: z.boolean().optional(),
+  topic: z.object({ value: z.string().default("") }).passthrough().optional(),
+  purpose: z.object({ value: z.string().default("") }).passthrough().optional(),
+  shared_team_ids: z.array(z.string()).optional(),
+  connected_team_ids: z.array(z.string()).optional(),
 }).passthrough();
 
 const SlackFileSchema = z.object({
@@ -41,9 +47,16 @@ const SlackMessageSchema = z.object({
   type: z.literal("message"),
   ts: z.string().min(1),
   thread_ts: z.string().optional(),
-  user: z.string().min(1),
+  user: z.string().min(1).optional(),
+  bot_id: z.string().min(1).optional(),
+  username: z.string().min(1).optional(),
+  subtype: z.string().optional(),
   text: z.string().default(""),
   files: z.array(z.object({ id: z.string().min(1) }).passthrough()).default([]),
+  edited: z.object({ user: z.string().optional(), ts: z.string().min(1) }).passthrough().optional(),
+  blocks: z.array(z.record(z.string(), z.unknown())).default([]),
+  attachments: z.array(z.record(z.string(), z.unknown())).default([]),
+  reply_count: z.number().int().min(0).optional(),
 }).passthrough();
 
 export type SlackConversation = z.infer<typeof SlackConversationSchema>;
@@ -118,6 +131,56 @@ export class SlackWebClient {
     const message = messages.find((candidate) => candidate.ts === input.messageTimestamp);
     if (!message) throw new SlackApiError("conversations.history", "message_not_found", false);
     return message;
+  }
+
+  async getThread(channelId: string, threadTimestamp: string): Promise<SlackMessage[]> {
+    const messages: SlackMessage[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page += 1) {
+      const result = await this.api("conversations.replies", {
+        channel: channelId,
+        ts: threadTimestamp,
+        limit: 100,
+        ...(cursor ? { cursor } : {}),
+      });
+      messages.push(...z.array(SlackMessageSchema).parse(result.messages ?? []));
+      const nextCursor = z.object({
+        response_metadata: z.object({ next_cursor: z.string().optional() }).optional(),
+      }).passthrough().parse(result).response_metadata?.next_cursor?.trim();
+      if (!nextCursor) break;
+      cursor = nextCursor;
+    }
+    return [...new Map(messages.map((message) => [message.ts, message])).values()]
+      .sort((left, right) => Number.parseFloat(left.ts) - Number.parseFloat(right.ts));
+  }
+
+  async getNearbyTopLevelMessages(input: {
+    channelId: string;
+    messageTimestamp: string;
+    windowSeconds: number;
+  }): Promise<SlackMessage[]> {
+    const selectedSeconds = Number.parseFloat(input.messageTimestamp);
+    const messages: SlackMessage[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page += 1) {
+      const result = await this.api("conversations.history", {
+        channel: input.channelId,
+        oldest: (selectedSeconds - input.windowSeconds).toFixed(6),
+        latest: (selectedSeconds + input.windowSeconds).toFixed(6),
+        inclusive: true,
+        limit: 100,
+        ...(cursor ? { cursor } : {}),
+      });
+      messages.push(...z.array(SlackMessageSchema).parse(result.messages ?? []));
+      const nextCursor = z.object({
+        response_metadata: z.object({ next_cursor: z.string().optional() }).optional(),
+      }).passthrough().parse(result).response_metadata?.next_cursor?.trim();
+      if (!nextCursor) break;
+      cursor = nextCursor;
+    }
+    return [...new Map(messages.map((message) => [message.ts, message])).values()]
+      .filter((message) => !message.thread_ts && message.ts !== input.messageTimestamp)
+      .sort((left, right) => Number.parseFloat(left.ts) - Number.parseFloat(right.ts));
   }
 
   async getUserLabel(userId: string): Promise<string> {

@@ -9,7 +9,7 @@ describe("version-controlled Slack pilot configuration", () => {
     expect(manifest).toContain("name: Save to Distillery");
     expect(manifest).toContain("type: message");
     expect(manifest).toContain("callback_id: save_to_distillery");
-    expect(manifest).toContain("description: Save this message and supported attachments as evidence.");
+    expect(manifest).toContain("description: Save this message with bounded thread or nearby context as evidence.");
     expect(manifest).toContain("request_url: https://distillery-v0.angela-f4b.workers.dev/api/slack/interactions");
     expect(manifest).toContain("socket_mode_enabled: false");
     expect(manifest).not.toContain("slash_commands");

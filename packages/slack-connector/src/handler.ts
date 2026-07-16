@@ -2,7 +2,6 @@ import type {
   SlackMessageShortcutPayload,
   SlackSaveRegistrationResult,
 } from "@distillery/contracts";
-import { validateShortcutAttachments } from "./limits";
 import {
   SlackRequestError,
   parseSlackInteractionBody,
@@ -13,7 +12,6 @@ import {
 export type SlackInteractionConfig = {
   signingSecret: string;
   allowedTeamId: string;
-  allowedChannelIds: Set<string>;
   allowedUserIds: Set<string>;
 };
 
@@ -83,8 +81,7 @@ export async function handleSlackInteraction(input: {
     return slackErrorResponse(requestError);
   }
 
-  const rejection = validateAccess(payload, input.config)
-    ?? validateShortcutAttachments(payload.message.files ?? []);
+  const rejection = validateAccess(payload, input.config);
   if (rejection) {
     safeLog(input.logger, {
       event: "slack_interaction_rejected",
@@ -104,7 +101,7 @@ export async function handleSlackInteraction(input: {
 
   try {
     const requestHash = await sha256Hex(rawBody);
-    const externalSourceId = `slack:${payload.team.id}:${payload.channel.id}:${payload.message.ts}`;
+    const externalSourceId = `slack_message:${payload.team.id}:${payload.channel.id}:${payload.message.ts}`;
     const result = await input.persistence.createOrGetSlackSave({
       tenantId: input.tenantId,
       requestHash,
@@ -119,7 +116,7 @@ export async function handleSlackInteraction(input: {
 
     const background = Promise.resolve()
       .then(async () => {
-        if (result.save.reactionStatus !== "added") await input.onRegistered?.(result);
+        if (!result.replayed) await input.onRegistered?.(result);
       })
       .catch(() => {
         safeLog(input.logger, {
@@ -177,7 +174,6 @@ function safeLog(
 function validateAccess(payload: SlackMessageShortcutPayload, config: SlackInteractionConfig): string | null {
   if (payload.team.id !== config.allowedTeamId) return "This Slack workspace is not allowed to save into Distillery.";
   if (!config.allowedUserIds.has(payload.user.id)) return "You are not in the Distillery pilot allowlist.";
-  if (!config.allowedChannelIds.has(payload.channel.id)) return "This channel is not in the Distillery source allowlist.";
   if (payload.channel.id.startsWith("D")) return "Direct messages cannot be saved to Distillery.";
   return null;
 }

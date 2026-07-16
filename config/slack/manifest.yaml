@@ -3,7 +3,7 @@ _metadata:
   minor_version: 1
 display_information:
   name: Distillery
-  description: Save allowlisted leadership evidence into Distillery.
+  description: Save bounded, evidence-backed Slack conversation context to Distillery.
   background_color: "#070b12"
 features:
   bot_user:
@@ -13,7 +13,7 @@ features:
     - name: Save to Distillery
       type: message
       callback_id: save_to_distillery
-      description: Save this message and supported attachments as evidence.
+      description: Save this message with bounded thread or nearby context as evidence.
 oauth_config:
   scopes:
     bot:
