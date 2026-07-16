@@ -2,3 +2,12 @@ DISTILLERY_APP_PASSWORD=""
 SUPABASE_URL=""
 SUPABASE_SECRET_KEY=""
 OPENROUTER_API_KEY=""
+# Slack secrets. Never commit populated values.
+SLACK_BOT_TOKEN=""
+SLACK_SIGNING_SECRET=""
+# Slack non-secret, fail-closed pilot configuration.
+SLACK_ALLOWED_TEAM_ID=""
+SLACK_ALLOWED_CHANNEL_IDS=""
+SLACK_ALLOWED_USER_IDS=""
+SLACK_SAVED_REACTION="factory"
+SLACK_PROCESSING_REACTION="hourglass_flowing_sand"

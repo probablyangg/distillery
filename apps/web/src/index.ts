@@ -14,6 +14,7 @@ import {
   type MemoryWithEvidence,
   type ProposedEvent,
   type SuggestedBrief,
+  type LeadershipBrief,
 } from "@distillery/contracts";
 import { SupabaseMemoryGenerationRepository, SupabaseRpcClient } from "@distillery/db";
 import { SupabaseLoopPersistence } from "@distillery/db";
@@ -47,10 +48,19 @@ import {
   buildSynthesisBundle,
   validateInitiativeBriefDraftTraceability,
 } from "@distillery/memory-synthesis";
+import {
+  handleSlackInteraction as handleSlackMessageAction,
+  ingestSlackSource,
+  parseCsvAllowlist,
+  SlackWebClient,
+  syncSlackReaction,
+} from "@distillery/slack-connector";
 
 const SESSION_COOKIE_NAME = "distillery_session";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const MAX_DRAFT_MEMORY_ITEMS = 20;
+const SLACK_SAVED_REACTION = "factory";
+const SLACK_PROCESSING_REACTION = "hourglass_flowing_sand";
 
 export type Env = {
   DISTILLERY_APP_PASSWORD: string;
@@ -77,6 +87,13 @@ export type Env = {
   EMBEDDING_MODEL?: string;
   EMBEDDING_DIMENSIONS?: string;
   EMBEDDING_ENCODING_FORMAT?: string;
+  SLACK_BOT_TOKEN?: string;
+  SLACK_SIGNING_SECRET?: string;
+  SLACK_ALLOWED_TEAM_ID?: string;
+  SLACK_ALLOWED_CHANNEL_IDS?: string;
+  SLACK_ALLOWED_USER_IDS?: string;
+  SLACK_SAVED_REACTION?: string;
+  SLACK_PROCESSING_REACTION?: string;
   MEMORY_GENERATION_QUEUE?: Queue<{ workItemId: string }>;
 };
 
@@ -86,6 +103,10 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/health") {
       return json({ ok: true, service: "distillery-v0" });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/slack/interactions") {
+      return handleSlackInteractions(request, env, ctx);
     }
 
     if (request.method === "GET" && url.pathname === "/") {
@@ -98,6 +119,10 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/graph") {
       return html(renderGraphShell());
+    }
+
+    if (request.method === "GET" && (url.pathname === "/briefs" || /^\/briefs\/[^/]+$/u.test(url.pathname))) {
+      return html(renderBriefReaderShell());
     }
 
     if (request.method === "GET" && url.pathname === "/assets/d3-local.js") {
@@ -150,6 +175,15 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/api/initiative-briefs") {
       return handleListInitiativeBriefs(env);
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/briefs") {
+      return handleListLeadershipBriefs(env);
+    }
+
+    const leadershipBriefMatch = url.pathname.match(/^\/api\/briefs\/([^/]+)$/u);
+    if (request.method === "GET" && leadershipBriefMatch?.[1]) {
+      return handleGetLeadershipBrief(decodeRouteParam(leadershipBriefMatch[1]), env);
     }
 
     if (request.method === "GET" && url.pathname === "/api/synthesis/opportunities") {
@@ -279,6 +313,42 @@ async function runScheduledLoopMaintenance(env: Env): Promise<void> {
     cancelledSeedWorkCount: result.cancelledSeedWorkCount,
     routedWorkCount: result.routedWorkItems.length,
   }));
+}
+
+async function handleSlackInteractions(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  if (
+    !env.SLACK_BOT_TOKEN ||
+    !env.SLACK_SIGNING_SECRET ||
+    !env.SLACK_ALLOWED_TEAM_ID ||
+    !env.SLACK_ALLOWED_CHANNEL_IDS ||
+    !env.SLACK_ALLOWED_USER_IDS ||
+    !env.MEMORY_GENERATION_QUEUE ||
+    (env.SLACK_SAVED_REACTION?.trim() ?? SLACK_SAVED_REACTION) !== SLACK_SAVED_REACTION ||
+    (env.SLACK_PROCESSING_REACTION?.trim() ?? SLACK_PROCESSING_REACTION) !== SLACK_PROCESSING_REACTION
+  ) {
+    return json({ error: "slack_connector_not_configured" }, 503);
+  }
+  return handleSlackMessageAction({
+    request,
+    tenantId: DEFAULT_TENANT_ID,
+    config: {
+      signingSecret: env.SLACK_SIGNING_SECRET,
+      allowedTeamId: env.SLACK_ALLOWED_TEAM_ID,
+      allowedChannelIds: parseCsvAllowlist(env.SLACK_ALLOWED_CHANNEL_IDS),
+      allowedUserIds: parseCsvAllowlist(env.SLACK_ALLOWED_USER_IDS),
+    },
+    persistence: createLoopPersistence(env),
+    ...(env.MEMORY_GENERATION_QUEUE ? { queue: env.MEMORY_GENERATION_QUEUE } : {}),
+    onRegistered: async (result) => {
+      await new SlackWebClient(env.SLACK_BOT_TOKEN!).addReaction({
+        channelId: result.save.channelId,
+        messageTimestamp: result.save.messageTimestamp,
+        reaction: SLACK_PROCESSING_REACTION,
+      });
+    },
+    waitUntil: (promise) => ctx.waitUntil(promise),
+    logger: (fields) => console.log(JSON.stringify(fields)),
+  });
 }
 
 async function handleLogin(request: Request, env: Env): Promise<Response> {
@@ -570,6 +640,20 @@ async function handleGraphRebuild(env: Env): Promise<Response> {
 async function handleListInitiativeBriefs(env: Env): Promise<Response> {
   const briefs = await createRepository(env).listInitiativeBriefs({ limit: 50 });
   return json(briefs);
+}
+
+async function handleListLeadershipBriefs(env: Env): Promise<Response> {
+  return json(await createRepository(env).listLeadershipBriefs({ limit: 50 }));
+}
+
+async function handleGetLeadershipBrief(briefId: string, env: Env): Promise<Response> {
+  try {
+    return json(await createRepository(env).getLeadershipBrief(briefId));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("leadership brief not found")) return json({ error: "Brief not found" }, 404);
+    throw error;
+  }
 }
 
 async function handleListSynthesisOpportunities(url: URL, env: Env): Promise<Response> {
@@ -893,7 +977,8 @@ async function routeAndMaybeExecuteLoop(env: Env, preferredSubjectId?: string): 
 async function processWorkItem(workItemId: string, env: Env): Promise<void> {
   const persistence = createLoopPersistence(env);
   const embeddingModel = createEmbeddingModel(env);
-  await executeWorkItem({
+  const slackClient = env.SLACK_BOT_TOKEN ? new SlackWebClient(env.SLACK_BOT_TOKEN) : undefined;
+  const executed = await executeWorkItem({
     persistence,
     policies: createPolicies({
       persistence,
@@ -936,9 +1021,41 @@ async function processWorkItem(workItemId: string, env: Env): Promise<void> {
         maxFallbackTimeoutMs: 45_000,
         maxFallbackModels: 1,
       })),
+      connectorPolicyRunner: {
+        async ingestSlackSource(saveId) {
+          if (!slackClient) throw new Error("SLACK_BOT_TOKEN is required for Slack connector work.");
+          return ingestSlackSource({
+            saveId,
+            persistence,
+            slack: slackClient,
+            reaction: SLACK_SAVED_REACTION,
+            processingReaction: SLACK_PROCESSING_REACTION,
+            ...(env.MEMORY_GENERATION_QUEUE ? { queue: env.MEMORY_GENERATION_QUEUE } : {}),
+          });
+        },
+        async syncSlackReaction(saveId) {
+          if (!slackClient) throw new Error("SLACK_BOT_TOKEN is required for Slack reaction work.");
+          return syncSlackReaction({
+            saveId,
+            persistence,
+            slack: slackClient,
+            reaction: SLACK_SAVED_REACTION,
+            processingReaction: SLACK_PROCESSING_REACTION,
+            ...(env.MEMORY_GENERATION_QUEUE ? { queue: env.MEMORY_GENERATION_QUEUE } : {}),
+          });
+        },
+      },
     }),
     workItemId,
   });
+
+  if (!executed) return;
+  const reactionWork = await persistence.listSlackReactionWorkForCompletedWork(executed.workItem.id);
+  if (env.MEMORY_GENERATION_QUEUE) {
+    await Promise.all(reactionWork.map((work) => env.MEMORY_GENERATION_QUEUE!.send({ workItemId: work.id })));
+  } else {
+    await Promise.all(reactionWork.map((work) => processWorkItem(work.id, env)));
+  }
 }
 
 function createEmbeddingModel(env: Env): OpenRouterEmbeddingModel | undefined {
@@ -1382,7 +1499,7 @@ function renderAppShell(): string {
     <section class="card hidden" id="app-card">
       <h1>What should Distillery remember or answer?</h1>
       <p>v0 accepts text braindumps and cited questions. Ask returns stored evidence or an explicit gap.</p>
-      <p><a href="/synthesis">Open Memory Synthesis review</a></p>
+      <p><a href="/briefs">Briefs</a> · <a href="/synthesis">Memory Synthesis review</a> · <a href="/graph">Graph review</a></p>
       <div class="row"><button id="logout" type="button" class="secondary">Log out</button></div>
       <form id="capture-form">
         <textarea id="text" placeholder="Paste a Stable leadership braindump..."></textarea>
@@ -1674,6 +1791,355 @@ function renderAppShell(): string {
 </html>`;
 }
 
+function renderBriefReaderShell(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Briefs · Distillery</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; --bg:#070b12; --panel:#101827; --panel-2:#0b1220; --line:#2b3a51; --text:#f8fafc; --muted:#a8b5c7; --link:#7dd3fc; --cyan:#38bdf8; --green:#34d399; --amber:#fbbf24; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; background:radial-gradient(circle at 12% 0%, rgba(56,189,248,.10), transparent 28%), var(--bg); color:var(--text); line-height:1.55; }
+    a { color:var(--link); text-underline-offset:3px; }
+    a:focus-visible, button:focus-visible, input:focus-visible { outline:3px solid #fde68a; outline-offset:3px; }
+    button, input { font:inherit; }
+    button { border:0; border-radius:9px; padding:10px 14px; background:var(--cyan); color:#082f49; font-weight:800; cursor:pointer; }
+    button.secondary { color:#e2e8f0; background:#223148; border:1px solid #3c4e69; }
+    input { width:100%; border:1px solid #465873; border-radius:9px; background:#07101e; color:var(--text); padding:11px 12px; }
+    .skip { position:absolute; left:-9999px; top:8px; z-index:5; background:#fff; color:#000; padding:8px; }
+    .skip:focus { left:8px; }
+    .site-header { border-bottom:1px solid var(--line); background:rgba(7,11,18,.92); position:sticky; top:0; z-index:3; backdrop-filter:blur(14px); }
+    .header-inner { width:min(1120px, calc(100% - 32px)); margin:auto; min-height:66px; display:flex; align-items:center; justify-content:space-between; gap:18px; }
+    .brand { color:#fff; font-size:18px; font-weight:850; text-decoration:none; letter-spacing:-.02em; }
+    nav { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+    nav a[aria-current="page"] { color:#fff; font-weight:800; }
+    main { width:min(1120px, calc(100% - 32px)); margin:0 auto; padding:38px 0 72px; }
+    h1 { font-size:clamp(32px, 6vw, 56px); letter-spacing:-.045em; line-height:1.02; margin:0 0 12px; }
+    h2 { font-size:24px; margin:0 0 10px; letter-spacing:-.02em; }
+    h3 { margin:0 0 8px; }
+    p { margin:0 0 14px; }
+    .lede { max-width:720px; color:#cbd5e1; font-size:18px; }
+    .hidden { display:none !important; }
+    .panel { border:1px solid var(--line); border-radius:14px; background:linear-gradient(180deg, rgba(16,24,39,.98), rgba(10,17,29,.98)); padding:22px; box-shadow:0 22px 70px rgba(0,0,0,.2); }
+    .login { width:min(460px, 100%); margin:56px auto 0; }
+    .stack { display:grid; gap:12px; }
+    .status { min-height:24px; color:#cbd5e1; margin:20px 0; }
+    .error { border-color:#fb7185; color:#fecdd3; }
+    .empty { border:1px dashed #465873; border-radius:14px; padding:28px; color:#cbd5e1; background:rgba(11,18,32,.72); }
+    .brief-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:16px; }
+    .brief-card { display:flex; flex-direction:column; gap:13px; min-height:290px; color:inherit; text-decoration:none; transition:transform .14s ease, border-color .14s ease; }
+    .brief-card:hover { transform:translateY(-2px); border-color:#4f6b91; }
+    .brief-card h2 { font-size:23px; }
+    .brief-card p { color:#d6deea; }
+    .card-meta { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:auto; color:var(--muted); font-size:14px; }
+    .badge { display:inline-flex; align-items:center; border:1px solid #42607d; border-radius:999px; padding:3px 9px; font-size:12px; font-weight:850; text-transform:uppercase; letter-spacing:.05em; background:#102237; color:#bae6fd; }
+    .badge.approved { border-color:#2f765e; background:#0b2b23; color:#bbf7d0; }
+    .eyebrow { color:#7dd3fc; font-size:13px; font-weight:850; text-transform:uppercase; letter-spacing:.09em; margin-bottom:8px; }
+    .why { border-left:3px solid var(--cyan); padding-left:14px; color:#cbd5e1; }
+    .detail { display:grid; gap:18px; }
+    .detail-header { margin-bottom:8px; }
+    .detail-meta { display:flex; gap:10px; align-items:center; flex-wrap:wrap; color:var(--muted); }
+    .section-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:16px; }
+    .section-grid .wide { grid-column:1 / -1; }
+    ul { margin:8px 0 0; padding-left:22px; }
+    .citation-list { display:grid; gap:13px; }
+    .citation { border:1px solid #33445e; border-radius:12px; padding:16px; background:#091220; }
+    .citation header { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; flex-wrap:wrap; }
+    blockquote { margin:12px 0 0; padding:12px 14px; border-left:3px solid var(--amber); background:#0e1726; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .fine { color:var(--muted); font-size:13px; }
+    @media (max-width:760px) { .brief-grid, .section-grid { grid-template-columns:1fr; } .section-grid .wide { grid-column:auto; } .header-inner { align-items:flex-start; padding:14px 0; } nav { justify-content:flex-end; } main { padding-top:28px; } }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#main-content">Skip to main content</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="/">Distillery</a>
+      <nav aria-label="Authenticated application">
+        <a href="/">Capture</a>
+        <a href="/briefs" aria-current="page">Briefs</a>
+        <a href="/synthesis">Review</a>
+        <a href="/graph">Graph</a>
+        <button id="logout" class="secondary hidden" type="button">Log out</button>
+      </nav>
+    </div>
+  </header>
+  <main id="main-content" tabindex="-1">
+    <section id="login" class="panel login" aria-labelledby="login-title">
+      <p class="eyebrow">Private pilot</p>
+      <h1 id="login-title">Leadership briefs</h1>
+      <p>Enter the shared Distillery password to view generated, evidence-backed briefs.</p>
+      <form id="login-form" class="stack">
+        <label for="password">Shared password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required />
+        <button type="submit">Continue</button>
+      </form>
+      <p id="login-status" class="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="reader" class="hidden" aria-labelledby="page-title">
+      <div id="reader-heading">
+        <p class="eyebrow">Read-only leadership view</p>
+        <h1 id="page-title">Briefs</h1>
+        <p class="lede">Distillery-generated briefs, grounded in the source evidence that leadership can inspect.</p>
+      </div>
+      <p id="reader-status" class="status" role="status" aria-live="polite">Loading briefs…</p>
+      <div id="reader-content"></div>
+    </section>
+  </main>
+  <script>
+    const login = document.querySelector("#login");
+    const reader = document.querySelector("#reader");
+    const loginForm = document.querySelector("#login-form");
+    const loginStatus = document.querySelector("#login-status");
+    const readerStatus = document.querySelector("#reader-status");
+    const readerContent = document.querySelector("#reader-content");
+    const readerHeading = document.querySelector("#reader-heading");
+    const logout = document.querySelector("#logout");
+
+    loginForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      loginStatus.textContent = "Checking password…";
+      const response = await fetch("/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ password: document.querySelector("#password").value })
+      });
+      if (!response.ok) { loginStatus.textContent = "That password did not match."; return; }
+      openReader();
+    });
+
+    logout.addEventListener("click", async () => {
+      await fetch("/logout", { method: "POST" });
+      reader.classList.add("hidden");
+      logout.classList.add("hidden");
+      login.classList.remove("hidden");
+      document.querySelector("#password").focus();
+    });
+
+    async function checkSession() {
+      const response = await fetch("/api/session");
+      if (response.ok) openReader();
+    }
+
+    function openReader() {
+      login.classList.add("hidden");
+      reader.classList.remove("hidden");
+      logout.classList.remove("hidden");
+      loginStatus.textContent = "";
+      loadCurrentView();
+    }
+
+    async function loadCurrentView() {
+      const match = location.pathname.match(/^\\/briefs\\/([^/]+)$/);
+      if (match) return loadDetail(decodeURIComponent(match[1]));
+      return loadList();
+    }
+
+    async function loadList() {
+      readerHeading.classList.remove("hidden");
+      readerStatus.textContent = "Loading briefs…";
+      readerContent.replaceChildren();
+      try {
+        const response = await fetch("/api/briefs");
+        if (handleUnauthorized(response)) return;
+        if (!response.ok) throw new Error("Briefs could not be loaded.");
+        const briefs = await response.json();
+        if (!Array.isArray(briefs) || briefs.length === 0) {
+          readerStatus.textContent = "";
+          const empty = element("div", "empty");
+          empty.append(element("h2", "", "No generated briefs yet"), element("p", "", "When Distillery finds enough connected evidence to generate a brief, it will appear here."));
+          readerContent.append(empty);
+          return;
+        }
+        const grid = element("div", "brief-grid");
+        for (const brief of briefs) grid.append(renderCard(brief));
+        readerContent.append(grid);
+        readerStatus.textContent = briefs.length + (briefs.length === 1 ? " brief" : " briefs") + ", newest first.";
+      } catch (error) {
+        renderFailure("Briefs are temporarily unavailable. Refresh the page to try again.");
+      }
+    }
+
+    async function loadDetail(briefId) {
+      readerHeading.classList.add("hidden");
+      readerStatus.textContent = "Loading brief…";
+      readerContent.replaceChildren();
+      try {
+        const response = await fetch("/api/briefs/" + encodeURIComponent(briefId));
+        if (handleUnauthorized(response)) return;
+        if (response.status === 404) { renderFailure("This generated brief was not found or is no longer available."); return; }
+        if (!response.ok) throw new Error("Brief could not be loaded.");
+        const brief = await response.json();
+        readerContent.append(renderDetail(brief));
+        readerStatus.textContent = "Brief loaded.";
+        document.title = brief.title + " · Distillery";
+      } catch (error) {
+        renderFailure("This brief is temporarily unavailable. Refresh the page to try again.");
+      }
+    }
+
+    function renderCard(brief) {
+      const card = element("a", "panel brief-card");
+      card.href = "/briefs/" + encodeURIComponent(brief.id);
+      const top = element("div");
+      top.append(statusBadge(brief.status), element("h2", "", brief.title));
+      card.append(top, element("p", "", brief.summary));
+      const why = element("p", "why", brief.whyGenerated);
+      why.setAttribute("aria-label", "Why Distillery generated this brief: " + brief.whyGenerated);
+      card.append(why);
+      const meta = element("div", "card-meta");
+      meta.append(
+        element("span", "", brief.supportingSourceCount + (brief.supportingSourceCount === 1 ? " supporting source" : " supporting sources")),
+        element("span", "", "Updated " + formatDate(brief.updatedAt))
+      );
+      card.append(meta);
+      return card;
+    }
+
+    function renderDetail(brief) {
+      const article = element("article", "detail");
+      const back = element("a", "", "← All briefs");
+      back.href = "/briefs";
+      const header = element("header", "detail-header");
+      header.append(element("p", "eyebrow", "Leadership brief"), element("h1", "", brief.title));
+      const meta = element("div", "detail-meta");
+      meta.append(statusBadge(brief.status), element("span", "", brief.supportingSourceCount + " supporting sources"), element("span", "", "Updated " + formatDate(brief.updatedAt)));
+      header.append(meta);
+      const why = element("section", "panel");
+      why.append(element("h2", "", "Why Distillery generated this"), element("p", "why", brief.whyGenerated));
+      const sections = element("div", "section-grid");
+      sections.append(
+        textSection("Executive summary", brief.executiveSummary, "wide"),
+        textSection("What appears to be happening", brief.whatIsHappening),
+        textSection("Decisions and commitments", brief.decisionsAndCommitments),
+        listSection("Risks", brief.risks),
+        listSection("Dependencies", brief.dependencies),
+        listSection("Open questions", brief.openQuestions),
+        listSection("Conflicting evidence", brief.conflictingEvidence)
+      );
+      const sources = element("section", "panel wide");
+      sources.append(element("h2", "", "Supporting sources"));
+      if (!brief.citations || brief.citations.length === 0) {
+        sources.append(element("p", "fine", "No source citations are available for this brief."));
+      } else {
+        const list = element("div", "citation-list");
+        for (const citation of brief.citations) list.append(renderCitation(citation));
+        sources.append(list);
+      }
+      article.append(back, header, why, sections, sources);
+      return article;
+    }
+
+    function textSection(title, text, className) {
+      const section = element("section", "panel " + (className || ""));
+      section.append(element("h2", "", title), element("p", "", text || "No information recorded."));
+      return section;
+    }
+
+    function listSection(title, values) {
+      const section = element("section", "panel");
+      section.append(element("h2", "", title));
+      if (!Array.isArray(values) || values.length === 0) {
+        section.append(element("p", "fine", "No information recorded."));
+      } else {
+        const list = element("ul");
+        for (const value of values) list.append(element("li", "", String(value)));
+        section.append(list);
+      }
+      return section;
+    }
+
+    function renderCitation(citation) {
+      const item = element("article", "citation");
+      const header = element("header");
+      const label = element("div");
+      label.append(element("strong", "", citation.authorOrTitle), element("div", "fine", sourceTypeLabel(citation.sourceType) + " · " + formatDate(citation.occurredAt) + locatorLabel(citation.locator)));
+      header.append(label);
+      const originalUrl = safeSlackUrl(citation.originalUrl);
+      if (originalUrl) {
+        const link = element("a", "", "Open in Slack");
+        link.href = originalUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        header.append(link);
+      }
+      const quote = element("blockquote", "", citation.exactText);
+      item.append(header, quote);
+      return item;
+    }
+
+    function locatorLabel(locator) {
+      if (!locator) return "";
+      if (locator.pageNumber) return " · Page " + locator.pageNumber;
+      if (locator.paragraphNumber) return " · Paragraph " + locator.paragraphNumber;
+      if (locator.messageTimestamp) return " · Slack message";
+      return "";
+    }
+
+    function sourceTypeLabel(value) {
+      return ({ slack_message: "Slack message", slack_file_pdf: "PDF", slack_file_docx: "DOCX", text_braindump: "Distillery note" })[value] || "Source";
+    }
+
+    function safeSlackUrl(value) {
+      if (typeof value !== "string") return null;
+      try {
+        const url = new URL(value);
+        const host = url.hostname.toLowerCase();
+        return url.protocol === "https:" && (host === "slack.com" || host.endsWith(".slack.com"))
+          ? url.href
+          : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function statusBadge(status) {
+      return element("span", "badge " + (status === "approved" ? "approved" : ""), status === "approved" ? "Approved" : "Draft");
+    }
+
+    function renderFailure(message) {
+      readerStatus.textContent = "";
+      readerContent.replaceChildren();
+      const failure = element("div", "panel error");
+      failure.append(element("h2", "", "Unable to load"), element("p", "", message));
+      const retry = element("button", "secondary", "Try again");
+      retry.type = "button";
+      retry.addEventListener("click", loadCurrentView);
+      failure.append(retry);
+      readerContent.append(failure);
+    }
+
+    function handleUnauthorized(response) {
+      if (response.status !== 401) return false;
+      reader.classList.add("hidden");
+      logout.classList.add("hidden");
+      login.classList.remove("hidden");
+      loginStatus.textContent = "Your session expired. Enter the shared password again.";
+      return true;
+    }
+
+    function formatDate(value) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value || "");
+      return new Intl.DateTimeFormat(undefined, { dateStyle:"medium", timeStyle:"short" }).format(date);
+    }
+
+    function element(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className.trim();
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    checkSession();
+  </script>
+</body>
+</html>`;
+}
+
 function renderGraphShell(): string {
   return `<!doctype html>
 <html lang="en">
@@ -1832,7 +2298,7 @@ function renderGraphShell(): string {
           <h1>Claim Graph</h1>
           <div class="subtitle">Review memory clusters, links, evidence, and conflicts.</div>
         </div>
-        <a href="/">Home</a>
+        <div class="row"><a href="/">Home</a><a href="/briefs">Briefs</a></div>
       </div>
       <div class="row">
         <button id="rebuild" type="button" class="secondary" title="Rebuild graph projection">Rebuild</button>
@@ -2727,7 +3193,7 @@ function renderSynthesisShell(): string {
     <section class="card hidden" id="app-card">
       <h1>Memory Synthesis</h1>
       <p>Select evidence-backed memory, optionally say what the brief should focus on, and let Distillery draft the initiative brief for review.</p>
-      <p><a href="/">Back to Memory Generation</a></p>
+      <p><a href="/">Memory Generation</a> · <a href="/briefs">Briefs</a> · <a href="/graph">Graph</a></p>
       <div class="row"><button id="logout" type="button" class="secondary">Log out</button></div>
       <div class="row">
         <button id="load-memory" type="button">Load active memory</button>

@@ -11,6 +11,7 @@
     "@distillery/memory-retrieval": "workspace:*",
     "@distillery/memory-synthesis": "workspace:*",
     "@distillery/model-gateway": "workspace:*",
+    "@distillery/slack-connector": "workspace:*",
     "d3": "^7.9.0"
   },
   "devDependencies": {
