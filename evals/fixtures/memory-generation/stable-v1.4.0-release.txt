@@ -1,0 +1,43 @@
+# Stable v1.4.0 release overview
+
+Stable v1.4.0 is a coordinated protocol release focused on predictable block execution, lower node storage overhead, and safer operation during periods of heavy payment traffic. The release combines several independent changes behind one compatibility boundary so operators can upgrade once and validate the complete payment path. The target activation height will be announced only after the public testnet rehearsal and validator readiness check have both completed.
+
+The release does not change the meaning of existing balances, transaction receipts, or evidence retained by downstream indexers. It does change scheduling, mempool rechecks, storage internals, and block-space accounting. Teams should therefore treat the release as an operational upgrade even when application-facing APIs remain stable.
+
+# Optimistic Parallel Execution (OPE)
+
+Optimistic Parallel Execution schedules transactions concurrently when their declared access patterns do not conflict. Execution results are checked before commit, and conflicting work is replayed in canonical order. The safety rule remains deterministic: every validator must arrive at the same committed state even if its speculative scheduling choices differ.
+
+Operators should watch replay rate, execution latency, and CPU saturation during the rehearsal. High replay rates reduce the performance benefit but do not weaken correctness. OPE will remain behind the release activation boundary until the reference load test shows repeatable gains for payment-heavy blocks without a material rise in failed execution.
+
+# Selective RecheckTx
+
+Selective RecheckTx avoids rechecking every mempool transaction after each committed block. The node instead rechecks transactions affected by state changes and retains unaffected transactions without redundant execution. This reduces validator work when blocks are full and the remaining mempool is large.
+
+The correctness boundary is the dependency classifier. Any transaction whose validity could have changed must be selected for recheck. The release includes conservative invalidation rules for balances, account nonces, fee allowances, and module-level dependencies. A conservative extra recheck costs time; a missed dependency could preserve an invalid transaction, so safety takes priority over maximum savings.
+
+# MemIAVL storage
+
+MemIAVL becomes the recommended state-store path for upgraded nodes. It keeps the authenticated application state compatible while reducing write amplification and improving recent-version reads. Snapshot and state-sync compatibility are tested across the old and new storage paths so a rolling validator upgrade does not require a coordinated database export.
+
+Node operators must retain their existing backup and rollback procedure. Storage migration happens locally and does not rewrite historical application evidence. The rehearsal will compare app hashes at every height, test restart recovery, and verify that pruning settings still retain the history required by each operator's indexers and audit systems.
+
+# 2D Nonce and Guaranteed Blockspace
+
+The 2D Nonce design separates an account's ordinary transaction sequence from a reserved payment lane. The additional dimension allows independent progress for explicitly supported traffic without discarding replay protection. Wallets that do not use the new lane continue to submit ordinary transactions with their existing nonce behavior.
+
+Guaranteed Blockspace reserves a bounded part of each block for eligible payment traffic. It is not unlimited capacity and it does not bypass transaction validity checks. Admission, nonce checks, fees, and execution remain deterministic. The reservation is intended to prevent unrelated bursts from consuming every slot needed by time-sensitive payment flows.
+
+The two features are tested together because a reserved slot is only useful when an unrelated pending transaction cannot block the eligible payment sequence. Metrics must distinguish ordinary and reserved lanes, including admission count, utilization, rejected transactions, and unused capacity returned to the general block builder.
+
+# Compatibility and rollout
+
+Validators, RPC operators, indexers, wallets, and explorers should upgrade before the announced activation height. Existing JSON-RPC methods remain available. New response fields are additive, and clients must ignore fields they do not understand. Transaction hashes and committed receipts keep their existing interpretation.
+
+The supported rollout is a rolling binary upgrade followed by activation through the established governance path. Operators should verify binary checksums, take a database backup, confirm disk headroom, and run the readiness command before restarting. Mixed-version operation is supported before activation, but all voting power must be on the compatible release before the feature boundary is crossed.
+
+# Deferred work and known limits
+
+This release does not enable arbitrary application-defined reserved lanes, dynamic blockspace auctions, or automatic tuning of the OPE scheduler. Those ideas remain deferred until the fixed payment lane has production evidence. Cross-lane fee markets and more aggressive dependency inference are also outside the v1.4.0 scope.
+
+The first production checkpoint will review replay rate, selective-recheck savings, state-store latency, reserved-lane utilization, and app-hash agreement. If any correctness signal diverges, operators will follow the documented halt and rollback procedure. Performance improvements are useful only while deterministic execution, replay protection, and complete operational evidence remain intact.

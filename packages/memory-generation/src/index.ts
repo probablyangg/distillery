@@ -19,6 +19,7 @@ export const MEMORY_GENERATION_VERSION = "memory-generation-v0.1";
 export { MEMORY_PROMPT_VERSION };
 export const MEMORY_SCHEMA_VERSION = "generated-memory-batch-v0.2";
 export const DEFAULT_TENANT_ID = "stable";
+export * from "./sectioning";
 
 export type TextCaptureCommand = {
   mode: "remember";
