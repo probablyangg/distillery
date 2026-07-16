@@ -8,6 +8,12 @@ const SECRET_KEYS = [
   "SUPABASE_URL",
   "SUPABASE_SECRET_KEY",
   "OPENROUTER_API_KEY",
+  "SLACK_BOT_TOKEN",
+  "SLACK_SIGNING_SECRET",
+  "SLACK_ALLOWED_TEAM_ID",
+  "SLACK_ALLOWED_CHANNEL_IDS",
+  "SLACK_ALLOWED_USER_IDS",
+  "SLACK_SAVED_REACTION",
 ] as const;
 
 type LocalEnv = Record<string, string>;
@@ -86,6 +92,12 @@ async function main(): Promise<void> {
   requireEnv(env, "SUPABASE_URL");
   requireEnv(env, "SUPABASE_SECRET_KEY");
   requireEnv(env, "OPENROUTER_API_KEY");
+  requireEnv(env, "SLACK_BOT_TOKEN");
+  requireEnv(env, "SLACK_SIGNING_SECRET");
+  requireEnv(env, "SLACK_ALLOWED_TEAM_ID");
+  requireEnv(env, "SLACK_ALLOWED_CHANNEL_IDS");
+  requireEnv(env, "SLACK_ALLOWED_USER_IDS");
+  requireEnv(env, "SLACK_SAVED_REACTION");
 
   run("cloudflare_auth", ["whoami"]);
   run("queue_create", ["queues", "create", QUEUE_NAME], { allowAlreadyExists: true });
