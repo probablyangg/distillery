@@ -31,6 +31,9 @@ import {
   SuggestedBriefSchema,
   StoredMemorySectionPlanSchema,
   MemorySectionSchema,
+  LeadershipBriefSchema,
+  SlackConnectorSaveSchema,
+  SlackSaveRegistrationResultSchema,
   type EvidenceSpan,
   type IngestionReceipt,
   type IngestionResult,
@@ -61,6 +64,10 @@ import {
   type StoredMemorySectionPlan,
   type MemorySection,
   type GeneratedMemoryItem,
+  type LeadershipBrief,
+  type SlackConnectorSave,
+  type SlackSaveRegistrationResult,
+  type ConnectorSourceInput,
 } from "@distillery/contracts";
 import type { CorpusSynthesisState, LoopPersistence, LoopRecoveryResult } from "@distillery/loop";
 import type {
@@ -339,6 +346,22 @@ export class SupabaseMemoryGenerationRepository implements MemoryGenerationRepos
 
     return parseTraceableBrief(result);
   }
+
+  async listLeadershipBriefs(input: { limit?: number } = {}): Promise<LeadershipBrief[]> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_list_leadership_briefs", {
+      p_tenant_id: "stable",
+      p_limit: input.limit ?? 50,
+    });
+    return LeadershipBriefSchema.array().parse(result);
+  }
+
+  async getLeadershipBrief(briefId: string): Promise<LeadershipBrief> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_get_leadership_brief", {
+      p_tenant_id: "stable",
+      p_brief_id: briefId,
+    });
+    return LeadershipBriefSchema.parse(result);
+  }
 }
 
 export class SupabaseLoopPersistence implements LoopPersistence {
@@ -461,6 +484,107 @@ export class SupabaseLoopPersistence implements LoopPersistence {
       p_limit: input.limit,
     });
     return PendingWorkItemSchema.array().parse(result);
+  }
+
+  async listPendingConnectorWork(input: { tenantId: string; limit: number }): Promise<PendingWorkItem[]> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_list_pending_connector_work", {
+      p_tenant_id: input.tenantId,
+      p_limit: input.limit,
+    });
+    return PendingWorkItemSchema.array().parse(result);
+  }
+
+  async createOrGetSlackSave(input: {
+    tenantId: string;
+    requestHash: string;
+    workspaceId: string;
+    channelId: string;
+    messageTimestamp: string;
+    threadTimestamp?: string;
+    invokingUserId: string;
+    responseUrl?: string;
+    externalSourceId: string;
+  }): Promise<SlackSaveRegistrationResult> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_create_or_get_slack_save", {
+      p_tenant_id: input.tenantId,
+      p_request_hash: input.requestHash,
+      p_workspace_id: input.workspaceId,
+      p_channel_id: input.channelId,
+      p_message_timestamp: input.messageTimestamp,
+      p_thread_timestamp: input.threadTimestamp ?? null,
+      p_invoking_user_id: input.invokingUserId,
+      p_response_url: input.responseUrl ?? null,
+      p_external_source_id: input.externalSourceId,
+    });
+    return SlackSaveRegistrationResultSchema.parse(result);
+  }
+
+  async getSlackConnectorSave(saveId: string): Promise<SlackConnectorSave> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_get_slack_connector_save", { p_save_id: saveId });
+    return SlackConnectorSaveSchema.parse(result);
+  }
+
+  async isSlackConnectorExtractionComplete(saveId: string): Promise<boolean> {
+    return Boolean(await this.rpcClient.rpc<unknown>("distillery_is_slack_connector_extraction_complete", {
+      p_save_id: saveId,
+    }));
+  }
+
+  async listSlackReactionWorkForCompletedWork(workItemId: string): Promise<PendingWorkItem[]> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_list_slack_reaction_work_for_completed_work", {
+      p_work_item_id: workItemId,
+    });
+    return PendingWorkItemSchema.array().parse(result);
+  }
+
+  async markSlackConnectorSaveProcessing(saveId: string): Promise<void> {
+    await this.rpcClient.rpc("distillery_mark_slack_connector_processing", { p_save_id: saveId });
+  }
+
+  async commitSlackConnectorSources(input: { saveId: string; sources: ConnectorSourceInput[] }): Promise<SlackConnectorSave> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_commit_slack_connector_sources", {
+      p_save_id: input.saveId,
+      p_sources: input.sources,
+    });
+    return SlackConnectorSaveSchema.parse(result);
+  }
+
+  async recordSlackConnectorFailure(input: {
+    saveId: string;
+    errorCode: string;
+    userMessage: string;
+    retryable: boolean;
+  }): Promise<{ save: SlackConnectorSave; workItemId?: string | null }> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_record_slack_connector_failure", {
+      p_save_id: input.saveId,
+      p_error_code: input.errorCode,
+      p_user_message: input.userMessage,
+      p_retryable: input.retryable,
+    });
+    const parsed = ConnectorWorkResponseSchema.parse(result);
+    return {
+      save: parsed.save,
+      ...(parsed.workItemId === undefined ? {} : { workItemId: parsed.workItemId }),
+    };
+  }
+
+  async markSlackReactionAdded(saveId: string): Promise<void> {
+    await this.rpcClient.rpc("distillery_mark_slack_reaction_added", { p_save_id: saveId });
+  }
+
+  async recordSlackReactionFailure(input: {
+    saveId: string;
+    errorCode: string;
+  }): Promise<{ save: SlackConnectorSave; workItemId?: string | null }> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_record_slack_reaction_failure", {
+      p_save_id: input.saveId,
+      p_error_code: input.errorCode,
+    });
+    const parsed = ConnectorWorkResponseSchema.parse(result);
+    return {
+      save: parsed.save,
+      ...(parsed.workItemId === undefined ? {} : { workItemId: parsed.workItemId }),
+    };
   }
 
   async createPolicyRun(input: Omit<PolicyRun, "createdAt"> & { createdAt?: string }): Promise<PolicyRun> {
@@ -911,6 +1035,11 @@ const MemorySectionContextResponseSchema = z.object({
 const PendingWorkEnqueueResponseSchema = z.object({
   workItem: PendingWorkItemSchema,
   inserted: z.boolean(),
+});
+
+const ConnectorWorkResponseSchema = z.object({
+  save: SlackConnectorSaveSchema,
+  workItemId: z.string().nullable().optional(),
 });
 
 const LoopRecoveryResponseSchema = z.object({
