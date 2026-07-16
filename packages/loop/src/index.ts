@@ -13,6 +13,8 @@ import {
   type LedgerEvent,
   type MemoryEntity,
   type MemoryWithEvidence,
+  type MemorySection,
+  type StoredMemorySectionPlan,
   type PendingWorkItem,
   type PolicyName,
   type PolicyRun,
@@ -33,6 +35,13 @@ import {
   MEMORY_SCHEMA_VERSION,
   type CommittableMemoryItem,
   type IngestionContext,
+  consolidateSectionCandidates,
+  decideMemorySectioning,
+  deterministicMemorySectionPlan,
+  resolveMemorySectioningConfig,
+  subdivideSaturatedSection,
+  validateMemorySectionPlan,
+  type MemorySectioningConfig,
 } from "@distillery/memory-generation";
 import type {
   InitiativeBriefDraftModel,
@@ -41,6 +50,7 @@ import type {
   MemoryConnectionScoringCandidate,
   MemoryConnectionScoringDecision,
   MemoryGenerationModel,
+  MemorySectionPlannerModel,
   RetrievalRerankerModel,
 } from "@distillery/model-gateway";
 import type { EmbeddingModel } from "@distillery/model-gateway";
@@ -51,6 +61,7 @@ import {
   type RetrievalGraphSnapshot,
 } from "@distillery/memory-retrieval";
 import { renderSynthesisIntent } from "@distillery/prompts";
+import { MEMORY_SECTION_PROMPT_VERSION } from "@distillery/prompts";
 import {
   MEMORY_SYNTHESIS_VERSION,
   CORPUS_SYNTHESIS_VERSION,
@@ -90,6 +101,7 @@ export type EventRoute = {
 };
 
 export type ProposedEventDraft = {
+  id?: string;
   proposedEventType: ProposedEventType;
   targetEventType: EventType;
   subjectType: WorkSubjectType;
@@ -128,6 +140,19 @@ export type ExtractMemoryInput = PolicyInputEnvelope<{
   evidenceSpans: EvidenceSpan[];
   existingRelatedMemory: unknown[];
   memoryGenerationSchema: string;
+}>;
+
+export type ExtractMemorySectionInput = PolicyInputEnvelope<{
+  section: MemorySection;
+  plan: StoredMemorySectionPlan;
+  evidenceSpans: EvidenceSpan[];
+  workItemId: string;
+  leaseToken: string;
+}>;
+
+export type ConsolidateMemoryInput = PolicyInputEnvelope<{
+  plan: StoredMemorySectionPlan;
+  causedByEventId: string;
 }>;
 
 export type SynthesizeBriefInput = PolicyInputEnvelope<{
@@ -172,7 +197,7 @@ type ProposedEventCreateInput = Omit<
 
 export type LoopPersistence = MemoryRetrievalPersistence & {
   commitLedgerEventWithOutbox(input: Omit<LedgerEvent, "createdAt"> & { createdAt?: string }): Promise<LedgerEvent>;
-  claimEventOutboxRow(leaseSeconds?: number): Promise<EventOutboxRow | null>;
+  claimEventOutboxRow(leaseSeconds?: number, preferredSubjectId?: string): Promise<EventOutboxRow | null>;
   loadLedgerEvent(id: string): Promise<LedgerEvent | null>;
   markEventOutboxProcessed(id: string, leaseToken?: string): Promise<void>;
   markEventOutboxFailed(id: string, error: string, leaseToken?: string): Promise<void>;
@@ -268,6 +293,20 @@ export type LoopPersistence = MemoryRetrievalPersistence & {
   getCorpusSynthesisState(input: { tenantId: string; limit: number; seedMemoryItemIds?: string[] }): Promise<CorpusSynthesisState>;
   rebuildGraphProjection(input: { tenantId: string }): Promise<unknown>;
   scheduleSynthesisScanEvents(input: { tenantId: string; limit: number }): Promise<number>;
+  getMemorySectionPlan(sourceVersionId: string): Promise<StoredMemorySectionPlan | null>;
+  createMemorySectionPlan(input: Record<string, unknown>): Promise<StoredMemorySectionPlan>;
+  getMemorySectionContext(sectionId: string): Promise<{ section: MemorySection; plan: StoredMemorySectionPlan; evidenceSpans: EvidenceSpan[] }>;
+  startMemorySection(input: { sectionId: string; workItemId: string; leaseToken: string }): Promise<MemorySection>;
+  completeMemorySection(input: {
+    sectionId: string;
+    workItemId: string;
+    leaseToken: string;
+    extractionRunId: string;
+    candidateCount: number;
+    autoItems: GeneratedMemoryItem[];
+    reviewItems: GeneratedMemoryItem[];
+  }): Promise<MemorySection>;
+  markMemorySectionPlanConsolidating(sourceVersionId: string): Promise<void>;
 };
 
 export type QueueLike = {
@@ -295,6 +334,12 @@ export const DEFAULT_ROUTER_BATCH_SIZE = 25;
 
 export const eventRoutes: EventRoute[] = [
   route("source_committed", "extract_memory", "source"),
+  route("memory_section_ready", "extract_memory_section", "section"),
+  {
+    ...route("memory_section_completed", "consolidate_memory", "source"),
+    getSubjectId: (event) => String(event.payload.sourceVersionId ?? event.subjectId),
+    getInputVersion: (event) => `${String(event.payload.planId ?? event.inputVersion ?? event.id)}:${String(event.payload.completedSectionOrdinal ?? event.id)}`,
+  },
   route("memory_committed", "connect_memory", "memory"),
   route("memory_committed", "detect_contradiction", "memory"),
   route("memory_committed", "update_embeddings", "memory"),
@@ -341,6 +386,7 @@ export async function routeCommittedEvents(args: {
   queue?: QueueLike;
   maxRows?: number;
   outboxLeaseSeconds?: number;
+  preferredSubjectId?: string;
 }): Promise<PendingWorkItem[]> {
   const workItems: PendingWorkItem[] = [];
   const maxRows = args.maxRows ?? DEFAULT_ROUTER_BATCH_SIZE;
@@ -348,6 +394,7 @@ export async function routeCommittedEvents(args: {
   for (let count = 0; count < maxRows; count += 1) {
     const outboxRow = await args.persistence.claimEventOutboxRow(
       args.outboxLeaseSeconds ?? DEFAULT_OUTBOX_LEASE_SECONDS,
+      count === 0 ? args.preferredSubjectId : undefined,
     );
     if (!outboxRow) break;
 
@@ -427,6 +474,8 @@ export async function maintainLoop(args: {
 export function createPolicies(args: {
   persistence: LoopPersistence;
   memoryModel: MemoryGenerationModel;
+  memorySectionPlannerModel?: MemorySectionPlannerModel;
+  memorySectioningConfig?: Partial<MemorySectioningConfig>;
   memoryVerifierModel?: MemoryCandidateVerifierModel;
   memoryConnectionScorerModel?: MemoryConnectionScorerModel;
   embeddingModel?: EmbeddingModel;
@@ -437,7 +486,19 @@ export function createPolicies(args: {
   const extractMemory = createExtractMemoryPolicy({
     persistence: args.persistence,
     memoryModel: args.memoryModel,
+    ...(args.memorySectionPlannerModel ? { memorySectionPlannerModel: args.memorySectionPlannerModel } : {}),
+    memorySectioningConfig: resolveMemorySectioningConfig(args.memorySectioningConfig),
     ...(args.memoryVerifierModel ? { memoryVerifierModel: args.memoryVerifierModel } : {}),
+    ...(args.newId ? { newId: args.newId } : {}),
+  });
+  const extractMemorySection = createExtractMemorySectionPolicy({
+    persistence: args.persistence,
+    memoryModel: args.memoryModel,
+    ...(args.memoryVerifierModel ? { memoryVerifierModel: args.memoryVerifierModel } : {}),
+    ...(args.newId ? { newId: args.newId } : {}),
+  });
+  const consolidateMemory = createConsolidateMemoryPolicy({
+    persistence: args.persistence,
     ...(args.newId ? { newId: args.newId } : {}),
   });
   const connectMemory = createConnectMemoryPolicy(args);
@@ -449,6 +510,8 @@ export function createPolicies(args: {
   const synthesizeBrief = createSynthesizeBriefPolicy(args);
   return {
     extract_memory: extractMemory as Policy<unknown, PolicyOutput>,
+    extract_memory_section: extractMemorySection as Policy<unknown, PolicyOutput>,
+    consolidate_memory: consolidateMemory as Policy<unknown, PolicyOutput>,
     connect_memory: connectMemory as Policy<unknown, PolicyOutput>,
     discover_candidate: deterministicNoopPolicy("discover_candidate", "candidate_proposed", "candidate_created"),
     check_freshness: deterministicNoopPolicy("check_freshness", "freshness_warning_proposed", "freshness_warning_committed"),
@@ -462,6 +525,368 @@ export function createPolicies(args: {
     draft_artifact: deterministicNoopPolicy("draft_artifact", "artifact_draft_proposed", "artifact_drafted"),
     gate_output: deterministicNoopPolicy("gate_output", "decision_record_proposed", "decision_committed"),
     revise_artifact: deterministicNoopPolicy("revise_artifact", "artifact_draft_proposed", "artifact_drafted"),
+  };
+}
+
+function sectionReadyDraft(plan: StoredMemorySectionPlan, section: MemorySection): ProposedEventDraft {
+  return {
+    id: `pevt_section_ready_${section.id}`,
+    proposedEventType: "section_update_proposed",
+    targetEventType: "memory_section_ready",
+    subjectType: "section",
+    subjectId: section.id,
+    payload: {
+      planId: plan.id,
+      ingestionId: plan.ingestionId,
+      sourceVersionId: plan.sourceVersionId,
+      sectionId: section.id,
+      sectionOrdinal: section.ordinal,
+      sectionTitle: section.title,
+      sectionCount: plan.sections.length,
+    },
+    evidenceSpanIds: [section.startEvidenceSpanId, section.endEvidenceSpanId],
+    requiresHumanApproval: false,
+  };
+}
+
+function createExtractMemorySectionPolicy(args: {
+  persistence: LoopPersistence;
+  memoryModel: MemoryGenerationModel;
+  memoryVerifierModel?: MemoryCandidateVerifierModel;
+  newId?: (prefix: string) => string;
+}): Policy<ExtractMemorySectionInput, PolicyOutput> {
+  return {
+    name: "extract_memory_section",
+    version: "extract-memory-section-v0.1",
+    async buildInput(workItem) {
+      if (!workItem.leaseToken) throw new Error("Section work requires a lease token.");
+      const context = await args.persistence.getMemorySectionContext(workItem.subjectId);
+      const section = await args.persistence.startMemorySection({
+        sectionId: workItem.subjectId,
+        workItemId: workItem.id,
+        leaseToken: workItem.leaseToken,
+      });
+      const input = {
+        ...context,
+        section,
+        workItemId: workItem.id,
+        leaseToken: workItem.leaseToken,
+      };
+      return {
+        input,
+        inputHash: await sha256Hex(JSON.stringify({
+          sectionId: section.id,
+          evidenceSpanIds: context.evidenceSpans.map((span) => span.id),
+          sourceVersionId: section.sourceVersionId,
+        })),
+        inputSummary: {
+          ingestionId: section.ingestionId,
+          sourceVersionId: section.sourceVersionId,
+          sectionId: section.id,
+          sectionOrdinal: section.ordinal,
+          sectionCount: context.plan.sections.length,
+          evidenceSpanCount: context.evidenceSpans.length,
+        },
+      };
+    },
+    async run(envelope) {
+      if (envelope.input.section.status === "completed") {
+        return sectionCompletedOutput(envelope.input.plan, envelope.input.section);
+      }
+
+      structuredSectionLog("memory_section_extraction_started", {
+        ingestionId: envelope.input.section.ingestionId,
+        sourceVersionId: envelope.input.section.sourceVersionId,
+        sectionId: envelope.input.section.id,
+        sectionOrdinal: envelope.input.section.ordinal,
+        sectionCount: envelope.input.plan.sections.length,
+      });
+
+      const extracted = await extractSectionCandidatesWithSubdivision({
+        ingestionId: envelope.input.section.ingestionId,
+        sourceVersionId: envelope.input.section.sourceVersionId,
+        evidenceSpans: envelope.input.evidenceSpans,
+        memoryModel: args.memoryModel,
+        ...(args.memoryVerifierModel ? { memoryVerifierModel: args.memoryVerifierModel } : {}),
+        maxSubdivisionDepth: 3,
+      });
+      const extractionRunId = `extr_${envelope.input.section.id}`;
+      await args.persistence.recordExtractionRun({
+        id: extractionRunId,
+        ingestionId: envelope.input.section.ingestionId,
+        tenantId: envelope.input.section.tenantId,
+        provider: "openrouter",
+        model: extracted.models.join("+") || "deterministic-fallback",
+        promptVersion: MEMORY_PROMPT_VERSION,
+        schemaVersion: MEMORY_SCHEMA_VERSION,
+        rawResponse: extracted.raw,
+        status: "completed",
+      });
+      const completed = await args.persistence.completeMemorySection({
+        sectionId: envelope.input.section.id,
+        workItemId: envelope.input.workItemId,
+        leaseToken: envelope.input.leaseToken,
+        extractionRunId,
+        candidateCount: extracted.candidateCount,
+        autoItems: extracted.autoItems,
+        reviewItems: extracted.reviewItems,
+      });
+      structuredSectionLog("memory_section_extraction_completed", {
+        ingestionId: completed.ingestionId,
+        sourceVersionId: completed.sourceVersionId,
+        sectionId: completed.id,
+        sectionOrdinal: completed.ordinal,
+        sectionCount: envelope.input.plan.sections.length,
+        candidateCount: completed.candidateCount,
+      });
+      return {
+        ...sectionCompletedOutput(envelope.input.plan, completed),
+        provider: "openrouter",
+        model: extracted.models.join("+") || "deterministic-fallback",
+        fallbackUsed: extracted.fallbackReasons.length > 0,
+        fallbackReason: extracted.fallbackReasons.join(" | ") || undefined,
+        promptVersion: MEMORY_PROMPT_VERSION,
+        schemaVersion: MEMORY_SCHEMA_VERSION,
+        outputSchemaVersion: MEMORY_SCHEMA_VERSION,
+        rawResponse: extracted.raw,
+      };
+    },
+    async validate(output) {
+      const event = output.proposedEvents[0];
+      if (output.proposedEvents.length !== 1 || event?.proposedEventType !== "section_update_proposed" || event.targetEventType !== "memory_section_completed") {
+        return { ok: false, issues: [{ code: "invalid_section_completion", message: "Section extraction must emit one completion event.", path: ["proposedEvents"] }] };
+      }
+      return { ok: true, issues: [] };
+    },
+  };
+}
+
+function sectionCompletedOutput(plan: StoredMemorySectionPlan, section: MemorySection): PolicyOutput {
+  return {
+    proposedEvents: [{
+      id: `pevt_section_completed_${section.id}`,
+      proposedEventType: "section_update_proposed",
+      targetEventType: "memory_section_completed",
+      subjectType: "section",
+      subjectId: section.id,
+      payload: {
+        planId: plan.id,
+        ingestionId: plan.ingestionId,
+        sourceVersionId: plan.sourceVersionId,
+        sectionId: section.id,
+        completedSectionOrdinal: section.ordinal,
+        sectionTitle: section.title,
+        sectionCount: plan.sections.length,
+        candidateCount: section.candidateCount,
+      },
+      evidenceSpanIds: [section.startEvidenceSpanId, section.endEvidenceSpanId],
+      requiresHumanApproval: false,
+    }],
+    validationEvidenceSpans: [],
+  };
+}
+
+async function extractSectionCandidatesWithSubdivision(args: {
+  ingestionId: string;
+  sourceVersionId: string;
+  evidenceSpans: EvidenceSpan[];
+  memoryModel: MemoryGenerationModel;
+  memoryVerifierModel?: MemoryCandidateVerifierModel;
+  maxSubdivisionDepth: number;
+  depth?: number;
+}): Promise<{
+  autoItems: GeneratedMemoryItem[];
+  reviewItems: GeneratedMemoryItem[];
+  candidateCount: number;
+  models: string[];
+  fallbackReasons: string[];
+  raw: unknown;
+}> {
+  const depth = args.depth ?? 0;
+  let generated;
+  let fallbackReason: string | undefined;
+  try {
+    generated = await args.memoryModel.generateMemory({
+      ingestionId: args.ingestionId,
+      sourceVersionId: args.sourceVersionId,
+      evidenceSpans: args.evidenceSpans,
+    });
+  } catch (error) {
+    fallbackReason = sanitizeError(error);
+    generated = deterministicMemoryGenerationFallback({ evidenceSpans: args.evidenceSpans, error: fallbackReason });
+  }
+
+  if (generated.parsed.items.length >= 30) {
+    const split = subdivideSaturatedSection({ evidenceSpans: args.evidenceSpans, depth, maxDepth: args.maxSubdivisionDepth });
+    if (split) {
+      const children = await Promise.all(split.map((evidenceSpans) => extractSectionCandidatesWithSubdivision({
+        ...args,
+        evidenceSpans,
+        depth: depth + 1,
+      })));
+      return {
+        autoItems: children.flatMap((child) => child.autoItems),
+        reviewItems: children.flatMap((child) => child.reviewItems),
+        candidateCount: children.reduce((sum, child) => sum + child.candidateCount, 0),
+        models: uniqueStrings(children.flatMap((child) => child.models)),
+        fallbackReasons: children.flatMap((child) => child.fallbackReasons),
+        raw: { strategy: "saturation_subdivision", depth, children: children.map((child) => child.raw) },
+      };
+    }
+  }
+
+  const routed = await routeGeneratedMemoryCandidates({
+    candidates: generated.parsed.items,
+    allowedEvidenceSpans: args.evidenceSpans,
+    verifierModel: args.memoryVerifierModel,
+  });
+  return {
+    autoItems: routed.autoItems,
+    reviewItems: routed.reviewItems,
+    candidateCount: generated.parsed.items.length,
+    models: uniqueStrings([generated.model, ...(routed.verifierModel ? [routed.verifierModel] : [])]),
+    fallbackReasons: [fallbackReason, routed.verifierFallbackReason].filter((value): value is string => Boolean(value)),
+    raw: {
+      extractor: generated.raw,
+      verifier: routed.rawVerifierResponse ?? null,
+      audit: {
+        rejectedCandidates: routed.rejectedCandidates,
+        duplicateCandidates: routed.duplicateCandidates,
+        deterministicIssues: routed.deterministicIssues,
+      },
+    },
+  };
+}
+
+function createConsolidateMemoryPolicy(args: {
+  persistence: LoopPersistence;
+  newId?: (prefix: string) => string;
+}): Policy<ConsolidateMemoryInput, PolicyOutput> {
+  return {
+    name: "consolidate_memory",
+    version: "consolidate-memory-v0.1",
+    async buildInput(workItem) {
+      const event = await requiredLedgerEvent(args.persistence, workItem.causedByEventId);
+      const sourceVersionId = String(event.payload.sourceVersionId ?? workItem.subjectId);
+      const plan = await args.persistence.getMemorySectionPlan(sourceVersionId);
+      if (!plan) throw new Error(`Memory section plan not found for source version: ${sourceVersionId}`);
+      const input = { plan, causedByEventId: event.id };
+      return {
+        input,
+        inputHash: await sha256Hex(JSON.stringify({
+          planId: plan.id,
+          sectionStates: plan.sections.map((section) => [section.id, section.status, section.candidateCount]),
+        })),
+        inputSummary: {
+          ingestionId: plan.ingestionId,
+          sourceVersionId: plan.sourceVersionId,
+          sectionCount: plan.sections.length,
+          completedSectionCount: plan.sections.filter((section) => section.status === "completed").length,
+        },
+      };
+    },
+    async run(envelope) {
+      const incomplete = envelope.input.plan.sections.filter((section) => section.status !== "completed");
+      if (incomplete.length > 0) {
+        return {
+          proposedEvents: [],
+          provider: "deterministic",
+          model: "section-completion-gate",
+          promptVersion: MEMORY_SECTION_PROMPT_VERSION,
+          schemaVersion: "memory-section-plan-v0.1",
+          outputSchemaVersion: MEMORY_SCHEMA_VERSION,
+        };
+      }
+
+      await args.persistence.markMemorySectionPlanConsolidating(envelope.input.plan.sourceVersionId);
+      const candidates = envelope.input.plan.sections.flatMap((section) => [
+        ...section.autoItems.map((item) => ({ sectionOrdinal: section.ordinal, reviewRequired: false, item })),
+        ...section.reviewItems.map((item) => ({ sectionOrdinal: section.ordinal, reviewRequired: true, item })),
+      ]);
+      const consolidated = consolidateSectionCandidates(candidates);
+      const toCommittable = (item: GeneratedMemoryItem, category: "auto" | "review", index: number) => ({
+        ...toCommittableMemoryItem(item, () => `mem_${envelope.input.plan.id}_${category}_${index + 1}`),
+      });
+      const autoItems = consolidated.autoItems.map((item, index) => toCommittable(item, "auto", index));
+      const reviewItems = consolidated.reviewItems.map((item, index) => toCommittable(item, "review", index));
+      const extractionRunId = `extr_${envelope.input.plan.id}_consolidated`;
+      await args.persistence.recordExtractionRun({
+        id: extractionRunId,
+        ingestionId: envelope.input.plan.ingestionId,
+        tenantId: envelope.input.plan.tenantId,
+        provider: "deterministic",
+        model: "cross-section-consolidation-v0.1",
+        promptVersion: MEMORY_PROMPT_VERSION,
+        schemaVersion: MEMORY_SCHEMA_VERSION,
+        rawResponse: {
+          sectionCount: envelope.input.plan.sections.length,
+          candidateCount: candidates.length,
+          duplicateCount: consolidated.duplicateCount,
+          finalCandidateCount: autoItems.length + reviewItems.length,
+        },
+        status: "completed",
+      });
+
+      const proposedEvents: ProposedEventDraft[] = [];
+      const autoChunks = chunk(autoItems, 30);
+      const reviewChunks = chunk(reviewItems, 30);
+      if (autoChunks.length === 0) autoChunks.push([]);
+      for (const [index, items] of autoChunks.entries()) {
+        proposedEvents.push(memoryProposedDraft({
+          id: `pevt_memory_${envelope.input.plan.id}_auto_${index + 1}`,
+          sourceVersionId: envelope.input.plan.sourceVersionId,
+          ingestionId: envelope.input.plan.ingestionId,
+          extractionRunId,
+          items,
+          requiresHumanApproval: false,
+        }));
+      }
+      for (const [index, items] of reviewChunks.entries()) {
+        proposedEvents.push(memoryProposedDraft({
+          id: `pevt_memory_${envelope.input.plan.id}_review_${index + 1}`,
+          sourceVersionId: envelope.input.plan.sourceVersionId,
+          ingestionId: envelope.input.plan.ingestionId,
+          extractionRunId,
+          items,
+          requiresHumanApproval: true,
+        }));
+      }
+
+      structuredSectionLog("memory_sections_consolidated", {
+        ingestionId: envelope.input.plan.ingestionId,
+        sourceVersionId: envelope.input.plan.sourceVersionId,
+        sectionCount: envelope.input.plan.sections.length,
+        candidateCount: candidates.length,
+        duplicateCount: consolidated.duplicateCount,
+        committedCandidateCount: autoItems.length,
+        reviewCandidateCount: reviewItems.length,
+      });
+      return {
+        proposedEvents,
+        provider: "deterministic",
+        model: "cross-section-consolidation-v0.1",
+        promptVersion: MEMORY_PROMPT_VERSION,
+        schemaVersion: MEMORY_SCHEMA_VERSION,
+        outputSchemaVersion: MEMORY_SCHEMA_VERSION,
+        rawResponse: {
+          sectionCount: envelope.input.plan.sections.length,
+          candidateCount: candidates.length,
+          duplicateCount: consolidated.duplicateCount,
+          finalCandidateCount: autoItems.length + reviewItems.length,
+        },
+      };
+    },
+    async validate(output) {
+      const issues = output.proposedEvents.flatMap((draft) => {
+        if (draft.proposedEventType !== "memory_proposed" || draft.targetEventType !== "memory_committed") {
+          return [{ code: "invalid_consolidation_proposal", message: "Consolidation may only emit memory proposals.", path: [] }];
+        }
+        return GeneratedMemoryBatchFromPayload(draft.payload).items.length > 30
+          ? [{ code: "too_many_candidates", message: "A memory proposal may contain at most 30 candidates.", path: ["items"] }]
+          : [];
+      });
+      return { ok: issues.length === 0, issues };
+    },
   };
 }
 
@@ -551,7 +976,7 @@ export async function executeWorkItem(args: {
       ),
     ]);
     const proposedEventInputs = output.proposedEvents.map((draft) => ({
-        id: newId("pevt"),
+        id: draft.id ?? newId("pevt"),
         tenantId: workItem.tenantId,
         workItemId: workItem.id,
         policyRunId: policyRun!.id,
@@ -611,16 +1036,31 @@ export async function executeWorkItem(args: {
     }, leaseToken);
 
     if (!validation.ok) {
-      await args.persistence.failPendingWork(workItem.id, renderIssues(validation.issues), leaseToken);
+      const failure = renderIssues(validation.issues);
+      await args.persistence.failPendingWork(workItem.id, failure, leaseToken);
+      if (workItem.policy === "extract_memory_section") {
+        structuredSectionLog("memory_section_terminal_failure", {
+          workItemId: workItem.id,
+          sectionId: workItem.subjectId,
+          reason: sanitizeError(failure),
+        });
+      }
     } else {
       await args.persistence.completePendingWork(workItem.id, leaseToken);
     }
 
     return { workItem, proposedEvents };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeError(error);
     if (policyRun) await args.persistence.failPolicyRun(policyRun.id, message, [], leaseToken);
     await args.persistence.failPendingWork(workItem.id, message, leaseToken);
+    if (workItem.policy === "extract_memory_section") {
+      structuredSectionLog("memory_section_terminal_failure", {
+        workItemId: workItem.id,
+        sectionId: workItem.subjectId,
+        reason: message,
+      });
+    }
     return { workItem, proposedEvents: [] };
   }
 }
@@ -634,6 +1074,8 @@ export class InMemoryLoopPersistence implements LoopPersistence {
   readonly claimConnections = new Map<string, ClaimConnection>();
   readonly conflictGroups = new Map<string, ConflictGroup>();
   readonly ingestionContextsBySourceVersionId = new Map<string, IngestionContext>();
+  readonly memorySectionPlansBySourceVersionId = new Map<string, StoredMemorySectionPlan>();
+  readonly memorySections = new Map<string, MemorySection>();
   readonly memorySynthesisContext = new Map<string, MemoryWithEvidence>();
   readonly retrievalGraphNodes = new Map<string, GraphNode>();
   readonly retrievalGraphEdges = new Map<string, GraphEdge>();
@@ -698,10 +1140,17 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     return event;
   }
 
-  async claimEventOutboxRow(leaseSeconds = DEFAULT_OUTBOX_LEASE_SECONDS): Promise<EventOutboxRow | null> {
+  async claimEventOutboxRow(
+    leaseSeconds = DEFAULT_OUTBOX_LEASE_SECONDS,
+    preferredSubjectId?: string,
+  ): Promise<EventOutboxRow | null> {
     const row = [...this.eventOutboxRows.values()]
       .filter((candidate) => candidate.status === "pending")
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))[0];
+      .sort((left, right) => {
+        const leftPreferred = preferredSubjectId && this.ledgerEvents.get(left.ledgerEventId)?.subjectId === preferredSubjectId ? 0 : 1;
+        const rightPreferred = preferredSubjectId && this.ledgerEvents.get(right.ledgerEventId)?.subjectId === preferredSubjectId ? 0 : 1;
+        return leftPreferred - rightPreferred || left.createdAt.localeCompare(right.createdAt);
+      })[0];
     if (!row) return null;
     row.status = "processing";
     row.attempts += 1;
@@ -834,6 +1283,58 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     item.leaseToken = null;
     item.leaseExpiresAt = null;
     item.updatedAt = now();
+    if (item.policy === "extract_memory_section") {
+      const section = this.memorySections.get(item.subjectId);
+      if (section) {
+        section.status = "failed";
+        section.errorMessage = error.slice(0, 1_000);
+        section.updatedAt = now();
+        const plan = this.memorySectionPlansBySourceVersionId.get(section.sourceVersionId);
+        if (plan && plan.status !== "completed") {
+          plan.status = "failed";
+          plan.updatedAt = now();
+        }
+      }
+    }
+  }
+
+  async retryMemorySectionIngestion(ingestionId: string): Promise<string[]> {
+    const failedSectionIds = new Set<string>();
+    let sourceVersionId: string | undefined;
+    for (const section of this.memorySections.values()) {
+      if (section.ingestionId !== ingestionId || section.status !== "failed") continue;
+      failedSectionIds.add(section.id);
+      sourceVersionId = section.sourceVersionId;
+      section.status = "pending";
+      section.errorMessage = null;
+      section.updatedAt = now();
+    }
+    const workIds: string[] = [];
+    for (const work of this.pendingWorkItems.values()) {
+      const retryable = work.status === "failed" && (
+        (work.policy === "extract_memory_section" && failedSectionIds.has(work.subjectId)) ||
+        ((work.policy === "extract_memory" || work.policy === "consolidate_memory") && work.subjectId === sourceVersionId)
+      );
+      if (!retryable) continue;
+      work.status = "pending";
+      work.attempts = 0;
+      work.lastError = null;
+      work.startedAt = null;
+      work.completedAt = null;
+      work.lockedAt = null;
+      work.leaseToken = null;
+      work.leaseExpiresAt = null;
+      work.updatedAt = now();
+      workIds.push(work.id);
+    }
+    if (sourceVersionId) {
+      const plan = this.memorySectionPlansBySourceVersionId.get(sourceVersionId);
+      if (plan) {
+        plan.status = plan.sections.some((section) => section.status === "completed") ? "extracting" : "planned";
+        plan.updatedAt = now();
+      }
+    }
+    return workIds;
   }
 
   async cancelPendingWork(id: string, reason: string): Promise<void> {
@@ -979,6 +1480,8 @@ export class InMemoryLoopPersistence implements LoopPersistence {
   }
 
   async createProposedEvent(input: ProposedEventCreateInput): Promise<ProposedEvent> {
+    const existing = this.proposedEvents.get(input.id);
+    if (existing) return existing;
     const proposal: ProposedEvent = {
       ...input,
       workItemId: input.workItemId ?? null,
@@ -1062,6 +1565,11 @@ export class InMemoryLoopPersistence implements LoopPersistence {
         memoryGenerationVersion: String(proposal.payload.memoryGenerationVersion),
         items,
       });
+      const plan = this.memorySectionPlansBySourceVersionId.get(String(proposal.payload.sourceVersionId));
+      if (plan) {
+        plan.status = "completed";
+        plan.updatedAt = now();
+      }
     }
 
     const suggestedDraftKey = proposal.targetEventType === "artifact_drafted" &&
@@ -1123,6 +1631,116 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     return context;
   }
 
+  async getMemorySectionPlan(sourceVersionId: string): Promise<StoredMemorySectionPlan | null> {
+    return this.memorySectionPlansBySourceVersionId.get(sourceVersionId) ?? null;
+  }
+
+  async createMemorySectionPlan(input: Record<string, unknown>): Promise<StoredMemorySectionPlan> {
+    const sourceVersionId = String(input.sourceVersionId);
+    const existing = this.memorySectionPlansBySourceVersionId.get(sourceVersionId);
+    if (existing) return existing;
+    const createdAt = now();
+    const sectionInputs = Array.isArray(input.sections) ? input.sections as Array<Record<string, unknown>> : [];
+    const sections: MemorySection[] = sectionInputs.map((section) => ({
+      id: String(section.id),
+      planId: String(input.id),
+      ingestionId: String(input.ingestionId),
+      tenantId: String(input.tenantId),
+      sourceVersionId,
+      ordinal: Number(section.ordinal),
+      title: String(section.title),
+      startEvidenceSpanId: String(section.startEvidenceSpanId),
+      endEvidenceSpanId: String(section.endEvidenceSpanId),
+      startSpanIndex: Number(section.startSpanIndex),
+      endSpanIndex: Number(section.endSpanIndex),
+      charCount: Number(section.charCount),
+      status: "pending",
+      extractionRunId: null,
+      candidateCount: 0,
+      autoItems: [],
+      reviewItems: [],
+      errorMessage: null,
+      createdAt,
+      updatedAt: createdAt,
+    }));
+    const plan: StoredMemorySectionPlan = {
+      id: String(input.id),
+      ingestionId: String(input.ingestionId),
+      tenantId: String(input.tenantId),
+      sourceVersionId,
+      usedSectioning: Boolean(input.usedSectioning),
+      strategy: String(input.strategy) as StoredMemorySectionPlan["strategy"],
+      status: "planned",
+      triggerChars: Number(input.triggerChars),
+      triggerSpans: Number(input.triggerSpans),
+      targetChars: Number(input.targetChars),
+      maxChars: Number(input.maxChars),
+      maxSections: Number(input.maxSections),
+      plannerModel: typeof input.plannerModel === "string" ? input.plannerModel : null,
+      fallbackReason: typeof input.fallbackReason === "string" ? input.fallbackReason : null,
+      sections,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    this.memorySectionPlansBySourceVersionId.set(sourceVersionId, plan);
+    for (const section of sections) this.memorySections.set(section.id, section);
+    return plan;
+  }
+
+  async getMemorySectionContext(sectionId: string): Promise<{ section: MemorySection; plan: StoredMemorySectionPlan; evidenceSpans: EvidenceSpan[] }> {
+    const section = this.mustGet(this.memorySections, sectionId, "memory section");
+    const plan = this.mustGet(this.memorySectionPlansBySourceVersionId, section.sourceVersionId, "memory section plan");
+    const context = await this.getIngestionContextBySourceVersionId(section.sourceVersionId);
+    return { section, plan, evidenceSpans: context.evidenceSpans.slice(section.startSpanIndex, section.endSpanIndex + 1) };
+  }
+
+  async startMemorySection(input: { sectionId: string; workItemId: string; leaseToken: string }): Promise<MemorySection> {
+    const work = this.mustGet(this.pendingWorkItems, input.workItemId, "pending work");
+    if (work.status !== "running" || work.leaseToken !== input.leaseToken) throw new Error("active section work lease is required");
+    const section = this.mustGet(this.memorySections, input.sectionId, "memory section");
+    if (section.status !== "completed") {
+      section.status = "processing";
+      section.errorMessage = null;
+      section.updatedAt = now();
+    }
+    const plan = this.mustGet(this.memorySectionPlansBySourceVersionId, section.sourceVersionId, "memory section plan");
+    if (plan.status === "planned") {
+      plan.status = "extracting";
+      plan.updatedAt = now();
+    }
+    return section;
+  }
+
+  async completeMemorySection(input: {
+    sectionId: string;
+    workItemId: string;
+    leaseToken: string;
+    extractionRunId: string;
+    candidateCount: number;
+    autoItems: GeneratedMemoryItem[];
+    reviewItems: GeneratedMemoryItem[];
+  }): Promise<MemorySection> {
+    const work = this.mustGet(this.pendingWorkItems, input.workItemId, "pending work");
+    if (work.status !== "running" || work.leaseToken !== input.leaseToken) throw new Error("active section work lease is required");
+    const section = this.mustGet(this.memorySections, input.sectionId, "memory section");
+    section.status = "completed";
+    section.extractionRunId = input.extractionRunId;
+    section.candidateCount = input.candidateCount;
+    section.autoItems = input.autoItems;
+    section.reviewItems = input.reviewItems;
+    section.errorMessage = null;
+    section.updatedAt = now();
+    return section;
+  }
+
+  async markMemorySectionPlanConsolidating(sourceVersionId: string): Promise<void> {
+    const plan = this.mustGet(this.memorySectionPlansBySourceVersionId, sourceVersionId, "memory section plan");
+    if (plan.status !== "completed" && plan.sections.every((section) => section.status === "completed")) {
+      plan.status = "consolidating";
+      plan.updatedAt = now();
+    }
+  }
+
   async recordExtractionRun(input: {
     id: string;
     ingestionId: string;
@@ -1134,7 +1752,11 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     rawResponse: unknown;
     status: "completed" | "failed";
   }): Promise<void> {
-    this.extractionRuns.push(input);
+    const existing = this.extractionRuns.findIndex((record) =>
+      typeof record === "object" && record !== null && "id" in record && record.id === input.id
+    );
+    if (existing >= 0) this.extractionRuns[existing] = input;
+    else this.extractionRuns.push(input);
   }
 
   async commitGeneratedMemory(input: {
@@ -1646,6 +2268,8 @@ export class InMemoryLoopPersistence implements LoopPersistence {
 function createExtractMemoryPolicy(args: {
   persistence: LoopPersistence;
   memoryModel: MemoryGenerationModel;
+  memorySectionPlannerModel?: MemorySectionPlannerModel;
+  memorySectioningConfig: MemorySectioningConfig;
   memoryVerifierModel?: MemoryCandidateVerifierModel;
   newId?: (prefix: string) => string;
 }): Policy<ExtractMemoryInput, PolicyOutput> {
@@ -1677,6 +2301,118 @@ function createExtractMemoryPolicy(args: {
       };
     },
     async run(envelope) {
+      const existingPlan = await args.persistence.getMemorySectionPlan(envelope.input.sourceVersionId);
+      const decision = decideMemorySectioning(envelope.input.evidenceSpans, args.memorySectioningConfig);
+      structuredSectionLog("memory_sectioning_decision", {
+        ingestionId: envelope.input.ingestionId,
+        sourceVersionId: envelope.input.sourceVersionId,
+        shouldSection: decision.shouldSection,
+        charCount: decision.normalizedCharCount,
+        evidenceSpanCount: decision.evidenceSpanCount,
+        reasons: decision.reasons,
+      });
+
+      if (decision.shouldSection || existingPlan?.usedSectioning) {
+        let storedPlan = existingPlan;
+        let strategy: StoredMemorySectionPlan["strategy"] = storedPlan?.strategy ?? "model";
+        let plannerModel = storedPlan?.plannerModel ?? undefined;
+        let fallbackReason = storedPlan?.fallbackReason ?? undefined;
+        let plannerRaw: unknown;
+
+        if (!storedPlan) {
+          let planned;
+          try {
+            if (!args.memorySectionPlannerModel) throw new Error("No memory section planner model is configured.");
+            const response = await args.memorySectionPlannerModel.planMemorySections({
+              sourceVersionId: envelope.input.sourceVersionId,
+              evidenceSpans: envelope.input.evidenceSpans,
+              targetChars: args.memorySectioningConfig.targetChars,
+              maxChars: args.memorySectioningConfig.maxChars,
+              maxSections: args.memorySectioningConfig.maxSections,
+            });
+            const validation = validateMemorySectionPlan({
+              plan: response.parsed,
+              evidenceSpans: envelope.input.evidenceSpans,
+              maxChars: args.memorySectioningConfig.maxChars,
+              maxSections: args.memorySectioningConfig.maxSections,
+            });
+            if (!validation.ok) throw new Error(renderIssues(validation.issues));
+            planned = response.parsed;
+            plannerModel = response.model;
+            plannerRaw = response.raw;
+            strategy = "model";
+          } catch (error) {
+            fallbackReason = sanitizeError(error);
+            planned = deterministicMemorySectionPlan({
+              evidenceSpans: envelope.input.evidenceSpans,
+              targetChars: args.memorySectioningConfig.targetChars,
+              maxChars: args.memorySectioningConfig.maxChars,
+              maxSections: args.memorySectioningConfig.maxSections,
+            });
+            strategy = "deterministic_fallback";
+          }
+
+          const indexes = new Map(envelope.input.evidenceSpans.map((span, index) => [span.id, index]));
+          storedPlan = await args.persistence.createMemorySectionPlan({
+            id: newId("mplan"),
+            ingestionId: envelope.input.ingestionId,
+            tenantId: envelope.input.tenantId,
+            sourceVersionId: envelope.input.sourceVersionId,
+            usedSectioning: true,
+            strategy,
+            triggerChars: args.memorySectioningConfig.triggerChars,
+            triggerSpans: args.memorySectioningConfig.triggerSpans,
+            targetChars: args.memorySectioningConfig.targetChars,
+            maxChars: args.memorySectioningConfig.maxChars,
+            maxSections: args.memorySectioningConfig.maxSections,
+            plannerModel: plannerModel ?? null,
+            fallbackReason: fallbackReason ?? null,
+            sections: planned.sections.map((section, index) => {
+              const startSpanIndex = indexes.get(section.startEvidenceSpanId)!;
+              const endSpanIndex = indexes.get(section.endEvidenceSpanId)!;
+              return {
+                id: newId("msec"),
+                ordinal: index + 1,
+                title: section.title,
+                startEvidenceSpanId: section.startEvidenceSpanId,
+                endEvidenceSpanId: section.endEvidenceSpanId,
+                startSpanIndex,
+                endSpanIndex,
+                charCount: envelope.input.evidenceSpans[endSpanIndex]!.endChar - envelope.input.evidenceSpans[startSpanIndex]!.startChar,
+              };
+            }),
+          });
+        }
+
+        structuredSectionLog("memory_sections_planned", {
+          ingestionId: envelope.input.ingestionId,
+          sourceVersionId: envelope.input.sourceVersionId,
+          strategy: storedPlan.strategy,
+          sectionCount: storedPlan.sections.length,
+        });
+        return {
+          proposedEvents: storedPlan.sections.map((section) => sectionReadyDraft(storedPlan!, section)),
+          provider: strategy === "model" ? "openrouter" : "deterministic",
+          model: plannerModel ?? strategy,
+          fallbackUsed: strategy === "deterministic_fallback",
+          fallbackReason,
+          promptVersion: MEMORY_SECTION_PROMPT_VERSION,
+          schemaVersion: "memory-section-plan-v0.1",
+          outputSchemaVersion: "memory-section-plan-v0.1",
+          rawResponse: plannerRaw ?? { strategy, sectionCount: storedPlan.sections.length },
+        };
+      }
+
+      if (!existingPlan) {
+        await args.persistence.createMemorySectionPlan({
+          id: newId("mplan"), ingestionId: envelope.input.ingestionId, tenantId: envelope.input.tenantId,
+          sourceVersionId: envelope.input.sourceVersionId, usedSectioning: false, strategy: "single",
+          triggerChars: args.memorySectioningConfig.triggerChars, triggerSpans: args.memorySectioningConfig.triggerSpans,
+          targetChars: args.memorySectioningConfig.targetChars, maxChars: args.memorySectioningConfig.maxChars,
+          maxSections: args.memorySectioningConfig.maxSections, plannerModel: null, fallbackReason: null, sections: [],
+        });
+      }
+
       let generated;
       let extractorFallbackReason: string | undefined;
       try {
@@ -1686,7 +2422,7 @@ function createExtractMemoryPolicy(args: {
           evidenceSpans: envelope.input.evidenceSpans,
         });
       } catch (error) {
-        extractorFallbackReason = error instanceof Error ? error.message : String(error);
+        extractorFallbackReason = sanitizeError(error);
         generated = deterministicMemoryGenerationFallback({
           evidenceSpans: envelope.input.evidenceSpans,
           error: extractorFallbackReason,
@@ -1765,8 +2501,13 @@ function createExtractMemoryPolicy(args: {
     },
     async validate(output) {
       const issues = output.proposedEvents.flatMap((draft) => {
+        if (draft.proposedEventType === "section_update_proposed") {
+          return draft.targetEventType === "memory_section_ready" && typeof draft.payload.sectionId === "string"
+            ? []
+            : [{ code: "invalid_section_dispatch", message: "Section dispatch must target memory_section_ready with a section ID.", path: [] }];
+        }
         if (draft.proposedEventType !== "memory_proposed") {
-          return [{ code: "invalid_memory_proposal", message: "extract_memory may only emit memory_proposed.", path: [] }];
+          return [{ code: "invalid_memory_proposal", message: "extract_memory may only emit memory or section proposals.", path: [] }];
         }
         const parsed = GeneratedMemoryBatchFromPayload(draft.payload);
         return validateGeneratedMemory({
@@ -1861,7 +2602,7 @@ async function routeGeneratedMemoryCandidates(args: {
       rejectedCandidates,
       duplicateCandidates,
       deterministicIssues,
-      verifierFallbackReason: error instanceof Error ? error.message : String(error),
+      verifierFallbackReason: sanitizeError(error),
     };
   }
 
@@ -1962,6 +2703,7 @@ function toCommittableMemoryItem(
 }
 
 function memoryProposedDraft(args: {
+  id?: string;
   sourceVersionId: string;
   ingestionId: string;
   extractionRunId: string;
@@ -1969,6 +2711,7 @@ function memoryProposedDraft(args: {
   requiresHumanApproval: boolean;
 }): ProposedEventDraft {
   return {
+    ...(args.id ? { id: args.id } : {}),
     proposedEventType: "memory_proposed",
     targetEventType: "memory_committed",
     subjectType: "memory",
@@ -3036,13 +3779,7 @@ function deterministicMemoryGenerationFallback(args: {
   raw: unknown;
   model: string;
 } {
-  const evidenceSpanIds = args.evidenceSpans.map((span) => span.id);
-  const statement = args.evidenceSpans
-    .map((span) => span.text.trim())
-    .filter(Boolean)
-    .join("\n\n")
-    .slice(0, 2_000)
-    .trim();
+  const spanGroups = chunk(args.evidenceSpans, 12).slice(0, 30);
 
   return {
     model: "deterministic-fallback",
@@ -3051,20 +3788,21 @@ function deterministicMemoryGenerationFallback(args: {
       strategy: "evidence_text_as_user_signal",
     },
     parsed: {
-      items: statement && evidenceSpanIds.length > 0
-        ? [{
-          temporaryId: "fallback_1",
+      items: spanGroups.flatMap((spans, index) => {
+        const statement = spans.map((span) => span.text.trim()).filter(Boolean).join("\n\n").slice(0, 2_000).trim();
+        return statement ? [{
+          temporaryId: `fallback_${index + 1}`,
           claimType: "user_signal",
           statement,
-          evidenceSpanIds,
+          evidenceSpanIds: spans.map((span) => span.id),
           epistemicStatus: "reported",
           qualifiers: { extractionFallback: true, fallbackReason: args.error },
           stableDomainTags: [],
           entities: [],
           relations: [],
           schemas: [],
-        }]
-        : [],
+        } as GeneratedMemoryItem] : [];
+      }),
     },
   };
 }
@@ -3401,6 +4139,25 @@ function nodeIdForEmbeddingTarget(
 
 function uniqueStrings(values: string[]): string[] {
   return values.filter((value, index) => value.length > 0 && values.indexOf(value) === index);
+}
+
+function chunk<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) chunks.push(values.slice(index, index + size));
+  return chunks;
+}
+
+function sanitizeError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw
+    .replace(/(bearer\s+)[^\s"']+/giu, "$1[redacted]")
+    .replace(/([?&](?:key|token|secret|password)=)[^&\s]+/giu, "$1[redacted]")
+    .replace(/\b(?:sk|pk|eyJ)[A-Za-z0-9._-]{16,}\b/gu, "[redacted]")
+    .slice(0, 1_000);
+}
+
+function structuredSectionLog(event: string, fields: Record<string, unknown>): void {
+  console.log(JSON.stringify({ event, ...fields }));
 }
 
 function metadataRecord(value: unknown): Record<string, unknown> {

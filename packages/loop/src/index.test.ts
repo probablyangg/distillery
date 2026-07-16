@@ -267,6 +267,192 @@ describe("loop system", () => {
     expect(store.committedMemory).toHaveLength(1);
   });
 
+  it("keeps short input on one extraction without calling the section planner", async () => {
+    const store = seededStore();
+    const work = await routeSourceToWork(store);
+    let plannerCalls = 0;
+    await executeWorkItem({
+      persistence: store,
+      workItemId: work.id,
+      policies: createPolicies({
+        persistence: store,
+        memoryModel: modelWithValidMemory(),
+        memorySectionPlannerModel: { async planMemorySections() { plannerCalls += 1; throw new Error("unexpected"); } },
+        newId: deterministicId(),
+      }),
+      newId: deterministicId(),
+    });
+    expect(plannerCalls).toBe(0);
+    expect(store.committedMemory).toHaveLength(1);
+    expect(store.memorySectionPlansBySourceVersionId.get("srcv_1")?.usedSectioning).toBe(false);
+  });
+
+  it("extracts every long-document section and consolidates more than 30 candidates idempotently", async () => {
+    const store = new InMemoryLoopPersistence();
+    const evidenceSpans = longEvidenceSpans(21, 350);
+    store.seedIngestionContext({ ingestionId: "ing_long", tenantId: "stable", sourceVersionId: "srcv_long", evidenceSpans });
+    await store.commitLedgerEventWithOutbox({
+      id: "levt_long", tenantId: "stable", eventType: "source_committed", subjectType: "source",
+      subjectId: "srcv_long", actorType: "human", inputVersion: "srcv_long",
+      idempotencyKey: "source_committed:ing_long", payload: { ingestionId: "ing_long", sourceVersionId: "srcv_long" },
+    });
+    const [parentWork] = await routeCommittedEvents({ persistence: store });
+    if (!parentWork) throw new Error("expected parent extraction work");
+    let extractionCalls = 0;
+    const policies = createPolicies({
+      persistence: store,
+      memorySectionPlannerModel: {
+        async planMemorySections() {
+          return {
+            model: "semantic-planner",
+            raw: { ok: true },
+            parsed: { sections: [
+              { temporaryId: "overview", title: "Overview", startEvidenceSpanId: "long_1", endEvidenceSpanId: "long_7" },
+              { temporaryId: "memiavl", title: "MemIAVL", startEvidenceSpanId: "long_8", endEvidenceSpanId: "long_14" },
+              { temporaryId: "deferred", title: "Deferred work", startEvidenceSpanId: "long_15", endEvidenceSpanId: "long_21" },
+            ] },
+          };
+        },
+      },
+      memoryModel: {
+        async generateMemory(request) {
+          extractionCalls += 1;
+          const evidenceSpanId = request.evidenceSpans[0]!.id;
+          return {
+            model: "section-extractor",
+            raw: { section: evidenceSpanId },
+            parsed: { items: Array.from({ length: 11 }, (_, index) => ({
+              temporaryId: `${evidenceSpanId}_${index}`,
+              claimType: "fact" as const,
+              statement: `Fact ${index + 1} supported by ${evidenceSpanId}.`,
+              evidenceSpanIds: [evidenceSpanId],
+              epistemicStatus: "reported" as const,
+              qualifiers: {}, stableDomainTags: [], entities: [], relations: [], schemas: [],
+            })) },
+          };
+        },
+      },
+      newId: deterministicId(),
+    });
+
+    await executeWorkItem({ persistence: store, policies, workItemId: parentWork.id, newId: deterministicId() });
+    const sectionWork = (await routeCommittedEvents({ persistence: store })).filter((work) => work.policy === "extract_memory_section");
+    expect(sectionWork).toHaveLength(3);
+    for (const work of sectionWork) await executeWorkItem({ persistence: store, policies, workItemId: work.id, newId: deterministicId() });
+    const consolidationWork = (await routeCommittedEvents({ persistence: store })).filter((work) => work.policy === "consolidate_memory");
+    expect(consolidationWork).toHaveLength(3);
+    for (const work of consolidationWork) await executeWorkItem({ persistence: store, policies, workItemId: work.id, newId: deterministicId() });
+
+    expect(extractionCalls).toBe(3);
+    expect(store.committedMemory).toHaveLength(33);
+    expect(store.committedMemory.every((item) => item.evidenceSpanIds[0]?.startsWith("long_"))).toBe(true);
+    expect([...store.proposedEvents.values()].filter((event) => event.proposedEventType === "memory_proposed")).toHaveLength(2);
+    expect(store.memorySectionPlansBySourceVersionId.get("srcv_long")?.status).toBe("completed");
+    expect(await executeWorkItem({ persistence: store, policies, workItemId: sectionWork[0]!.id, newId: deterministicId() })).toBeNull();
+    expect(store.committedMemory).toHaveLength(33);
+  });
+
+  it("prevents false success and resumes only the failed section", async () => {
+    const store = new InMemoryLoopPersistence();
+    const evidenceSpans = longEvidenceSpans(21, 350);
+    store.seedIngestionContext({ ingestionId: "ing_resume", tenantId: "stable", sourceVersionId: "srcv_resume", evidenceSpans });
+    await store.commitLedgerEventWithOutbox({
+      id: "levt_resume", tenantId: "stable", eventType: "source_committed", subjectType: "source",
+      subjectId: "srcv_resume", actorType: "human", inputVersion: "srcv_resume",
+      idempotencyKey: "source_committed:ing_resume", payload: { ingestionId: "ing_resume", sourceVersionId: "srcv_resume" },
+    });
+    const [parentWork] = await routeCommittedEvents({ persistence: store });
+    if (!parentWork) throw new Error("expected parent extraction work");
+    let extractionCalls = 0;
+    const policies = createPolicies({
+      persistence: store,
+      memorySectionPlannerModel: {
+        async planMemorySections() {
+          return { model: "planner", raw: {}, parsed: { sections: [
+            { temporaryId: "one", title: "One", startEvidenceSpanId: "long_1", endEvidenceSpanId: "long_7" },
+            { temporaryId: "two", title: "Two", startEvidenceSpanId: "long_8", endEvidenceSpanId: "long_14" },
+            { temporaryId: "three", title: "Three", startEvidenceSpanId: "long_15", endEvidenceSpanId: "long_21" },
+          ] } };
+        },
+      },
+      memoryModel: {
+        async generateMemory(request) {
+          extractionCalls += 1;
+          const evidenceSpanId = request.evidenceSpans[0]!.id;
+          return { model: "extractor", raw: {}, parsed: { items: [{
+            temporaryId: `candidate_${evidenceSpanId}`, claimType: "fact" as const,
+            statement: `Distinct fact supported by ${evidenceSpanId}.`, evidenceSpanIds: [evidenceSpanId],
+            epistemicStatus: "reported" as const, qualifiers: {}, stableDomainTags: [], entities: [], relations: [], schemas: [],
+          }] } };
+        },
+      },
+      newId: deterministicId(),
+    });
+    await executeWorkItem({ persistence: store, policies, workItemId: parentWork.id, newId: deterministicId() });
+    const sectionWork = (await routeCommittedEvents({ persistence: store })).filter((work) => work.policy === "extract_memory_section");
+    const failingSectionId = sectionWork[1]!.subjectId;
+    const completeSection = store.completeMemorySection.bind(store);
+    let failOnce = true;
+    store.completeMemorySection = async (input) => {
+      if (input.sectionId === failingSectionId && failOnce) {
+        failOnce = false;
+        throw new Error("provider timeout?token=topsecret Bearer topsecretvalue");
+      }
+      return completeSection(input);
+    };
+    for (const work of sectionWork) await executeWorkItem({ persistence: store, policies, workItemId: work.id, newId: deterministicId() });
+    const prematureFinalizers = (await routeCommittedEvents({ persistence: store })).filter((work) => work.policy === "consolidate_memory");
+    for (const work of prematureFinalizers) await executeWorkItem({ persistence: store, policies, workItemId: work.id, newId: deterministicId() });
+
+    expect(store.committedMemory).toHaveLength(0);
+    expect(store.memorySectionPlansBySourceVersionId.get("srcv_resume")?.status).toBe("failed");
+    expect([...store.memorySections.values()].map((section) => section.status)).toEqual(["completed", "failed", "completed"]);
+    expect(store.memorySections.get(failingSectionId)?.errorMessage).toContain("[redacted]");
+    expect(store.memorySections.get(failingSectionId)?.errorMessage).not.toContain("topsecret");
+
+    const retryIds = await store.retryMemorySectionIngestion("ing_resume");
+    expect(retryIds).toEqual([sectionWork[1]!.id]);
+    await executeWorkItem({ persistence: store, policies, workItemId: retryIds[0]!, newId: deterministicId() });
+    const finalizers = (await routeCommittedEvents({ persistence: store })).filter((work) => work.policy === "consolidate_memory");
+    for (const work of finalizers) await executeWorkItem({ persistence: store, policies, workItemId: work.id, newId: deterministicId() });
+
+    expect(extractionCalls).toBe(4);
+    expect(store.committedMemory).toHaveLength(3);
+    expect(store.extractionRuns.filter((run) => typeof run === "object" && run !== null && "id" in run && String(run.id).startsWith("extr_msec"))).toHaveLength(3);
+    expect(store.memorySectionPlansBySourceVersionId.get("srcv_resume")?.status).toBe("completed");
+  });
+
+  it("allows only one concurrent claim for the same canonical section work", async () => {
+    const store = new InMemoryLoopPersistence();
+    const work = await enqueueExtractWork(store, "concurrent");
+    const [first, second] = await Promise.all([
+      store.claimPendingWork(work.id, 900),
+      store.claimPendingWork(work.id, 900),
+    ]);
+    expect([first, second].filter(Boolean)).toHaveLength(1);
+    expect([first, second].filter((claim) => claim === null)).toHaveLength(1);
+  });
+
+  it("lets a new capture prefer its own outbox row without changing later FIFO routing", async () => {
+    const store = new InMemoryLoopPersistence();
+    await store.commitLedgerEventWithOutbox({
+      id: "levt_old", tenantId: "stable", eventType: "source_committed", subjectType: "source",
+      subjectId: "srcv_old", actorType: "human", inputVersion: "srcv_old", idempotencyKey: "old", payload: {},
+    });
+    await store.commitLedgerEventWithOutbox({
+      id: "levt_new", tenantId: "stable", eventType: "source_committed", subjectType: "source",
+      subjectId: "srcv_new", actorType: "human", inputVersion: "srcv_new", idempotencyKey: "new", payload: {},
+    });
+    const rows = [...store.eventOutboxRows.values()];
+    rows[0]!.createdAt = "2026-07-15T10:00:00.000Z";
+    rows[1]!.createdAt = "2026-07-15T11:00:00.000Z";
+
+    const preferred = await store.claimEventOutboxRow(120, "srcv_new");
+    expect(preferred?.ledgerEventId).toBe("levt_new");
+    const fifo = await store.claimEventOutboxRow(120);
+    expect(fifo?.ledgerEventId).toBe("levt_old");
+  });
+
   it("does not recover a slow worker while its lease is still valid", async () => {
     const store = new InMemoryLoopPersistence();
     const work = await enqueueExtractWork(store, "slow");
@@ -1362,6 +1548,19 @@ function seededStore(): InMemoryLoopPersistence {
     evidenceSpans: [evidenceSpan],
   });
   return store;
+}
+
+function longEvidenceSpans(count: number, charsPerSpan: number) {
+  let offset = 0;
+  return Array.from({ length: count }, (_, index) => {
+    const text = `Section ${index + 1} ${"x".repeat(charsPerSpan - 12)}`;
+    const span = {
+      id: `long_${index + 1}`, sourceVersionId: "srcv_long", startLine: index + 1, endLine: index + 1,
+      startChar: offset, endChar: offset + text.length, text,
+    };
+    offset += text.length + 1;
+    return span;
+  });
 }
 
 class OrderedLoopPersistence extends InMemoryLoopPersistence {
