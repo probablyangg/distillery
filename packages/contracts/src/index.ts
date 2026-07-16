@@ -92,6 +92,8 @@ export const SUGGESTED_BRIEF_STATUSES = [
 
 export const POLICY_NAMES = [
   "extract_memory",
+  "extract_memory_section",
+  "consolidate_memory",
   "connect_memory",
   "discover_candidate",
   "check_freshness",
@@ -109,6 +111,8 @@ export const POLICY_NAMES = [
 
 export const EVENT_TYPES = [
   "source_committed",
+  "memory_section_ready",
+  "memory_section_completed",
   "memory_committed",
   "memory_connected",
   "connections_updated",
@@ -138,6 +142,7 @@ export const EVENT_TYPES = [
 
 export const PROPOSED_EVENT_TYPES = [
   "memory_proposed",
+  "section_update_proposed",
   "memory_connection_proposed",
   "candidate_proposed",
   "artifact_draft_proposed",
@@ -159,6 +164,7 @@ export const ACTOR_TYPES = [
 
 export const WORK_SUBJECT_TYPES = [
   "source",
+  "section",
   "memory",
   "candidate",
   "artifact",
@@ -584,6 +590,18 @@ export const LoopStatusResponseSchema = z.object({
   stages: z.array(LoopStageSchema),
   timeline: z.array(LoopTimelineItemSchema),
   activity: z.array(LoopTimelineItemSchema),
+  sectionProgress: z.object({
+    usedSectioning: z.boolean(),
+    plannedSections: z.number().int().min(0),
+    pendingSections: z.number().int().min(0),
+    processingSections: z.number().int().min(0),
+    completedSections: z.number().int().min(0),
+    failedSections: z.number().int().min(0),
+    currentSectionOrdinal: z.number().int().min(1).nullable().optional(),
+    currentSectionTitle: z.string().nullable().optional(),
+    phase: z.enum(["deciding", "planning", "extracting", "verifying", "consolidating", "completed", "failed"]),
+    terminalState: z.enum(["processing", "succeeded", "failed"]),
+  }).strict().nullable().default(null),
 }).strict();
 export type LoopStatusResponse = z.infer<typeof LoopStatusResponseSchema>;
 
@@ -614,6 +632,28 @@ export const EvidenceSpanSchema = z.object({
 });
 export type EvidenceSpan = z.infer<typeof EvidenceSpanSchema>;
 
+export const MemorySectionPlanItemSchema = z.object({
+  temporaryId: z.string().trim().min(1).max(80),
+  title: z.string().trim().min(1).max(200),
+  startEvidenceSpanId: z.string().min(1),
+  endEvidenceSpanId: z.string().min(1),
+}).strict();
+export type MemorySectionPlanItem = z.infer<typeof MemorySectionPlanItemSchema>;
+
+export const MemorySectionPlanSchema = z.object({
+  sections: z.array(MemorySectionPlanItemSchema).min(1).max(50),
+}).strict();
+export type MemorySectionPlan = z.infer<typeof MemorySectionPlanSchema>;
+
+export const MemorySectionStatusSchema = z.enum([
+  "pending",
+  "processing",
+  "completed",
+  "failed",
+  "superseded",
+]);
+export type MemorySectionStatus = z.infer<typeof MemorySectionStatusSchema>;
+
 export const GeneratedMemoryItemSchema = z.object({
   temporaryId: z.string().min(1).max(80),
   claimType: ClaimTypeSchema,
@@ -632,6 +672,51 @@ export const GeneratedMemoryBatchSchema = z.object({
   items: z.array(GeneratedMemoryItemSchema).max(30),
 });
 export type GeneratedMemoryBatch = z.infer<typeof GeneratedMemoryBatchSchema>;
+
+export const MemorySectionSchema = z.object({
+  id: z.string().min(1),
+  planId: z.string().min(1),
+  ingestionId: z.string().min(1),
+  tenantId: z.string().min(1),
+  sourceVersionId: z.string().min(1),
+  ordinal: z.number().int().min(1),
+  title: z.string().min(1).max(200),
+  startEvidenceSpanId: z.string().min(1),
+  endEvidenceSpanId: z.string().min(1),
+  startSpanIndex: z.number().int().min(0),
+  endSpanIndex: z.number().int().min(0),
+  charCount: z.number().int().min(0),
+  status: MemorySectionStatusSchema,
+  extractionRunId: z.string().nullable().optional(),
+  candidateCount: z.number().int().min(0).default(0),
+  autoItems: z.array(GeneratedMemoryItemSchema).default([]),
+  reviewItems: z.array(GeneratedMemoryItemSchema).default([]),
+  errorMessage: z.string().nullable().optional(),
+  createdAt: IsoDateTimeStringSchema,
+  updatedAt: IsoDateTimeStringSchema,
+}).strict();
+export type MemorySection = z.infer<typeof MemorySectionSchema>;
+
+export const StoredMemorySectionPlanSchema = z.object({
+  id: z.string().min(1),
+  ingestionId: z.string().min(1),
+  tenantId: z.string().min(1),
+  sourceVersionId: z.string().min(1),
+  usedSectioning: z.boolean(),
+  strategy: z.enum(["single", "model", "deterministic_fallback"]),
+  status: z.enum(["planned", "extracting", "consolidating", "completed", "failed"]),
+  triggerChars: z.number().int().min(1),
+  triggerSpans: z.number().int().min(1),
+  targetChars: z.number().int().min(1),
+  maxChars: z.number().int().min(1),
+  maxSections: z.number().int().min(1).max(50),
+  plannerModel: z.string().nullable().optional(),
+  fallbackReason: z.string().nullable().optional(),
+  sections: z.array(MemorySectionSchema),
+  createdAt: IsoDateTimeStringSchema,
+  updatedAt: IsoDateTimeStringSchema,
+}).strict();
+export type StoredMemorySectionPlan = z.infer<typeof StoredMemorySectionPlanSchema>;
 
 export const MemoryItemSchema = GeneratedMemoryItemSchema.omit({
   temporaryId: true,

@@ -41,11 +41,24 @@ describe("LoopStatusResponseSchema", () => {
         severity: "success",
         technical: [{ label: "work_item_id", value: "work_1" }],
       }],
+      sectionProgress: {
+        usedSectioning: true,
+        plannedSections: 7,
+        pendingSections: 3,
+        processingSections: 1,
+        completedSections: 3,
+        failedSections: 0,
+        currentSectionOrdinal: 4,
+        currentSectionTitle: "MemIAVL",
+        phase: "extracting",
+        terminalState: "processing",
+      },
     });
 
     expect(parsed.mode).toBe("current");
     expect(parsed.stages[0]?.key).toBe("source_committed");
     expect(parsed.timeline[0]?.technical[0]?.label).toBe("ledger_event_id");
+    expect(parsed.sectionProgress?.currentSectionTitle).toBe("MemIAVL");
   });
 
   it("rejects raw payload-like timeline records", () => {
