@@ -149,6 +149,7 @@ export function initiativeBriefDraftSystemPrompt(): string {
     "Create a concise, reviewable initiative brief draft from only the selected memory and evidence.",
     "Do not invent customers, metrics, approvals, owners, dependencies, or timelines.",
     "If a claim is weak, unresolved, or only a reported signal, make that uncertainty visible.",
+    "Include explicit scope, risks and dependencies, and a list of contradictions or uncertainties (an empty list is allowed only when none are supplied).",
     "The draft is not a PRD. Keep it short and suitable for executive review.",
     "Use every selected memoryItemId and every selected evidenceSpanId exactly as supplied.",
     "Output must be a single minified JSON object.",
