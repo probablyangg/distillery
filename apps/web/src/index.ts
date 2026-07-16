@@ -1199,11 +1199,6 @@ function truncate(value: string, maxLength: number): string {
 }
 
 async function isAuthorized(request: Request, env: Env): Promise<boolean> {
-  const suppliedPassword = request.headers.get("x-distillery-password");
-  if (await isPasswordValid(suppliedPassword ?? undefined, env)) {
-    return true;
-  }
-
   const session = getCookieValue(request, SESSION_COOKIE_NAME);
   if (!session) return false;
 
