@@ -15,10 +15,11 @@ export default defineConfig({
       "@distillery/memory-generation": `${root}packages/memory-generation/src/index.ts`,
       "@distillery/memory-retrieval": `${root}packages/memory-retrieval/src/index.ts`,
       "@distillery/memory-synthesis": `${root}packages/memory-synthesis/src/index.ts`,
+      "@distillery/slack-connector": `${root}packages/slack-connector/src/index.ts`,
     },
   },
   test: {
-    include: ["packages/**/*.test.ts"],
+    include: ["packages/**/*.test.ts", "apps/**/*.test.ts"],
     environment: "node",
   },
 });
