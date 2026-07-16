@@ -10,6 +10,7 @@ import type {
   InitiativeBriefDraft,
   MemoryItem,
   MemoryWithEvidence,
+  MemorySectionPlan,
 } from "@distillery/contracts";
 import {
   CLAIM_TYPES,
@@ -22,6 +23,7 @@ import {
   InitiativeBriefDraftSchema,
   EPISTEMIC_STATUSES,
   MEMORY_SCHEMA_STATUSES,
+  MemorySectionPlanSchema,
 } from "@distillery/contracts";
 import {
   groundedAnswerSystemPrompt,
@@ -29,12 +31,14 @@ import {
   memoryCandidateVerifierSystemPrompt,
   memoryConnectionScorerSystemPrompt,
   memoryGenerationSystemPrompt,
+  memorySectionPlanningSystemPrompt,
   renderMemoryCandidateVerificationInputForModel,
   renderMemoryConnectionScoringInputForModel,
   renderRetrievalRerankInputForModel,
   renderGroundedAnswerInputForModel,
   renderInitiativeBriefDraftInputForModel,
   renderMemoryGenerationInputForModel,
+  renderMemorySectionPlanningInputForModel,
   retrievalRerankSystemPrompt,
 } from "@distillery/prompts";
 import { jsonrepair } from "jsonrepair";
@@ -47,6 +51,20 @@ export type MemoryGenerationRequest = {
 
 export type MemoryGenerationResponse = {
   parsed: GeneratedMemoryBatch;
+  raw: unknown;
+  model: string;
+};
+
+export type MemorySectionPlanningRequest = {
+  sourceVersionId: string;
+  evidenceSpans: EvidenceSpan[];
+  targetChars: number;
+  maxChars: number;
+  maxSections: number;
+};
+
+export type MemorySectionPlanningResponse = {
+  parsed: MemorySectionPlan;
   raw: unknown;
   model: string;
 };
@@ -133,6 +151,10 @@ export type GroundedAnswerRequest = {
 
 export interface MemoryGenerationModel {
   generateMemory(request: MemoryGenerationRequest): Promise<MemoryGenerationResponse>;
+}
+
+export interface MemorySectionPlannerModel {
+  planMemorySections(request: MemorySectionPlanningRequest): Promise<MemorySectionPlanningResponse>;
 }
 
 export interface MemoryCandidateVerifierModel {
@@ -291,6 +313,28 @@ const MEMORY_GENERATION_SCHEMA = {
     items: {
       type: "array",
       items: GENERATED_MEMORY_ITEM_JSON_SCHEMA,
+    },
+  },
+};
+
+const MEMORY_SECTION_PLAN_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["sections"],
+  properties: {
+    sections: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["temporaryId", "title", "startEvidenceSpanId", "endEvidenceSpanId"],
+        properties: {
+          temporaryId: { type: "string" },
+          title: { type: "string" },
+          startEvidenceSpanId: { type: "string" },
+          endEvidenceSpanId: { type: "string" },
+        },
+      },
     },
   },
 };
@@ -528,6 +572,110 @@ export class OpenRouterMemoryGenerationModel implements MemoryGenerationModel {
       clearTimeout(timeout);
     }
   }
+}
+
+export class OpenRouterMemorySectionPlannerModel implements MemorySectionPlannerModel {
+  constructor(private readonly config: OpenRouterModelConfig) {}
+
+  async planMemorySections(request: MemorySectionPlanningRequest): Promise<MemorySectionPlanningResponse> {
+    const failures: string[] = [];
+    const models = unique([this.config.model, ...(this.config.fallbackModels ?? [])]);
+    for (const [index, model] of models.entries()) {
+      try {
+        return await this.planWithModel(
+          request,
+          model,
+          index === 0 ? this.config.timeoutMs : this.config.fallbackTimeoutMs ?? this.config.timeoutMs,
+        );
+      } catch (error) {
+        failures.push(`${model}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    throw new Error(`OpenRouter memory section planning failed for all configured models. ${failures.join(" | ")}`);
+  }
+
+  private async planWithModel(
+    request: MemorySectionPlanningRequest,
+    model: string,
+    configuredTimeoutMs: number | undefined,
+  ): Promise<MemorySectionPlanningResponse> {
+    const abortController = new AbortController();
+    const timeoutMs = configuredTimeoutMs ?? 45_000;
+    let didTimeout = false;
+    const timeout = setTimeout(() => {
+      didTimeout = true;
+      abortController.abort();
+    }, timeoutMs);
+
+    try {
+      let response: Response;
+      try {
+        const fetchImpl = this.config.fetchImpl ?? ((input, init) => fetch(input, init));
+        response = await fetchImpl(`${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+          method: "POST",
+          signal: abortController.signal,
+          headers: {
+            Authorization: `Bearer ${this.config.apiKey}`,
+            "Content-Type": "application/json",
+            "X-OpenRouter-Title": this.config.appTitle ?? "Distillery v0",
+          },
+          body: JSON.stringify({
+            model,
+            temperature: 0,
+            max_tokens: 3_200,
+            messages: [
+              { role: "system", content: memorySectionPlanningSystemPrompt() },
+              { role: "user", content: renderMemorySectionPlanningInputForModel(request) },
+            ],
+            response_format: {
+              type: "json_schema",
+              json_schema: { name: "memory_section_plan", strict: true, schema: MEMORY_SECTION_PLAN_SCHEMA },
+            },
+          }),
+        });
+      } catch (error) {
+        if (didTimeout || abortController.signal.aborted) {
+          throw new Error(`OpenRouter memory section planning timed out after ${timeoutMs}ms for model ${model}.`);
+        }
+        throw error;
+      }
+
+      const rawText = await readModelResponseText(response, abortController.signal, didTimeout, timeoutMs, "OpenRouter memory section planning", model);
+      if (!response.ok) throw new Error(`OpenRouter memory section planning failed: ${response.status} ${rawText.slice(0, 500)}`);
+      const raw = JSON.parse(rawText) as { choices?: Array<{ message?: { content?: string } }> };
+      const content = raw.choices?.[0]?.message?.content;
+      if (!content) throw new Error("OpenRouter section planner response did not include message content.");
+      const parsed = MemorySectionPlanSchema.parse(parseModelJson(content));
+      validateMemorySectionPlannerResponse(parsed, request);
+      return { parsed, raw, model };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+export function validateMemorySectionPlannerResponse(
+  plan: MemorySectionPlan,
+  request: MemorySectionPlanningRequest,
+): void {
+  if (plan.sections.length > request.maxSections) throw new Error(`Section planner exceeded maximum section count: ${request.maxSections}`);
+  const indexes = new Map(request.evidenceSpans.map((span, index) => [span.id, index]));
+  let expectedStart = 0;
+  for (const section of plan.sections) {
+    const start = indexes.get(section.startEvidenceSpanId);
+    const end = indexes.get(section.endEvidenceSpanId);
+    if (start === undefined || end === undefined) throw new Error("Section planner referenced an unknown evidence span ID.");
+    if (start > end) throw new Error("Section planner returned an out-of-order section.");
+    if (start < expectedStart) throw new Error("Section planner returned overlapping sections.");
+    if (start > expectedStart) throw new Error("Section planner left a gap in source coverage.");
+    const first = request.evidenceSpans[start]!;
+    const last = request.evidenceSpans[end]!;
+    if (last.endChar - first.startChar > request.maxChars && start !== end) {
+      throw new Error(`Section planner returned a section larger than ${request.maxChars} characters.`);
+    }
+    expectedStart = end + 1;
+  }
+  if (expectedStart !== request.evidenceSpans.length) throw new Error("Section planner did not cover every evidence span.");
 }
 
 export class OpenRouterMemoryCandidateVerifierModel implements MemoryCandidateVerifierModel {

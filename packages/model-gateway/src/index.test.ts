@@ -6,6 +6,7 @@ import {
   OpenRouterMemoryCandidateVerifierModel,
   OpenRouterMemoryConnectionScorerModel,
   OpenRouterMemoryGenerationModel,
+  OpenRouterMemorySectionPlannerModel,
   OpenRouterRetrievalRerankerModel,
 } from "./index";
 
@@ -115,6 +116,48 @@ describe("OpenRouterMemoryGenerationModel", () => {
     });
 
     expect(result.parsed.items[0]?.statement).toBe("Stable checkout depends on relayer review.");
+  });
+});
+
+describe("OpenRouterMemorySectionPlannerModel", () => {
+  it("returns a strict ordered section plan without rewritten content", async () => {
+    const model = new OpenRouterMemorySectionPlannerModel({
+      apiKey: "test-key", baseUrl: "https://openrouter.test/api/v1", model: "planner-model",
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as { messages?: Array<{ content: string }>; response_format?: { json_schema?: { name?: string } } };
+        expect(body.response_format?.json_schema?.name).toBe("memory_section_plan");
+        expect(body.messages?.[1]?.content).toContain('<evidence id="ev_1"');
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ sections: [
+          { temporaryId: "overview", title: "Overview", startEvidenceSpanId: "ev_1", endEvidenceSpanId: "ev_1" },
+          { temporaryId: "compat", title: "Compatibility", startEvidenceSpanId: "ev_2", endEvidenceSpanId: "ev_2" },
+        ] }) } }] });
+      },
+    });
+    const response = await model.planMemorySections({
+      sourceVersionId: "srcv_1", evidenceSpans: [testEvidenceSpan("ev_1"), testEvidenceSpan("ev_2", 20)],
+      targetChars: 5_000, maxChars: 8_000, maxSections: 50,
+    });
+    expect(response.parsed.sections.map((section) => section.title)).toEqual(["Overview", "Compatibility"]);
+  });
+
+  it("retries an invariant-invalid plan on the configured fallback model", async () => {
+    const calls: string[] = [];
+    const model = new OpenRouterMemorySectionPlannerModel({
+      apiKey: "test-key", baseUrl: "https://openrouter.test/api/v1", model: "primary", fallbackModels: ["fallback"],
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as { model: string };
+        calls.push(body.model);
+        const sections = body.model === "primary"
+          ? [{ temporaryId: "bad", title: "Bad", startEvidenceSpanId: "missing", endEvidenceSpanId: "ev_2" }]
+          : [{ temporaryId: "good", title: "All", startEvidenceSpanId: "ev_1", endEvidenceSpanId: "ev_2" }];
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ sections }) } }] });
+      },
+    });
+    await model.planMemorySections({
+      sourceVersionId: "srcv_1", evidenceSpans: [testEvidenceSpan("ev_1"), testEvidenceSpan("ev_2", 20)],
+      targetChars: 5_000, maxChars: 8_000, maxSections: 50,
+    });
+    expect(calls).toEqual(["primary", "fallback"]);
   });
 });
 
@@ -617,14 +660,14 @@ describe("OpenRouterInitiativeBriefDraftModel", () => {
   });
 });
 
-function testEvidenceSpan() {
+function testEvidenceSpan(id = "ev_1", startChar = 0) {
   return {
-    id: "ev_1",
+    id,
     sourceVersionId: "srcv_1",
     startLine: 1,
     endLine: 1,
-    startChar: 0,
-    endChar: 39,
+    startChar,
+    endChar: startChar + 39,
     text: "Docs ownership blocks launch readiness.",
   };
 }
