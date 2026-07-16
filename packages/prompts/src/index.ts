@@ -5,6 +5,9 @@ import type {
   GraphRetrievalClaim,
   MemoryItem,
   MemoryWithEvidence,
+  SlackChannelProfile,
+  SlackConversationClassification,
+  SlackContextRole,
 } from "@distillery/contracts";
 import {
   CLAIM_TYPES,
@@ -20,6 +23,37 @@ const RERANK_EVIDENCE_MAX_CHARS = 250;
 
 export type MemoryGenerationPromptInput = {
   evidenceSpans: EvidenceSpan[];
+  slackContext?: {
+    selectedMessageTimestamp: string;
+    channelProfile: SlackChannelProfile;
+    classification: SlackConversationClassification;
+    items: Array<{
+      role: SlackContextRole;
+      messageTimestamp?: string;
+      authorId?: string;
+      authorLabel?: string;
+      occurredAt: string;
+      permalink?: string;
+      evidenceSpanIds: string[];
+    }>;
+  };
+};
+
+export type SlackNearbySelectionPromptInput = {
+  selectedMessage: { messageId: string; text: string };
+  candidates: Array<{ messageId: string; text: string; authorLabel: string; occurredAt: string }>;
+};
+
+export type SlackClassificationPromptInput = {
+  channelProfile: SlackChannelProfile;
+  selectedMessageTimestamp: string;
+  items: Array<{
+    role: SlackContextRole;
+    messageTimestamp?: string;
+    authorLabel?: string;
+    occurredAt: string;
+    text: string;
+  }>;
 };
 
 export type MemorySectionPlanningPromptInput = {
@@ -97,6 +131,10 @@ export function memoryGenerationSystemPrompt(): string {
     "One evidence span may produce multiple candidates when it contains multiple distinct memories.",
     "Do not merge distinct facts just because they appear in the same sentence.",
     "Do not create initiatives, PRDs, tasks, recommendations, or product priorities.",
+    "When Slack context is supplied, treat selected_message as the primary evidence and other roles as bounded context.",
+    "Channel profile metadata may disambiguate a conversation but must never independently prove a product claim.",
+    "Preserve temporal qualifiers and separate symptoms, suspected causes, confirmed causes, workarounds, fixes, current status, proposals, and commitments.",
+    "Do not flatten multiple causes or lifecycle states into one claim. Later replies may qualify or supersede earlier observations.",
     "Do not hide uncertainty. If a statement is a decision report, use decision_reported.",
     "If evidence is weak, use inferred or assumption only when the inference is clearly labeled and supported by supplied span IDs.",
     "Every item must cite one or more supplied evidenceSpanIds exactly.",
@@ -113,6 +151,28 @@ export function memoryGenerationSystemPrompt(): string {
     "Output must be a single minified JSON object.",
     "Do not include markdown, comments, trailing commas, or unescaped line breaks inside strings.",
     "Return valid JSON matching the requested schema.",
+  ].join("\n");
+}
+
+export function slackNearbySelectionSystemPrompt(): string {
+  return [
+    "You select only nearby Slack messages that materially disambiguate one selected message.",
+    "Return at most four supplied message IDs.",
+    "Choose a message only when it shares an explicit issue ID, URL, named service, product, person, or directly continued subject.",
+    "Do not select casual proximity, greetings, channel announcements, or unrelated discussion.",
+    "Never invent or rewrite message IDs.",
+    "Return only valid JSON matching the requested schema.",
+  ].join("\n");
+}
+
+export function slackClassificationSystemPrompt(): string {
+  return [
+    "Classify a bounded Slack conversation using only supplied content.",
+    "Choose one category: bug, suggestion, incident, status_update, decision, question, resolution, mixed, or unknown.",
+    "Extract only explicit identities: products, feature components, external services, issue or ticket IDs, release versions, environments, and named organizations.",
+    "Do not infer identities from the channel name, topic, or purpose alone.",
+    "Keep the rationale short and do not make unsupported causal claims.",
+    "Return only valid JSON matching the requested schema.",
   ].join("\n");
 }
 
@@ -218,7 +278,44 @@ export function renderEvidenceForModel(spans: EvidenceSpan[]): string {
 }
 
 export function renderMemoryGenerationInputForModel(input: MemoryGenerationPromptInput): string {
-  return renderEvidenceForModel(input.evidenceSpans);
+  if (!input.slackContext) return renderEvidenceForModel(input.evidenceSpans);
+  return [
+    "<slackContext>",
+    `<selectedMessageTimestamp>${escapeText(input.slackContext.selectedMessageTimestamp)}</selectedMessageTimestamp>`,
+    `<channelProfile>${escapeText(JSON.stringify(input.slackContext.channelProfile))}</channelProfile>`,
+    `<classification>${escapeText(JSON.stringify(input.slackContext.classification))}</classification>`,
+    "<items>",
+    ...input.slackContext.items.map((item) =>
+      `<item role="${item.role}" messageTimestamp="${escapeAttribute(item.messageTimestamp ?? "")}" authorId="${escapeAttribute(item.authorId ?? "")}" authorLabel="${escapeAttribute(item.authorLabel ?? "")}" occurredAt="${escapeAttribute(item.occurredAt)}" permalink="${escapeAttribute(item.permalink ?? "")}" evidenceSpanIds="${escapeAttribute(item.evidenceSpanIds.join(","))}" />`
+    ),
+    "</items>",
+    "</slackContext>",
+    "<evidence>",
+    renderEvidenceForModel(input.evidenceSpans),
+    "</evidence>",
+  ].join("\n");
+}
+
+export function renderSlackNearbySelectionInputForModel(input: SlackNearbySelectionPromptInput): string {
+  return [
+    `<selected messageId="${escapeAttribute(input.selectedMessage.messageId)}">${escapeText(input.selectedMessage.text)}</selected>`,
+    "<candidates>",
+    ...input.candidates.map((candidate) =>
+      `<candidate messageId="${escapeAttribute(candidate.messageId)}" author="${escapeAttribute(candidate.authorLabel)}" occurredAt="${escapeAttribute(candidate.occurredAt)}">${escapeText(candidate.text)}</candidate>`
+    ),
+    "</candidates>",
+  ].join("\n");
+}
+
+export function renderSlackClassificationInputForModel(input: SlackClassificationPromptInput): string {
+  return [
+    `<channelProfile>${escapeText(JSON.stringify(input.channelProfile))}</channelProfile>`,
+    `<conversation selectedMessageTimestamp="${escapeAttribute(input.selectedMessageTimestamp)}">`,
+    ...input.items.map((item) =>
+      `<item role="${item.role}" messageTimestamp="${escapeAttribute(item.messageTimestamp ?? "")}" author="${escapeAttribute(item.authorLabel ?? "")}" occurredAt="${escapeAttribute(item.occurredAt)}">${escapeText(item.text)}</item>`
+    ),
+    "</conversation>",
+  ].join("\n");
 }
 
 export function renderMemorySectionPlanningInputForModel(input: MemorySectionPlanningPromptInput): string {
