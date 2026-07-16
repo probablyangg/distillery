@@ -90,13 +90,14 @@ async function main(): Promise<void> {
   run("cloudflare_auth", ["whoami"]);
   run("queue_create", ["queues", "create", QUEUE_NAME], { allowAlreadyExists: true });
 
-  for (const key of SECRET_KEYS) {
-    run(`secret_${key}`, ["secret", "put", key, "--config", CONFIG_PATH], {
-      input: requireEnv(env, key),
-    });
-  }
+  run("secrets", ["secret", "bulk", "--config", CONFIG_PATH], {
+    input: JSON.stringify(Object.fromEntries(
+      SECRET_KEYS.map((key) => [key, requireEnv(env, key)]),
+    )),
+  });
 
   const deployOutput = run("deploy", ["deploy", "--config", CONFIG_PATH]);
+  run("triggers", ["triggers", "deploy", "--config", CONFIG_PATH]);
   const url = deployOutput.match(/https:\/\/[^\s]+\.workers\.dev/)?.[0];
 
   if (url) {
