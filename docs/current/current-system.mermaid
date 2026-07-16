@@ -1,7 +1,7 @@
 flowchart TB
 
 %% DISTILLERY CURRENT SYSTEM
-%% Status: implemented private pilot through migration 0018 as of 2026-07-16.
+%% Status: implemented private pilot through migration 0021 as of 2026-07-16.
 %% PostgreSQL is canonical. Cloudflare Queue messages are wakeups only.
 
 subgraph USER["Human user"]
@@ -27,12 +27,13 @@ subgraph APP["Worker application modules"]
   A3["Synthesis APIs<br/>ranked opportunities, generate,<br/>edit, save, approve, reject"]
   A4["Event router<br/>ledger_events -> pending_work"]
   A5["Loop executor<br/>claim work, run policy, validate proposal,<br/>batch auto-approved commits"]
-  A6["Real policies<br/>extract, connect, contradiction, embeddings,<br/>graph, cluster, readiness, synthesis"]
+  A6["Real domain policies<br/>Slack/text extract + section/consolidate,<br/>connect, contradiction, embeddings,<br/>graph, cluster, readiness, synthesis"]
   A7["Placeholder policies<br/>candidate, freshness, ranking,<br/>draft/gate/revise"]
   A8["Graph APIs<br/>clusters, claims, rebuild,<br/>review, resolve, preferences"]
   A9["Memory proposal review<br/>verifier-routed approve/reject"]
   A10["Scheduled maintenance<br/>recover, requeue, scan, route<br/>bounded batches"]
-  A11["Slack connector<br/>signature + allowlists, durable save,<br/>PDF/DOCX parsing, reaction receipt"]
+  A11["Slack connector<br/>signature + allowlists, durable save,<br/>bounded context assembly, PDF/DOCX parsing"]
+  A13["Slack context policy<br/>classification-aware extraction,<br/>validation, reaction readiness"]
   A12["Brief reader APIs<br/>generated draft/approved projection,<br/>exact evidence and source links"]
 end
 
@@ -43,11 +44,12 @@ subgraph MODEL["OpenRouter"]
   M3["Grounded answer model"]
   M4["Embedding model"]
   M5["Memory verifier and<br/>connection scorer"]
+  M6["Slack nearby selector<br/>and context classifier"]
 end
 
 subgraph DB["Supabase PostgreSQL via RPC"]
   direction TB
-  D1["Text source store<br/>ingestions, source_items, source_versions, evidence_spans"]
+  D1["Source store<br/>ingestions, source_items, source_versions, evidence_spans"]
   D2["Memory store<br/>memory_items, memory_item_evidence,<br/>memory_entities, memory_relations, memory_schemas"]
   D3["Human review history<br/>memory_item_events"]
   D4["Brief store<br/>initiative_briefs, brief memory/evidence bindings,<br/>initiative_brief_decisions"]
@@ -55,7 +57,7 @@ subgraph DB["Supabase PostgreSQL via RPC"]
   D6["Derived retrieval data<br/>full-text indexes, memory_embeddings"]
   D7["Claim graph pilot<br/>observations, claims, claim_evidence,<br/>claim_connections, conflict groups,<br/>graph_nodes, graph_edges, preferences"]
   D8["Corpus synthesis projection<br/>enrichment, clusters and versions,<br/>memberships, readiness, suggested briefs,<br/>dirty neighborhoods, scan cursor"]
-  D9["Connector state<br/>connector_saves, replay receipts,<br/>source-native metadata and locators"]
+  D9["Connector state<br/>connector_saves, replay receipts,<br/>context bundles and ordered roles"]
 end
 
 U1 --> W
@@ -82,6 +84,13 @@ A11 --> D9
 A11 --> D1
 A11 --> D5
 A11 --> Q
+A11 --> M6
+M6 --> A11
+D5 --> A13
+A13 --> D1
+A13 --> D2
+A13 --> D5
+A13 --> M1
 A12 --> D4
 A12 --> D1
 

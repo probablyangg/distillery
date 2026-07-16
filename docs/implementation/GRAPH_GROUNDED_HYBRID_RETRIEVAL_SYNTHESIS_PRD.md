@@ -10,6 +10,7 @@ Related docs:
 
 - Docs index: [README.md](../README.md)
 - Current state: [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md)
+- Current code map: [CODEBASE_GUIDE.md](../reference/CODEBASE_GUIDE.md)
 - Claim graph plan: [CLAIM_GRAPH_MEMORY_UPGRADE_PLAN.md](./CLAIM_GRAPH_MEMORY_UPGRADE_PLAN.md)
 - Memory architecture and MemGraphRAG notes: [MEMORY_ARCHITECTURE.md](../architecture/MEMORY_ARCHITECTURE.md)
 - MemGraphRAG paper: [2606.00610v1.pdf](../research/2606.00610v1.pdf)

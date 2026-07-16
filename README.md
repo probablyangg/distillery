@@ -13,8 +13,9 @@ For implementation work, read these in order:
 1. [Coding-agent instructions](./AGENTS.md) — source-of-truth order, current boundaries, and safe workflow.
 2. [Docs index](./docs/README.md) — authority and lifecycle map for all documentation.
 3. [Current status](./docs/current/STATUS_AND_ROADMAP.md) — what exists today, including known loop-system gaps.
-4. [Runbook](./docs/runbooks/RUNBOOK.md) — local setup, migrations, seed data, deployment, and smoke testing.
-5. Read the relevant product/architecture doc, then any implementation PRD needed for design history.
+4. [Codebase guide](./docs/reference/CODEBASE_GUIDE.md) — runtime entry points, package responsibilities, data flows, and where to make common changes.
+5. [Runbook](./docs/runbooks/RUNBOOK.md) — local setup, migrations, seed data, deployment, and smoke testing.
+6. Read the relevant product/architecture doc, then any implementation PRD needed for design history.
 
 Do not treat roadmaps, research notes, build plans, or implementation PRD baselines as current implementation authority. When sources disagree, follow the order in `AGENTS.md`: code/tests, ordered migrations, then the current-status document.
 
@@ -28,8 +29,8 @@ Implemented in the current repository:
 - password-gated synthesis surface at `/synthesis`;
 - password-gated graph review surface at `/graph`;
 - password-gated, read-only generated brief surface at `/briefs`;
-- allowlisted Slack message shortcut ingestion for the private pilot, including text-based PDF and DOCX attachments;
-- text-only ingestion;
+- context-aware Slack message shortcut ingestion from channels where the app is a member, including bounded threads or selected nearby messages, immutable channel-profile snapshots, and text-based PDF/DOCX attachments;
+- direct text-braindump ingestion;
 - immutable source versions and evidence spans;
 - automatic semantic sectioning for documents that reach 6,000 normalized characters or 20 evidence spans, with deterministic fallback boundaries;
 - OpenRouter memory generation;
@@ -46,7 +47,7 @@ Implemented in the current repository:
 - long-source `extract_memory -> extract_memory_section (one leased work item per section) -> consolidate_memory -> memory_committed` loop path;
 - `memory_committed -> connect_memory -> enrichment_update_proposed -> validation -> connections_updated` loop path;
 - `memory_committed -> detect_contradiction -> enrichment_update_proposed -> validation -> contradictions_updated` loop path;
-- independent post-memory enrichment for connections, contradictions, embeddings, graph projection, candidates, and freshness;
+- independent post-memory work for connections, contradictions, embeddings, graph projection, clustering, and the placeholder candidate/freshness runners;
 - corpus-wide `recompute_cluster -> evaluate_synthesis_readiness -> synthesis_ready -> synthesize_brief` loop path;
 - versioned overlapping clusters, deterministic opportunity scoring, bounded evidence dossiers, and idempotent suggested drafts;
 - atomic batching for auto-approved policy proposals, keeping high-fan-out cluster work within the Cloudflare Worker subrequest budget;
@@ -55,7 +56,7 @@ Implemented in the current repository:
 - Cloudflare Worker deployment;
 - Supabase PostgreSQL/RPC persistence with `pgvector`.
 
-Configured live app (health endpoint verified 2026-07-15):
+Configured live app (repository deployment target; verify `/health` before operating it):
 
 ```text
 https://distillery-v0.angela-f4b.workers.dev
@@ -76,7 +77,7 @@ pnpm
 
 Canonical state is PostgreSQL. Queues, indexes, embeddings, and graph projections are derived or transport mechanisms.
 
-Current loop limitation: extraction, connection, contradiction, embedding, graph projection, clustering, readiness, and synthesis have real domain logic. Candidate, freshness, ranking, artifact gating, and revision policies remain placeholder runners.
+Current loop limitation: extraction, connection, contradiction, embedding, graph projection, clustering, readiness, and synthesis have real domain logic. Slack ingestion/reaction policies perform connector side effects. Candidate, freshness, ranking, artifact gating, and revision policies remain placeholder runners.
 
 ## Quick Start
 
@@ -85,7 +86,7 @@ pnpm install
 pnpm build
 ```
 
-Before running against a database, apply every SQL file in `packages/db/migrations/` in filename order. The current schema requires migrations `0001` through `0018`; see the [runbook](./docs/runbooks/RUNBOOK.md#database-migrations).
+Before running against a database, apply every SQL file in `packages/db/migrations/` in filename order. The current schema requires migrations `0001` through `0021`; see the [runbook](./docs/runbooks/RUNBOOK.md#database-migrations).
 
 The Slack private-pilot setup is documented in [Slack pilot setup](./docs/runbooks/SLACK_PILOT.md).
 
@@ -167,10 +168,13 @@ Copy `.env.example` to `.env.local` and populate:
   - `SLACK_BOT_TOKEN`;
   - `SLACK_SIGNING_SECRET`;
   - `SLACK_ALLOWED_TEAM_ID`;
-  - comma-separated `SLACK_ALLOWED_CHANNEL_IDS`;
   - comma-separated `SLACK_ALLOWED_USER_IDS`;
+  - comma-separated `SLACK_ALLOWED_EXTERNAL_CHANNEL_IDS` for explicit Slack Connect opt-ins; ordinary member channels need no channel allowlist;
   - `SLACK_SAVED_REACTION=factory` (Slack's built-in 🏭 reaction).
   - `SLACK_PROCESSING_REACTION=hourglass_flowing_sand` (Slack's built-in processing reaction).
+  - optional `SLACK_CONTEXT_MODEL`; when empty, context selection and classification use the configured extractor model and existing OpenRouter key.
+
+The [runbook environment section](./docs/runbooks/RUNBOOK.md#environment-files) explains which values are used by repository scripts, Wrangler, and the deployed Worker. Do not assume `.env.local` is loaded by `pnpm dev`.
 
 For Worker runtime secrets, copy `apps/web/.dev.vars.example` to `apps/web/.dev.vars`.
 

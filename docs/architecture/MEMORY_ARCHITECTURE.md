@@ -15,6 +15,7 @@ The current implementation borrows the MemGraphRAG separation partially:
 - shared Ask/synthesis retrieval uses vector and sparse/exact seeds, bounded Personalized PageRank, and optional model reranking;
 - the old database lexical-answer function remains for legacy compatibility but is not on the Ask path;
 - contradiction detection is deterministic and narrow, not a production-grade adjudication system.
+- Slack context is stored as a versioned bundle of separate immutable channel-profile, message, and supported-document sources. The selected message remains primary evidence; other bundle items retain explicit provenance roles.
 
 Use [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md) for current project state. Use this file for design rationale and future memory-layer direction.
 
@@ -242,6 +243,18 @@ evidence_span
 ```
 
 This is the equivalent of MemGraphRAG's passage layer, strengthened with immutable versions, exact locators, identity, time, and authorization.
+
+Current Slack mapping:
+
+```text
+connector_save
+  -> slack_context_bundle version
+  -> ordered slack_context_bundle_items
+  -> separate source_item/source_version per channel profile, message, or PDF/DOCX
+  -> exact evidence_span locators with Slack permalink and source-native offsets
+```
+
+The current pilot does not yet attach an ACL policy to these sources. Channel membership and Slack Connect opt-in are ingestion-time controls, not retrieval-time authorization.
 
 ### Layer 1 — observations
 

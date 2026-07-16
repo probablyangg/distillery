@@ -2,7 +2,7 @@
 
 Status: historical build plan. The described pilot is implemented in the repository; consult the current-status document for deployment and remaining-work claims.
 
-Post-plan delta, 2026-07-15: corpus-wide synthesis now adds independent enrichment workers, versioned overlapping clusters, deterministic readiness/opportunity scoring, suggested brief versions, a cursor-backed global sweep, and one-RPC auto-approved proposal batches. Manual synthesis accepts 1–20 seed memories and expands related memory by default. Ask uses the shared hybrid graph retriever and, if model generation fails, degrades from the same retrieved context rather than switching to the legacy lexical-answer function. These changes are intentionally not retrofitted into every historical slice below.
+Post-plan delta, 2026-07-16: corpus-wide synthesis now adds independent enrichment workers, versioned overlapping clusters, deterministic readiness/opportunity scoring, suggested brief versions, a cursor-backed global sweep, and one-RPC auto-approved proposal batches. Manual synthesis accepts 1–20 seed memories and expands related memory by default. Ask uses the shared hybrid graph retriever and, if model generation fails, degrades from the same retrieved context rather than switching to the legacy lexical-answer function. Migrations `0018`–`0021` also add a bounded, versioned Slack-context connector, reaction lifecycle, and read-only generated brief surface. Historical slice text below is preserved as build history; superseded behavior is called out where it could mislead current implementation work.
 
 For current status and roadmap, start with [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md). This file explains the initial build structure, what shipped, and what remains.
 
@@ -34,6 +34,13 @@ Claim Graph Pilot
   -> connection and conflict policies
   -> graph-grounded recall
   -> reviewer graph UI
+
+Slack Context Pilot
+  selected message shortcut
+  -> bounded thread or selected nearby context
+  -> immutable versioned source bundle
+  -> context-level memory extraction
+  -> completion reaction
 ```
 
 The release outcome is an approved initiative brief whose consequential claims can be traced to exact evidence spans, selected memory, or a human decision record.
@@ -75,11 +82,24 @@ Reviewer surface:
 - pin claims;
 - exclude claims from synthesis.
 
+### `/briefs` Generated Brief Reader
+
+- show only Distillery-generated draft and approved briefs;
+- show exact evidence citations and source-native links;
+- keep data behind the shared-password session.
+
+### Slack `Save to Distillery`
+
+- save a selected message with bounded thread or nearby context;
+- keep each author and supported PDF/DOCX as separate immutable evidence;
+- version changed context and deduplicate unchanged refreshes;
+- replace the processing reaction only after current context extraction completes.
+
 ## Implemented slices
 
 ### Slice 1 — text to committed memory
 
-Implemented:
+Implemented in the original slice:
 
 - text-only capture endpoint;
 - immutable source versions;
@@ -111,6 +131,8 @@ Implemented:
 - explicit gap response when no evidence supports an answer;
 - active-memory filtering.
 
+Current replacement: the Worker Ask route uses hybrid vector/sparse seeds, a bounded graph snapshot, Personalized PageRank, optional reranking, and grounded answer generation. Deterministic fallback uses that same retrieved context. It does not call the old lexical-answer RPC.
+
 ### Slice 4 — manual synthesis to approved brief
 
 Implemented:
@@ -126,7 +148,7 @@ Implemented:
 Implemented:
 
 - `POST /api/initiative-brief-drafts`;
-- selection limit of 1-8 memory items;
+- original selection limit of 1–8 memory items, later raised to 1–20;
 - OpenRouter brief drafting;
 - traceability validation;
 - deterministic fallback draft when model generation fails.
@@ -212,8 +234,12 @@ packages/contracts/        Zod schemas and API types
 packages/db/               Supabase RPC repository and SQL migrations
 packages/evidence/         text normalization, hashing, evidence spans
 packages/memory-generation/ capture, workflow, recall
+packages/memory-retrieval/ shared hybrid graph retrieval and PPR
 packages/memory-synthesis/ brief evidence and traceability validation
 packages/model-gateway/    OpenRouter structured calls, embeddings, grounded answers
+packages/prompts/          model prompts and bounded input renderers
+packages/slack-connector/  signed shortcut, context, documents, reactions
+packages/loop/             event routing, leases, policies, proposal gates
 packages/validation/       memory validation
 evals/fixtures/            Stable labeled fixtures
 evals/runners/             fixture/live smoke runners
@@ -229,6 +255,7 @@ Current required checks:
 pnpm typecheck
 pnpm test
 pnpm fixtures:validate
+pnpm retrieval:validate
 pnpm build
 ```
 
@@ -243,6 +270,9 @@ Current coverage:
 - OpenRouter request/response parsing;
 - embedding dimension and grounded-answer citation validation;
 - loop routing and policy behavior through in-memory persistence;
+- Slack signature/access, bounded context, attachment, versioning, and reaction behavior;
+- corpus cluster/readiness/dossier behavior;
+- deterministic hybrid retrieval fixtures;
 - Stable fixture schema validation.
 
 Recommended next coverage:
@@ -258,18 +288,18 @@ Recommended next coverage:
 - Make trace details easier to scan.
 - Add model run metadata display for generated drafts.
 - Add automated deployed smoke coverage for both pages.
-- Add duplicate/contradiction candidate detection.
+- Add broader duplicate detection and contradiction coverage.
 - Broaden contradiction detection beyond deterministic shared-subject polarity checks.
 - Add basic observability for latency, fallback model use, and failure reasons.
 
 ## Deferred
 
-- automated initiative discovery;
+- full candidate-policy initiative discovery beyond the implemented cluster/readiness path;
 - automated evidence grouping;
 - initiative maturity scoring;
 - PRD generation;
 - TDD generation;
-- source connectors;
+- connectors beyond direct text and the bounded Slack message shortcut;
 - SSO/RBAC;
 - source-level ACLs;
 - human-reviewed canonical entity/schema promotion workflow;

@@ -19,8 +19,9 @@ Implementation PRDs contain original requirements and baselines. They are not pr
 1. [`README.md`](./README.md)
 2. [`docs/README.md`](./docs/README.md)
 3. [`docs/current/STATUS_AND_ROADMAP.md`](./docs/current/STATUS_AND_ROADMAP.md)
-4. The relevant product or implementation document.
-5. The code, tests, package manifests, and migrations in the area being changed.
+4. [`docs/reference/CODEBASE_GUIDE.md`](./docs/reference/CODEBASE_GUIDE.md)
+5. The relevant product or implementation document.
+6. The code, tests, package manifests, and migrations in the area being changed.
 
 ## Current boundaries
 
@@ -36,13 +37,15 @@ Implementation PRDs contain original requirements and baselines. They are not pr
 
 ## Important current behavior
 
-- Real policies: `extract_memory`, `connect_memory`, `detect_contradiction`, and `synthesize_brief`.
+- Real domain policies: `extract_slack_context`, `extract_memory`, `extract_memory_section`, `consolidate_memory`, `connect_memory`, `detect_contradiction`, `update_embeddings`, `update_graph`, `recompute_cluster`, `evaluate_synthesis_readiness`, and `synthesize_brief`.
+- Connector side-effect policies: `ingest_slack_source` and `sync_slack_reaction`. They still claim canonical PostgreSQL work before calling Slack.
 - Placeholder policies: `discover_candidate`, `check_freshness`, `rank_candidate`, `draft_artifact`, `gate_output`, and `revise_artifact`.
 - Memory extraction uses an extractor followed by deterministic validation and, when configured, a verifier. Verified/corrected candidates can auto-commit. `needs_review` candidates become human-review proposals.
 - Ask uses the shared vector/sparse-seeded graph retriever, bounded Personalized PageRank, optional model reranking, and grounded answer generation. If a model step fails, it degrades using the same retrieved context. It does not fall back to the legacy database lexical-answer function.
 - Manual brief drafting expands related memory only when `expandRelatedMemory: true`. Background `synthesize_brief` uses the shared synthesis retriever.
 - Worker model calls currently attempt only the first configured fallback model, even if `OPENROUTER_FALLBACK_MODELS` contains more entries.
-- Migrations `0010` and `0011` are both required for the current claim graph and hybrid retrieval path. Historical rows also require graph rebuild and embedding backfill for full vector coverage.
+- The Slack shortcut stores a bounded, versioned context bundle. Ordinary channels require bot membership; Slack Connect also requires an explicit channel ID opt-in. Unsupported media is recorded but not analyzed.
+- The current schema is migrations `0001` through `0021`. Historical rows also require graph rebuild and embedding backfill for full vector coverage.
 
 ## Safe workflow
 

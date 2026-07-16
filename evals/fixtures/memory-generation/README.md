@@ -1,6 +1,6 @@
 # Memory Generation labeled fixtures
 
-These fixtures are for reviewing and testing v0 Memory Generation for Stable.
+These fixtures are for reviewing and testing Memory Generation for Stable. They exercise the shared extracted-memory contract; Slack context has separate connector and loop tests.
 
 They are synthetic text-only braindumps, not training data and not real internal Stable records. They are a small golden set used to check whether a prompt/model change still extracts only evidence-backed memory items.
 
@@ -27,3 +27,5 @@ pnpm fixtures:validate
 ```
 
 The validator checks fixture shape, claim types, evidence support, relation support, and duplicate IDs. It does not score extraction quality; human review still decides whether the expected memory is correct.
+
+See the [evaluation guide](../../README.md) for the optional extraction and connection measurements and the deterministic retrieval fixture gate.

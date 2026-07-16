@@ -28,10 +28,20 @@ Operational hardening note, 2026-07-15 (migrations `0014` and `0015`):
 - Cursor-backed global synthesis scans no longer emit `cluster_changed` when the affected cluster versions are unchanged.
 - Migration `0015` resolves only redundant rollout-era global-sweep outbox rows; it does not delete domain state.
 
+Current delta, 2026-07-16 (migrations `0016`–`0021`):
+
+- Long or dense direct text uses canonical section plans, independently leased section work, and `consolidate_memory`.
+- A newly submitted direct capture can prefer its own first outbox claim before routing returns to FIFO.
+- Slack shortcut registration creates canonical connector work. Context refresh stores separate immutable channel/message/document sources in a versioned ordered bundle.
+- `slack_context_committed -> extract_slack_context` uses the normal proposal, validation, verifier, and memory-commit path.
+- `sync_slack_reaction` is canonical retryable work and completes only after extraction of the current context bundle.
+- Current policy/event/route vocabulary is documented in the [codebase guide](../reference/CODEBASE_GUIDE.md) and defined exactly in contracts and `eventRoutes`.
+
 Related docs:
 
 - Docs index: [README.md](../README.md)
 - Current state: [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md)
+- Current code map: [CODEBASE_GUIDE.md](../reference/CODEBASE_GUIDE.md)
 - Current system design: [SYSTEM_DESIGN.md](../architecture/SYSTEM_DESIGN.md)
 - System diagram: [loop-system.mermaid](../architecture/loop-system.mermaid)
 
@@ -209,7 +219,7 @@ embedding model: google/gemini-embedding-001
 
 The embedding model is for retrieval/indexing only. It must not be treated as a reasoning policy model.
 
-Current model IDs are configuration, not an architectural invariant. As of 2026-07-15, `.env.example` and `apps/web/wrangler.toml` default to `openai/gpt-5` with `anthropic/claude-sonnet-4.5`, `moonshotai/kimi-k2.7-code`, and `~moonshotai/kimi-latest` fallbacks. Optional `MEMORY_EXTRACTOR_MODEL`, `MEMORY_VERIFIER_MODEL`, and `MEMORY_CONNECTION_MODEL` values override the primary model for those roles.
+Current model IDs are configuration, not an architectural invariant. As of 2026-07-16, `.env.example` and `apps/web/wrangler.toml` default to `openai/gpt-5` with `anthropic/claude-sonnet-4.5`, `moonshotai/kimi-k2.7-code`, and `~moonshotai/kimi-latest` fallbacks. Optional `MEMORY_EXTRACTOR_MODEL`, `MEMORY_VERIFIER_MODEL`, `MEMORY_CONNECTION_MODEL`, `MEMORY_SECTION_PLANNER_MODEL`, and `SLACK_CONTEXT_MODEL` values override the primary model for those roles. Slack context falls back through the extractor override when its own override is absent.
 
 Original planned LLM-backed policies:
 

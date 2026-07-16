@@ -30,8 +30,10 @@ Leadership brief reader
   inspect exact source citations and Slack links
 
 Slack private-pilot connector
-  save one allowlisted message and supported PDF/DOCX attachments
-  continue through the canonical event loop after immutable evidence commit
+  save a selected message as primary evidence
+  snapshot bounded thread or selected nearby context plus channel profile
+  keep every message and supported PDF/DOCX as separate immutable source evidence
+  continue through one canonical context event and extraction policy
 ```
 
 Live Worker:
@@ -40,7 +42,7 @@ Live Worker:
 https://distillery-v0.angela-f4b.workers.dev
 ```
 
-Migration `0018` and the Worker code for the Slack connector and `/briefs` reader were deployed on 2026-07-16. The generated brief reader passed authenticated read-only smoke checks. The Slack app is installed with the required scopes, `#fren-home` and the two pilot users are allowlisted, and a real shortcut save completed successfully. Migration `0019` and the two-stage reaction lifecycle are deployed; one fresh shortcut click remains for live observation of the hourglass-to-factory transition.
+Repository code and migrations `0018`–`0021` implement the Slack connector, context-aware refresh/versioning, two-stage reaction lifecycle, and `/briefs` reader. The repository deployment target is recorded in the runbook, but deployment claims are operational state: verify `/health`, `pnpm smoke:deployed`, and a real Slack click before relying on them. Channel access is membership-based: ordinary workspace channels are eligible when `@Distillery` has been invited, while Slack Connect also requires an explicit channel ID opt-in.
 
 The default starter seed command produces:
 
@@ -63,11 +65,22 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 - `/synthesis` reviewer screen.
 - `/graph` claim graph reviewer screen.
 - `/briefs` read-only generated brief list and detail screens.
-- `Save to Distillery` Slack message shortcut receiver and worker policy, gated by workspace, channel, and user allowlists.
+- `Save to Distillery` Slack message shortcut receiver with durable registration, bounded conversation assembly, immutable context bundles, context-aware extraction, and reaction synchronization.
 - Text-only braindump ingestion.
 - No initiative suggestions on the ingestion screen.
 - No formal auth, SSO, RBAC, or per-source ACLs.
-- Slack ingestion is deliberately single-workspace and deny-by-default; direct messages, group direct messages, Slack Connect, nonmember channels, and nonallowlisted actions are rejected.
+- Slack ingestion is deliberately single-workspace and deny-by-default. Direct messages, group direct messages, nonmember channels, and nonallowlisted users are rejected. Ordinary public/private member channels require no channel allowlist. Slack Connect channels remain blocked unless their channel ID appears in `SLACK_ALLOWED_EXTERNAL_CHANNEL_IDS`; the deployed pilot opts in only `C0BG2JXTG77`.
+
+### Slack context ingestion
+
+- A click always keeps the selected message as primary evidence and snapshots the channel name, topic, purpose, privacy, and external-sharing state.
+- Threads include the root and replies in chronological order, bounded to 50 messages and 40,000 normalized characters. If needed, deterministic truncation retains the root, selected message, earliest context, and newest replies.
+- A non-thread message considers at most five preceding and three following top-level messages within 30 minutes. A runtime-validated model selector may retain at most four known candidates; failure selects none.
+- Every message remains a separate immutable source version with its author, timestamp, permalink, edit metadata, locator, and evidence spans. Ordered context-bundle items record whether a source is selected evidence, thread context, nearby context, channel metadata, or an attachment.
+- Later distinct clicks refresh Slack. Unchanged bundles create no source, evidence, event, or extraction duplicates. Replies, edits, channel-profile changes, and supported attachment changes create a linked bundle version.
+- PNG/JPEG/GIF/WebP, video, and audio are recorded as skipped metadata and reported privately; their presence no longer blocks textual capture. PDF and DOCX text extraction remains supported.
+- `slack_context_committed -> extract_slack_context` is a real canonical policy path. Queue messages remain `{ workItemId }`, and `:factory:` waits for extraction of the current bundle.
+- Context selection, classification, and extraction reuse the existing model gateway and OpenRouter key. `SLACK_CONTEXT_MODEL` is an optional model override; no new key or provider is required.
 
 ### Memory Generation
 
@@ -167,7 +180,9 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 - Stable seed script.
 - Additive migration `0018` for durable connector saves, Slack source metadata/evidence locators, reaction retry state, and generated leadership brief projections.
 - Version-controlled Slack app manifest and Slack's built-in `:factory:` saved marker.
-- Additive migration `0019` and Worker lifecycle support for immediate `:hourglass_flowing_sand:`, removed and replaced by `:factory:` only after every source finishes extraction.
+- Additive migration `0019` introduced immediate `:hourglass_flowing_sand:` and retryable completion reaction work. Migration `0020` moved the readiness condition to extraction of the current context bundle.
+- Additive migration `0020` for immutable, ordered Slack context bundles, stable message identity with edit versions, one context-level extraction event, and refresh-safe deduplication.
+- Additive migration `0021` for a fresh reaction-sync job when a distinct repeat click finds an unchanged context bundle.
 - Legacy direct database/model smoke script. It is not a deployed Worker/browser smoke and must use an isolated disposable database because its cleanup does not cover asynchronous corpus-synthesis rows.
 
 ## Current architecture
@@ -183,6 +198,14 @@ Capture
   -> event_outbox
   -> event router
   -> pending_work
+
+Slack shortcut
+  -> durable connector save + ingest_slack_source work
+  -> bounded context refresh and immutable context bundle
+  -> slack_context_committed
+  -> extract_slack_context
+  -> memory_proposed -> validation/review -> memory_committed
+  -> sync_slack_reaction after current-bundle extraction
 
 Short Remember
   -> one extract_memory model call
@@ -265,7 +288,7 @@ configured fallback 2: moonshotai/kimi-k2.7-code
 configured fallback 3: ~moonshotai/kimi-latest
 ```
 
-These are repository defaults from `.env.example` and `apps/web/wrangler.toml`, not hard-coded product requirements. `MEMORY_EXTRACTOR_MODEL`, `MEMORY_VERIFIER_MODEL`, `MEMORY_CONNECTION_MODEL`, and `MEMORY_SECTION_PLANNER_MODEL` may override the primary model for those roles. If an override is absent, that role uses `OPENROUTER_MODEL`.
+These are repository defaults from `.env.example` and `apps/web/wrangler.toml`, not hard-coded product requirements. `MEMORY_EXTRACTOR_MODEL`, `MEMORY_VERIFIER_MODEL`, `MEMORY_CONNECTION_MODEL`, `MEMORY_SECTION_PLANNER_MODEL`, and `SLACK_CONTEXT_MODEL` may override the primary model for those roles. If `SLACK_CONTEXT_MODEL` is absent it uses the extractor override, then `OPENROUTER_MODEL`; the other roles fall back directly to `OPENROUTER_MODEL`.
 
 Current Worker call sites cap fallback attempts to one model, so only the first configured fallback is effective in the Worker. Standalone scripts that construct the model gateway directly may use the full configured list.
 
@@ -276,11 +299,11 @@ google/gemini-embedding-001
 1536 dimensions
 ```
 
-Embedding storage and an independent `update_embeddings` policy exist when embedding env vars are configured. A hybrid graph retrieval implementation is present for Ask and synthesis, with vector/sparse seeds, TypeScript PPR, OpenRouter reranking, and a batch embedding backfill script. Apply migrations through `0017`, then run the backfill before expecting full vector coverage on historical memory.
+Embedding storage and an independent `update_embeddings` policy exist when embedding env vars are configured. A hybrid graph retrieval implementation is present for Ask and synthesis, with vector/sparse seeds, TypeScript PPR, OpenRouter reranking, and a batch embedding backfill script. Apply every migration through `0021`, rebuild the graph projection when upgrading historical data, then run the backfill before expecting full vector coverage.
 
 ## Current loop-system limitations
 
-- `extract_memory`, `extract_memory_section`, `consolidate_memory`, `connect_memory`, `detect_contradiction`, `update_embeddings`, `update_graph`, `recompute_cluster`, `evaluate_synthesis_readiness`, and `synthesize_brief` have real domain logic.
+- `extract_slack_context`, `extract_memory`, `extract_memory_section`, `consolidate_memory`, `connect_memory`, `detect_contradiction`, `update_embeddings`, `update_graph`, `recompute_cluster`, `evaluate_synthesis_readiness`, and `synthesize_brief` have real domain logic. `ingest_slack_source` and `sync_slack_reaction` are real connector side-effect policies.
 - `discover_candidate`, `check_freshness`, `rank_candidate`, `draft_artifact`, `gate_output`, and `revise_artifact` are registered policy runners but currently emit placeholder `not_enough_context` proposals.
 - After a queue work item completes, the Worker routes up to four newly available outbox rows before acknowledging the message. The one-minute scheduled router remains the recovery path for backlog and idle periods. Sectioned documents therefore propagate through section completions without requiring a full Cron interval between every step.
 - The deployed Worker limits each scheduled or request-triggered routing pass to 4 outbox rows and requeues up to 25 recovered jobs. Auto-approved proposals commit in one database RPC so high-fan-out cluster projections stay within the Worker subrequest budget.
@@ -294,7 +317,8 @@ Embedding storage and an independent `update_embeddings` policy exist when embed
 
 ## What is intentionally not done
 
-- Slack, docs, meetings, tickets, metrics, or URL ingestion.
+- Connectors beyond the implemented Slack message shortcut and direct text capture. There is no general docs, meetings, tickets, metrics, or URL ingestion.
+- Slack image, audio, video, external-file, or OCR ingestion. Unsupported media is recorded as skipped metadata only.
 - Voice input.
 - Formal user accounts.
 - SSO/RBAC.
@@ -391,7 +415,7 @@ Goal: keep memory, initiatives, and artifacts current as company context changes
 
 Build:
 
-- Slack/docs/meeting/ticket/metric ingestion;
+- connectors for docs, meetings, tickets, metrics, and broader Slack sources beyond the message shortcut;
 - incremental refresh;
 - currentness checks;
 - source permission model;
@@ -404,6 +428,7 @@ When working in this repo:
 
 - Treat `packages/contracts/src/index.ts` as the API/runtime validation source of truth.
 - Treat PostgreSQL migrations as the persistence source of truth.
+- Read the [codebase guide](../reference/CODEBASE_GUIDE.md) before changing an unfamiliar package.
 - Keep evidence authoritative; do not let generated metadata become proof.
 - Use `claimType`, not `type`, for memory items.
 - Do not add initiative suggestions to the capture screen.
@@ -414,5 +439,6 @@ When working in this repo:
 pnpm typecheck
 pnpm test
 pnpm fixtures:validate
+pnpm retrieval:validate
 pnpm build
 ```

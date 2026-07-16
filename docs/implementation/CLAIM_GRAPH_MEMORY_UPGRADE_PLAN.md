@@ -2,7 +2,7 @@
 
 Status: implemented pilot contract plus remaining hardening notes, written 2026-07-09.
 
-Reading rule: this is a completed implementation plan, not the canonical current-state document. Sections phrased as “implement,” “target,” “deliverables,” “implementation status,” “contract update status,” or “definition of success” preserve the original acceptance criteria and point-in-time implementation state. The current code has since added migrations `0011` through `0015`, shared hybrid retrieval, bounded PPR, reranking, embedding backfill, extractor verification, human review for uncertain memory proposals, independent enrichment workers, corpus-wide cluster/readiness policies, and batched auto-approved proposal commits.
+Reading rule: this is a completed implementation plan, not the canonical current-state document. Sections phrased as “implement,” “target,” “deliverables,” “implementation status,” “contract update status,” “definition of success,” or “non-goals” preserve the original acceptance criteria and point-in-time implementation state. The current code has since added migrations `0011` through `0021`, shared hybrid retrieval, bounded PPR, reranking, embedding backfill, extractor verification, human review for uncertain memory proposals, independent enrichment workers, corpus-wide cluster/readiness policies, automatic sectioning, preferred capture routing, bounded Slack context ingestion, and batched auto-approved proposal commits.
 
 This plan upgraded Distillery from v0 `memory_items` plus transient synthesis bundles to a pilot-grade claim graph inspired by MemGraphRAG. It is written for implementation agents. Use it for claim-graph design intent, but use the code, migrations, and [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md) as the source of truth for what is implemented today.
 
@@ -10,6 +10,7 @@ Related docs:
 
 - Docs index: [README.md](../README.md)
 - Current state: [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md)
+- Current code map: [CODEBASE_GUIDE.md](../reference/CODEBASE_GUIDE.md)
 - Loop system PRD: [LOOP_SYSTEM_PRD.md](./LOOP_SYSTEM_PRD.md)
 - Memory synthesis policy PRD: [MEMORY_SYNTHESIS_POLICY_PRD.md](./MEMORY_SYNTHESIS_POLICY_PRD.md)
 - Memory architecture and MemGraphRAG notes: [MEMORY_ARCHITECTURE.md](../architecture/MEMORY_ARCHITECTURE.md)
@@ -767,6 +768,8 @@ Synthesis behavior:
 
 ## Graph retrieval
 
+Historical contract note: the current Worker no longer follows the lexical fallback described below. Ask uses the shared retriever from `packages/memory-retrieval`; embedding or reranker failure can degrade to sparse/graph ranking, but answer fallback stays inside the retrieved graph context. The legacy lexical-answer RPC is not called.
+
 Implement graph retrieval by default for:
 
 - `POST /api/queries`;
@@ -1230,6 +1233,8 @@ pnpm fixtures:validate
 If a local smoke script exists or is added, run it as well.
 
 ## Non-goals
+
+Historical note: Slack message-shortcut ingestion is now implemented through migrations `0018`–`0021`. The first bullet below records this upgrade's original scope, not current product behavior.
 
 Do not implement these in this upgrade:
 

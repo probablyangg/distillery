@@ -12,17 +12,20 @@ The code is the final source of truth. When docs and implementation disagree, in
 - `packages/db/src/index.ts` for RPC bindings;
 - `packages/db/migrations/` for persistence invariants.
 
+For a guided map from product behavior to files, use the [codebase guide](./reference/CODEBASE_GUIDE.md).
+
 ## Read Order For Coding Agents
 
 1. [Current status](./current/STATUS_AND_ROADMAP.md)
-2. [Runbook](./runbooks/RUNBOOK.md)
-3. The product or architecture document for the subsystem being changed.
-4. The relevant implementation PRD for design constraints and history.
-5. The code, tests, package manifests, and SQL migrations in that subsystem.
+2. [Codebase guide](./reference/CODEBASE_GUIDE.md)
+3. [Runbook](./runbooks/RUNBOOK.md)
+4. The product or architecture document for the subsystem being changed.
+5. The relevant implementation PRD for design constraints and history.
+6. The code, tests, package manifests, and SQL migrations in that subsystem.
 
 The current status document is the prose source of truth for what is implemented today. Implementation PRDs record the contract at the time a feature was designed; their baseline, requirements, and future-work language is historical unless the current status and code confirm it. If another doc conflicts on event routing, queue ownership, policy behavior, validation gates, required tables, or endpoint behavior, follow code/tests first, migrations second, and the current status document third.
 
-As of 2026-07-15, `extract_memory`, `connect_memory`, `detect_contradiction`, `update_embeddings`, `update_graph`, `recompute_cluster`, `evaluate_synthesis_readiness`, and `synthesize_brief` are implemented policy workers. Candidate discovery, freshness, ranking, artifact gating, and revision remain placeholder policy runners.
+As of 2026-07-16, Slack context extraction, memory extraction/sectioning/consolidation, connection, contradiction, embeddings, graph projection, clustering, readiness, and synthesis are implemented policy workers. Slack ingestion and reaction sync are connector side-effect policies. Candidate discovery, freshness, ranking, artifact gating, and revision remain placeholder policy runners.
 
 ## Implementation
 
@@ -35,6 +38,15 @@ As of 2026-07-15, `extract_memory`, `connect_memory`, `detect_contradiction`, `u
 
 - [Status and roadmap](./current/STATUS_AND_ROADMAP.md) — canonical description of what currently works.
 - [Current system diagram](./current/current-system.mermaid) — implemented private-pilot architecture.
+
+## Code Reference
+
+- [Codebase guide](./reference/CODEBASE_GUIDE.md) — mental model, runtime entry points, package boundaries, flows, policy registry, and change map.
+- [Worker guide](../apps/web/README.md) — Worker responsibilities and public/authenticated route boundary.
+- [Package index](../packages/README.md) — responsibility and test map for every workspace package.
+- [Migration guide](../packages/db/migrations/README.md) — table families, migration eras, and change rules.
+- [Script catalog](../scripts/README.md) — normal, live-sensitive, and destructive helpers.
+- [Evaluation guide](../evals/README.md) — build gates, optional measurements, and fixture purpose.
 
 ## Runbooks
 
@@ -65,4 +77,5 @@ As of 2026-07-15, `extract_memory`, `connect_memory`, `detect_contradiction`, `u
 - Keep current-state facts in [Status and roadmap](./current/STATUS_AND_ROADMAP.md).
 - Keep operational commands in [Runbook](./runbooks/RUNBOOK.md).
 - Put coding-agent invariants and conflict-resolution rules in the root [AGENTS.md](../AGENTS.md).
+- Update the codebase guide and the nearest local README when package ownership, runtime entry points, or operational commands change.
 - Label plans and PRDs as `proposed`, `partially implemented`, `implemented`, or `historical`. Never use an unlabeled “current baseline” in a completed PRD.

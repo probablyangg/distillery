@@ -1,6 +1,6 @@
 # Memory Synthesis
 
-Status: corpus-wide cluster discovery, explicit readiness, suggested background drafts, and corpus-aware manual synthesis are implemented through migration `0015`.
+Status: current. Corpus-wide cluster discovery, explicit readiness, suggested background drafts, and corpus-aware manual synthesis are implemented. Migrations through `0021` preserve this path and add Slack context as another evidence source.
 
 Memory Synthesis turns committed memory into a human-reviewed initiative brief.
 
@@ -41,6 +41,8 @@ The reviewer can choose memory manually or start from a ranked opportunity.
 The brief generator is optional. By default it expands selected seeds through hybrid vector, sparse, and graph retrieval before building a bounded context. The human can edit before saving.
 
 Background synthesis never runs directly from `memory_committed`. Independent connection, contradiction, embedding, and graph workers record durable completion events. Incremental dirty-neighborhood work and a bounded global sweep update overlapping cluster versions. A separate readiness policy evaluates deterministic opportunity scores. Only a `synthesis_ready` event can enqueue generation.
+
+Synthesis does not care whether evidence began as direct text or Slack. It consumes active evidence-backed memory after normal validation. Slack channel profiles and conversation classifications may provide context, but they do not outrank exact message/document evidence.
 
 Connection and contradiction completion invalidate the older graph-completion marker before an independently routed graph rebuild. This prevents out-of-order workers from making stale graph state appear ready. Discovery also receives bounded vector-neighbor signals from existing claim embeddings; lexical topics, entities, schemas, typed relations, and durable connections remain separate explainable signals.
 
@@ -161,3 +163,5 @@ Auto-approved cluster projections and readiness events commit through one atomic
 ## Known limits
 
 Each incremental recomputation reads at most 500 active memories. Repeated cursor sweeps make all memory eligible, but this remains a pilot-scale candidate-generation strategy. Larger corpora should add PostgreSQL-partitioned neighborhood candidate indexes while preserving the same cluster/version/readiness contracts.
+
+Suggested briefs are traceable at the brief level, not assertion by assertion. The system also has no source-level ACL filtering, stale-brief invalidation, or formal approver identity beyond a self-attested reviewer label.

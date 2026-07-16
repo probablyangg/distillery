@@ -40,6 +40,7 @@ MEMORY_EXTRACTOR_MODEL=
 MEMORY_VERIFIER_MODEL=
 MEMORY_CONNECTION_MODEL=
 MEMORY_SECTION_PLANNER_MODEL=
+SLACK_CONTEXT_MODEL=
 MEMORY_SECTIONING_ENABLED=true
 MEMORY_SECTION_TRIGGER_CHARS=6000
 MEMORY_SECTION_TRIGGER_SPANS=20
@@ -55,13 +56,13 @@ DISTILLERY_APP_PASSWORD=...
 SLACK_BOT_TOKEN=...
 SLACK_SIGNING_SECRET=...
 SLACK_ALLOWED_TEAM_ID=...
-SLACK_ALLOWED_CHANNEL_IDS=C01234567,C07654321
 SLACK_ALLOWED_USER_IDS=U01234567,U07654321
+SLACK_ALLOWED_EXTERNAL_CHANNEL_IDS=C0BG2JXTG77
 SLACK_SAVED_REACTION=factory
 SLACK_PROCESSING_REACTION=hourglass_flowing_sand
 ```
 
-The four `MEMORY_*_MODEL` values are optional model-ID overrides. Leave them empty to use `OPENROUTER_MODEL` for that role. Section thresholds are positive integers. `TARGET_CHARS` must not exceed `MAX_CHARS`, and `MAX_SECTIONS` cannot exceed 50. Lower section sizes make more model calls and usually take longer.
+The four `MEMORY_*_MODEL` values and `SLACK_CONTEXT_MODEL` are optional model-ID overrides. Leave them empty to use `OPENROUTER_MODEL` for that role. Slack context processing reuses the existing OpenRouter key; it adds no credential or provider. Section thresholds are positive integers. `TARGET_CHARS` must not exceed `MAX_CHARS`, and `MAX_SECTIONS` cannot exceed 50. Lower section sizes make more model calls and usually take longer.
 
 Worker call sites currently set `maxFallbackModels: 1`. Only the first entry in `OPENROUTER_FALLBACK_MODELS` is attempted by the Worker; later entries remain available to standalone scripts that pass the full list.
 
@@ -75,8 +76,8 @@ OPENROUTER_API_KEY=...
 SLACK_BOT_TOKEN=...
 SLACK_SIGNING_SECRET=...
 SLACK_ALLOWED_TEAM_ID=...
-SLACK_ALLOWED_CHANNEL_IDS=...
 SLACK_ALLOWED_USER_IDS=...
+SLACK_ALLOWED_EXTERNAL_CHANNEL_IDS=C0BG2JXTG77
 SLACK_SAVED_REACTION=factory
 SLACK_PROCESSING_REACTION=hourglass_flowing_sand
 ```
@@ -115,7 +116,7 @@ pnpm exec tsx evals/runners/evaluate-memory-extraction.ts
 
 The evaluators report measurements; they are not pass/fail build gates. The extraction evaluator requires `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, and `OPENROUTER_MODEL` in the process environment or `.env.local`.
 
-The Slack database integration test starts its own disposable `pgvector/pgvector:pg16` Docker container, applies every migration, verifies replay/concurrent idempotency, transactional rollback, file re-share deduplication, and generated-brief projection, then stops the container:
+The Slack database integration test starts its own disposable `pgvector/pgvector:pg16` Docker container, upgrades an existing pilot row through migration `0020`, and verifies replay/concurrent idempotency, unchanged refresh, new-reply and edited-message versioning, context-extraction reaction readiness, and transactional rollback before stopping the container:
 
 ```bash
 pnpm test:slack-db
@@ -144,6 +145,9 @@ psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packag
 psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0016_automatic_memory_sectioning.sql
 psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0017_prefer_current_capture_outbox.sql
 psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0018_slack_connector_and_brief_reader.sql
+psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0019_slack_reaction_lifecycle.sql
+psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0020_context_aware_slack_ingestion.sql
+psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0021_slack_unchanged_refresh_reaction_sync.sql
 ```
 
 Helper for migration `0011` only:
@@ -156,7 +160,7 @@ pnpm retrieval:migrate
 
 Do not run migrations from the Cloudflare Worker. Migrations require `DATABASE_DIRECT_URL` from local/CI.
 
-After applying migration `0018`, verify its read-only PostgREST projections without changing pilot data:
+After applying migrations through `0021`, verify the connector and brief projections without changing pilot data:
 
 ```bash
 pnpm pilot:verify-schema
@@ -183,6 +187,8 @@ Current migration set:
 - `0017_prefer_current_capture_outbox.sql` — a lease-fenced outbox claim that may prioritize the current capture once before returning to FIFO order, preventing historical derived-work backlog from starving new Remember submissions.
 - `0018_slack_connector_and_brief_reader.sql` — durable idempotent Slack connector saves, immutable Slack message/document source metadata and locators, independent reaction retries, and generated-only leadership brief read projections.
 - `0019_slack_reaction_lifecycle.sql` — immediate processing feedback and a canonical, retryable transition to the factory reaction after all Slack extraction work completes.
+- `0020_context_aware_slack_ingestion.sql` — additive context bundles and ordered provenance roles, stable message identities and immutable edit versions, one canonical context event, refresh-safe deduplication, and context-extraction-based reaction readiness.
+- `0021_slack_unchanged_refresh_reaction_sync.sql` — fresh reaction synchronization for a distinct unchanged repeat save without duplicating its context bundle or extraction work.
 
 Deployment order is database migration first, then Worker deployment. Roll back the Worker if new synthesis work produces repeated failures, unexpected queue growth, or readiness/draft duplication. Do not drop synthesis tables during an operational rollback. Preserve them for diagnosis and deploy a corrective forward migration. Migration `0015` changes only transport/outbox state for redundant global-sweep events; it does not delete evidence, memory, clusters, readiness evaluations, or briefs.
 
@@ -288,12 +294,12 @@ The helper:
 
 - verifies Cloudflare auth;
 - creates the queue if needed;
-- uploads Worker secrets from `.env.local`;
+- uploads Worker secrets available in `.env.local` while preserving Slack secrets already configured in the Worker;
 - deploys the Worker;
 - explicitly applies the configured Cron and Queue triggers;
 - health-checks the deployment.
 
-The Worker configuration includes a one-minute Cron Trigger and a bounded Queue consumer. After migrations through `0017`, each scheduled maintenance pass recovers expired claims, requeues up to 25 recovered work items, schedules up to 4 synthesis scan events, and routes up to 4 outbox rows. Request-triggered routing and post-work downstream routing are also capped at 4 rows. The first request-triggered claim may prefer that new source; later claims remain FIFO. These deployed caps keep external database calls within the Worker invocation budget; PostgreSQL retains the remaining canonical work for later passes. Section work is canonical and independently leased, while each completed queue item gives the next section events a bounded chance to progress immediately. Clustering, readiness, and generation remain policy work, and unchanged global sweeps emit no cluster event. Do not manually change `running` rows while their lease is still valid.
+The Worker configuration includes a one-minute Cron Trigger and a bounded Queue consumer. After migrations through `0021`, each scheduled maintenance pass recovers expired router/worker leases, requeues up to 25 recovered or pending connector work items, schedules up to 4 synthesis scan events, and routes up to 4 outbox rows. Request-triggered routing and post-work downstream routing are also capped at 4 rows. The first request-triggered claim may prefer that new source; later claims remain FIFO. These deployed caps keep external database calls within the Worker invocation budget; PostgreSQL retains the remaining canonical work for later passes. Section and connector work is canonical and independently leased, while each completed queue item gives downstream events a bounded chance to progress immediately. Clustering, readiness, and generation remain policy work, and unchanged global sweeps emit no cluster event. Do not manually change `running` rows while their lease is still valid.
 
 Manual deploy:
 
@@ -306,11 +312,12 @@ pnpm exec wrangler secret put OPENROUTER_API_KEY --config apps/web/wrangler.toml
 pnpm exec wrangler secret put SLACK_BOT_TOKEN --config apps/web/wrangler.toml
 pnpm exec wrangler secret put SLACK_SIGNING_SECRET --config apps/web/wrangler.toml
 pnpm exec wrangler secret put SLACK_ALLOWED_TEAM_ID --config apps/web/wrangler.toml
-pnpm exec wrangler secret put SLACK_ALLOWED_CHANNEL_IDS --config apps/web/wrangler.toml
 pnpm exec wrangler secret put SLACK_ALLOWED_USER_IDS --config apps/web/wrangler.toml
 pnpm exec wrangler secret put SLACK_SAVED_REACTION --config apps/web/wrangler.toml
 pnpm deploy
 ```
+
+`SLACK_ALLOWED_EXTERNAL_CHANNEL_IDS` and `SLACK_PROCESSING_REACTION` are currently non-secret Worker variables in `wrangler.toml`. If that policy changes, update the configuration file, deployment helper, examples, and Slack runbook together.
 
 Live Worker:
 
@@ -328,13 +335,33 @@ This is a legacy direct Supabase/model integration smoke. It does not exercise t
 
 For a production-safe readiness check, use read-only requests: verify `/health`, load `/`, `/synthesis`, and `/graph`, log in, then call `GET /api/session`, `GET /api/loop-status`, `GET /api/memory-items`, `GET /api/synthesis/opportunities`, `GET /api/initiative-briefs`, and `GET /api/graph/clusters`. Inspect Worker logs for a successful scheduled pass and Queue messages before starting manual testing.
 
-The generated brief reader has a dedicated deployed, read-only smoke check. It verifies health, the `/briefs` shell, unauthenticated denial, authenticated list/detail responses, and the Slack endpoint's fail-closed behavior:
+The generated brief reader has a dedicated deployed, read-only smoke check. It verifies health, the `/briefs` shell, unauthenticated denial, authenticated list/detail responses, the Slack endpoint's fail-closed behavior, and authenticated Slack bot identity, exact OAuth scopes, reactions, and external-channel opt-in:
 
 ```bash
 pnpm smoke:deployed
 ```
 
 ## API reference
+
+API data routes use JSON and, except for the signed Slack receiver, require the session cookie set by `POST /login`. The HTML shells are public so they can render their login state; their data APIs are protected. The Worker currently operates on the fixed `stable` tenant and does not expose tenant selection.
+
+Representative requests:
+
+```json
+POST /api/ingestions
+{"mode":"remember","text":"The launch review moved to Friday.","submittedByLabel":"Angela"}
+
+POST /api/queries
+{"question":"When is the launch review?","limit":8}
+
+POST /api/initiative-brief-drafts
+{"memoryItemIds":["mem_…"],"intent":"Reduce launch risk","expandRelatedMemory":true}
+
+POST /api/proposed-events/{id}/decision
+{"decision":"approve","reviewerLabel":"Angela","rationale":"Matches the cited source."}
+```
+
+Exact field limits, enum values, defaults, and response contracts are Zod schemas in `packages/contracts/src/index.ts`. Do not copy a request shape from an old PRD; use those executable schemas.
 
 App routes:
 
@@ -344,6 +371,7 @@ App routes:
 - `GET /graph` — claim graph review UI.
 - `GET /briefs` and `GET /briefs/{id}` — shared-password, read-only leadership brief UI.
 - `POST /api/slack/interactions` — public Slack interactivity receiver; verifies Slack signatures and strict allowlists before atomically registering canonical work.
+- `GET /api/slack/status` — authenticated, non-secret deployment check for Slack bot identity, exact scopes, configured reactions, and Slack Connect channel IDs.
 - `GET /assets/d3-local.js` — locally vendored D3 asset for the graph UI.
 
 Session:
@@ -393,3 +421,13 @@ Claim Graph:
 - `POST /api/graph/conflicts/{id}/resolve` — resolve or dismiss a conflict group.
 - `POST /api/graph/claims/{id}/pin` — pin or unpin a claim for review/synthesis.
 - `POST /api/graph/claims/{id}/exclude-from-synthesis` — include or exclude a claim from synthesis.
+
+## Script catalog
+
+The local [script catalog](../../scripts/README.md) explains which helpers are read-only, which mutate external state, and which are destructive or live-sensitive. Important non-package helpers include:
+
+- `scripts/preflight-slack-context-migration.ts` for read-only Slack upgrade checks;
+- `scripts/audit-live-slack-context.ts` for a read-only snapshot of one saved Slack message;
+- `scripts/recover-live-work-item.ts` for explicit, confirmed manual recovery of one canonical work item.
+
+Do not use `pnpm reset:stable`, `pnpm smoke:live`, migration scripts, seeding, backfill, deployment, or manual recovery until you have verified the target environment and the command's write scope.

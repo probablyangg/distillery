@@ -2,7 +2,7 @@
 
 Status: implemented on 2026-07-08; retained as the implementation contract.
 
-Reading rule: this PRD records the original first-pass `synthesize_brief` policy. Its direct `memory_committed -> synthesize_brief`, selected-memory compatibility default, transient readiness rules, and tests are historical. Migrations `0013` through `0015` replaced that route with independent enrichment, versioned cluster projection, explicit readiness, `synthesis_ready -> synthesize_brief`, batched auto-approved commits, and no-op unchanged global sweeps. Use the current-status and product documents for current behavior.
+Reading rule: this PRD records the original first-pass `synthesize_brief` policy. Its direct `memory_committed -> synthesize_brief`, `expandRelatedMemory: false` default, transient readiness rules, and tests are historical. Migrations `0013` through `0015` replaced that route with independent enrichment, versioned cluster projection, explicit readiness, `synthesis_ready -> synthesize_brief`, batched auto-approved commits, and no-op unchanged global sweeps. The current manual endpoint defaults `expandRelatedMemory` to `true`. Use the current-status and product documents for current behavior.
 
 This PRD adds `synthesize_brief` as a first-class Loop System policy worker. It extends the current loop implementation; it does not replace the existing manual synthesis flow.
 
@@ -10,6 +10,7 @@ Related docs:
 
 - Docs index: [README.md](../README.md)
 - Current state: [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md)
+- Current code map: [CODEBASE_GUIDE.md](../reference/CODEBASE_GUIDE.md)
 - Loop system PRD: [LOOP_SYSTEM_PRD.md](./LOOP_SYSTEM_PRD.md)
 - Memory synthesis product behavior: [MEMORY_SYNTHESIS.md](../product/MEMORY_SYNTHESIS.md)
 - Memory architecture and MemGraphRAG notes: [MEMORY_ARCHITECTURE.md](../architecture/MEMORY_ARCHITECTURE.md)

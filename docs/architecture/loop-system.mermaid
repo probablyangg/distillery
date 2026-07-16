@@ -1,143 +1,137 @@
 flowchart TB
 
-%% =====================================================
-%% DISTILLERY LOOP SYSTEM DIAGRAM
-%% Status: simplified current architecture through migration 0015 plus intended downstream loop.
-%%
-%% Idea: the system is a small fleet of homogeneous loops.
-%% Committed ledger events route to pending work. A context loader
-%% prepares typed policy input. Policy runners emit proposed events.
-%% Validators and humans decide what becomes committed ledger state.
-%% =====================================================
+%% DISTILLERY LOOP SYSTEM
+%% Status: simplified current architecture through migration 0021.
+%% PostgreSQL is canonical. Cloudflare Queue carries only workItemId wakeups.
 
-subgraph LEDGER["Authoritative ledger"]
+subgraph INPUTS["Committed inputs"]
   direction TB
-  A["Evidence<br/>source versions, spans, provenance"]
-  B["Memory<br/>claims, entities, relations, schemas"]
-  C["Decisions<br/>approvals, rejections, supersessions"]
-  D["Artifacts<br/>briefs, PRDs, trace bundles"]
+  I1["Direct text capture<br/>source_committed"]
+  I2["Slack shortcut<br/>durable connector save"]
+  I3["Human memory review<br/>confirmed, edited, removed"]
+  I4["Human synthesis action<br/>manual synthesis_ready intent"]
 end
 
-subgraph RUNNER["Loop runner"]
+subgraph LEDGER["Canonical PostgreSQL loop state"]
   direction TB
-  E["Load work item"]
-  F["Get input<br/>read ledger context"]
-  G["Run policy"]
-  H["Emit proposal"]
+  L1["ledger_events"]
+  L2["event_outbox"]
+  L3["pending_work<br/>lease + fencing token"]
+  L4["policy_runs"]
+  L5["proposed_events"]
 end
 
-subgraph ROUTER["Event router"]
+subgraph TRANSPORT["Noncanonical transport and recovery"]
   direction TB
-  R["Map committed events<br/>to follow-up work"]
+  Q["Cloudflare Queue<br/>{ workItemId }"]
+  C["Cron every minute<br/>recover, requeue, scan, route"]
 end
 
-subgraph POLICIES["Atomic policies"]
+subgraph EXECUTOR["Worker executor"]
   direction TB
-  P1["extract_memory"]
-  P2["connect_memory"]
-  P3["detect_contradiction"]
-  P4["synthesize_brief"]
-  P11["update_embeddings"]
-  P12["update_graph"]
-  P13["recompute_cluster"]
-  P14["evaluate_synthesis_readiness"]
-  P5["discover_candidate"]
-  P6["check_freshness"]
-  P7["rank_candidate"]
-  P8["draft_artifact"]
-  P9["gate_output"]
-  P10["revise_artifact"]
+  E1["Claim pending_work"]
+  E2["Load typed canonical input"]
+  E3["Run one policy"]
+  E4["Validate output"]
+  E5{"Human review required?"}
+  E6["Atomic auto-approved commit"]
+  E7["Wait for approve/reject"]
 end
 
-subgraph GATE["Validation and approval"]
+subgraph CAPTURE["Evidence to memory"]
   direction TB
-  I["Validator<br/>schema, evidence, freshness, permissions"]
-  J{"Human approval<br/>required?"}
-  K["Human review"]
-  L["Commit event<br/>auto-approved outputs batch in one RPC"]
-  M["Reject / revise"]
+  P0["ingest_slack_source<br/>context refresh + immutable bundle"]
+  P1["extract_slack_context"]
+  P2["extract_memory<br/>choose single or sectioned path"]
+  P3["extract_memory_section<br/>independent checkpoint"]
+  P4["consolidate_memory<br/>after all sections complete"]
+  M["memory_committed"]
+  R["sync_slack_reaction<br/>after current context extraction"]
 end
 
-subgraph QUEUE["Work queue"]
+subgraph ENRICH["Post-memory enrichment"]
   direction TB
-  Q["PostgreSQL pending_work<br/>canonical work state"]
-  CQ["Cloudflare Queue<br/>workItemId wakeup only"]
+  P5["connect_memory"]
+  P6["detect_contradiction"]
+  P7["update_embeddings"]
+  P8["update_graph"]
+  X["connections / contradictions /<br/>embeddings / graph updated"]
 end
 
-subgraph SYNTH["Derived corpus synthesis"]
+subgraph SYNTH["Corpus synthesis"]
   direction TB
-  S1["Independent enrichment completion"]
-  S2["Versioned overlapping clusters"]
-  S3["Readiness + opportunity score"]
-  S4["Suggested brief versions"]
+  P9["recompute_cluster"]
+  S1["versioned overlapping clusters"]
+  P10["evaluate_synthesis_readiness"]
+  S2["pending_enrichment | not_ready | synthesis_ready"]
+  P11["synthesize_brief"]
+  S3["traceable suggested brief draft"]
 end
 
-A -. "read context" .-> F
-B -. "read context" .-> F
-C -. "read context" .-> F
-D -. "read context" .-> F
+subgraph PLACEHOLDERS["Installed placeholders"]
+  direction TB
+  H1["discover_candidate"]
+  H2["check_freshness"]
+  H3["rank_candidate"]
+  H4["draft_artifact"]
+  H5["gate_output"]
+  H6["revise_artifact"]
+end
 
-A --> R
-B --> R
-C --> R
-D --> R
-R --> Q
-Q --> CQ
+I1 --> L1
+I2 --> L3
+I3 --> L1
+I4 --> L1
+L1 --> L2
+L2 --> L3
+L3 --> Q
+Q --> E1
+C --> L2
+C --> L3
+C --> Q
+E1 --> E2
+E2 --> E3
+E3 --> L4
+E3 --> E4
+E4 --> L5
+L5 --> E5
+E5 -->|"No"| E6
+E5 -->|"Yes"| E7
+E7 -->|"Approve"| E6
+E7 -->|"Reject"| L5
+E6 --> L1
 
-CQ --> E
-E --> F
-F --> G
+I2 --> P0
+P0 --> L1
+L1 --> P1
+I1 --> P2
+P2 --> P3
+P3 --> P4
+P2 --> M
+P4 --> M
+P1 --> M
+P1 --> R
 
-G --> P1
-G --> P2
-G --> P3
-G --> P4
-G --> P5
-G --> P6
-G --> P7
-G --> P8
-G --> P9
-G --> P10
-G --> P11
-G --> P12
-G --> P13
-G --> P14
+M --> P5
+M --> P6
+M --> P7
+M --> P8
+P5 --> X
+P6 --> X
+P7 --> X
+P8 --> X
+M --> P9
+X --> P9
+I3 --> P9
+P9 --> S1
+S1 --> P10
+P10 --> S2
+S2 -->|"synthesis_ready"| P11
+P11 --> S3
 
-P1 --> H
-P2 --> H
-P3 --> H
-P4 --> H
-P5 --> H
-P6 --> H
-P7 --> H
-P8 --> H
-P9 --> H
-P10 --> H
-P11 --> H
-P12 --> H
-P13 --> H
-P14 --> H
-
-H --> I
-I --> J
-J -->|"No"| L
-J -->|"Yes"| K
-K -->|"Approve"| L
-K -->|"Reject / edit"| M
-
-M --> Q
-L --> A
-L --> B
-L --> C
-L --> D
-
-P2 --> S1
-P3 --> S1
-P11 --> S1
-P12 --> S1
-S1 --> P13
-P13 --> S2
-S2 --> P14
-P14 --> S3
-S3 --> P4
-P4 --> S4
+M -.-> H1
+M -.-> H2
+H1 -.-> H3
+H3 -.-> H4
+H4 -.-> H5
+H5 -.-> H6

@@ -1,12 +1,14 @@
 # Memory Generation
 
-Status: implemented for text braindumps.
+Status: implemented for direct text braindumps and bounded Slack context bundles through migration `0021`.
 
-Memory Generation turns one user-submitted text braindump into evidence-backed, correctable memory.
+Memory Generation turns immutable source evidence into evidence-backed, correctable memory. Direct text capture creates one source version. Slack capture creates a versioned context bundle containing separate channel-profile, message, and supported-document sources.
 
 It does not create initiatives, PRDs, tasks, priorities, or recommendations.
 
 ## Implemented flow
+
+### Direct text
 
 ```text
 POST /api/ingestions
@@ -41,6 +43,27 @@ Scheduled maintenance
 GET /api/ingestions/{id}
   -> return status, evidence spans, memory items, error if any
 ```
+
+### Slack context
+
+```text
+Save to Distillery shortcut
+  -> verify signature, workspace, invoking user, and non-DM rule
+  -> durably register ingest_slack_source work
+  -> add processing reaction
+  -> verify channel membership and Slack Connect opt-in
+  -> refresh channel profile, selected message, and bounded conversation
+  -> keep thread root/replies, or at most four model-selected nearby messages
+  -> parse up to five supported PDF/DOCX files within byte/text limits
+  -> record unsupported media as skipped without analyzing it
+  -> commit one immutable ordered context bundle
+  -> slack_context_committed
+  -> extract_slack_context over the current bundle's exact evidence
+  -> validate/verify memory candidates through the normal proposal path
+  -> replace the processing reaction with :factory: after extraction completes
+```
+
+An unchanged repeat click creates no duplicate source version, evidence, context event, or extraction. A changed reply, edit, channel profile, or supported attachment creates a linked bundle version while preserving earlier versions.
 
 ## User-facing behavior
 
@@ -80,10 +103,14 @@ Memory Generation writes:
 - `memory_section_plans`;
 - `memory_sections`;
 - claim graph projection/review tables populated by migration `0010_claim_graph_memory_upgrade.sql`;
+- `connector_saves` and `slack_interaction_receipts`;
+- `slack_context_bundles` and `slack_context_bundle_items`;
 - `audit_events`;
 - `outbox_events`.
 
 Source versions and evidence spans are immutable. Memory items are correctable through append-only events. Claim graph rows, embeddings, and graph projection rows are derived from evidence-backed memory; they are not more authoritative than the underlying evidence and ledger.
+
+Slack context does not flatten multiple authors into one document. Each message keeps its own author, timestamp, permalink, edit metadata, source version, evidence spans, and ordered role. The context bundle records why each item is present and which message is primary evidence.
 
 ## Automatic sectioning
 
@@ -179,7 +206,7 @@ openai/gpt-5
 
 The configured fallback list also contains `moonshotai/kimi-k2.7-code` and `~moonshotai/kimi-latest`, but current Worker call sites cap fallback attempts to the first configured model. Extractor, verifier, connection-scoring, and section-planning roles may use `MEMORY_EXTRACTOR_MODEL`, `MEMORY_VERIFIER_MODEL`, `MEMORY_CONNECTION_MODEL`, and `MEMORY_SECTION_PLANNER_MODEL`; each falls back to `OPENROUTER_MODEL` when unset.
 
-The planner, extractor, and verifier must return structured JSON matching their contracts. They receive evidence spans and may cite only supplied evidence IDs. Deterministic validation remains authoritative.
+The planner, extractor, verifier, Slack nearby selector, and Slack classifier must return structured JSON matching their contracts. They receive bounded known inputs and may return only known IDs. `SLACK_CONTEXT_MODEL` optionally overrides the model used for Slack selection/classification; it reuses the same OpenRouter key. Deterministic validation remains authoritative.
 
 ## Correction model
 
@@ -211,5 +238,6 @@ If memory does not support an answer, Distillery returns an explicit gap instead
 - duplicate detection;
 - broader contradiction detection;
 - memory quality evals by `claimType`;
-- source connectors beyond text;
+- source connectors beyond direct text and the bounded Slack message shortcut;
+- richer Slack media processing or OCR;
 - human-reviewed canonical entity/schema promotion.

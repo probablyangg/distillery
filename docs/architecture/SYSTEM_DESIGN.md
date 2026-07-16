@@ -4,6 +4,8 @@ Status: current architecture plus forward design.
 
 Distillery is an evidence-to-decision system. Its job is not to produce persuasive documents. Its job is to preserve the chain from source evidence to memory to human-approved artifacts.
 
+For the file-level implementation map, see the [codebase guide](../reference/CODEBASE_GUIDE.md).
+
 ## Product principle
 
 The system fails if users cannot verify why a brief says what it says.
@@ -34,10 +36,17 @@ Cloudflare Queue
   -> ledger event
 
 Cloudflare Cron (every minute)
-  -> recover expired claims
+  -> recover expired router/worker leases
   -> requeue recovered work
   -> schedule bounded synthesis scans
   -> route a bounded outbox batch
+
+Slack
+  -> signed message shortcut
+  -> durable connector save and canonical work
+  -> bounded immutable context bundle
+  -> context extraction through the same proposal/validation path
+  -> completion reaction after current-bundle extraction
 ```
 
 ### Runtime
@@ -49,6 +58,7 @@ Cloudflare Cron (every minute)
 - PostgreSQL is authoritative.
 - Cloudflare Queue messages are wakeups only; PostgreSQL owns committed events, outbox state, pending work, policy runs, and proposals.
 - Full-text indexes, embeddings, and graph projections are derived.
+- The Slack interaction endpoint is public because Slack must reach it. It verifies the raw-body signature before persistence; workspace/user checks happen at registration, while membership and Slack Connect checks require live Slack state in the ingestion worker.
 
 ### Access
 
@@ -74,6 +84,11 @@ source_version
   -> memory_relations
   -> memory_schemas
   -> memory_item_events
+
+connector_save
+  -> slack_context_bundle (versioned)
+  -> slack_context_bundle_items (ordered source roles)
+  -> source_versions / evidence_spans
 
 memory_item
   -> observations
@@ -107,6 +122,8 @@ ledger_events
   -> policy_runs
   -> proposed_events
 ```
+
+Database table names are plural in SQL. The singular names above show relationships. The full table-family map is in the [migration guide](../../packages/db/migrations/README.md).
 
 Memory item fields:
 
@@ -144,6 +161,28 @@ Capture and recall:
 - ask through hybrid vector/sparse-seeded graph retrieval, bounded Personalized PageRank, optional model reranking, and grounded answer generation;
 - degrade to deterministic ranking/answering over the same retrieved graph context when model steps fail. The legacy DB lexical-answer function is not an Ask fallback.
 
+### `/briefs`
+
+Read-only generated brief surface:
+
+- list Distillery-generated draft and approved briefs newest first;
+- inspect exact evidence citations and source-native Slack links;
+- exclude manually created briefs from this leadership projection;
+- keep list/detail data behind the shared-password session.
+
+### Slack message shortcut
+
+Context capture:
+
+- keep the selected message as primary evidence;
+- for a thread, keep the root and bounded replies in chronological order;
+- for a non-thread message, let a validated model select at most four nearby candidates from a deterministic time window;
+- snapshot channel name, topic, purpose, privacy, and external-sharing state;
+- store each author/message/file as a separate immutable source version;
+- parse text-based PDF/DOCX attachments within fixed limits;
+- record unsupported media as skipped metadata without analyzing it;
+- version changed context and deduplicate unchanged refreshes.
+
 ## Implemented loop
 
 ```text
@@ -154,6 +193,15 @@ source_committed
   -> memory_proposed
   -> validation
   -> memory_committed
+
+slack shortcut
+  -> ingest_slack_source pending_work
+  -> slack_context_committed
+  -> extract_slack_context pending_work
+  -> memory_proposed
+  -> validation / optional human review
+  -> memory_committed
+  -> sync_slack_reaction pending_work after extraction completion
 
 memory_committed
   -> connect_memory pending_work
@@ -188,7 +236,7 @@ synthesis_ready
   -> artifact_drafted
 ```
 
-The loop runner and persistence scaffolding are installed for the full policy set. Current domain logic is real for extraction, connection, contradiction, embeddings, graph projection, clustering, readiness, and synthesis. Candidate discovery, freshness, ranking, artifact gating, and revision policies are placeholders.
+The loop runner and persistence scaffolding are installed for the full policy set. Current domain logic is real for Slack-context extraction, text extraction/sectioning/consolidation, connection, contradiction, embeddings, graph projection, clustering, readiness, and synthesis. Slack ingestion/reaction policies perform bounded connector side effects. Candidate discovery, freshness, ranking, artifact gating, and revision policies are placeholders.
 
 The deployed Worker routes at most 4 outbox rows per scheduled or request-triggered pass and can requeue up to 25 recovered work items. Those caps protect the Cloudflare invocation budget; they do not limit total eventual work because PostgreSQL retains pending rows canonically.
 
@@ -222,7 +270,10 @@ Claim Graph:
 - broad company-source ingestion;
 - autonomous decision-making;
 - hidden confidence scores;
-- destructive conflict resolution.
+- destructive conflict resolution;
+- treating Slack channel profile/classification metadata as proof;
+- analyzing unsupported Slack images, audio, video, or scanned-PDF content;
+- presenting Queue delivery as canonical work state.
 
 ## Next design steps
 
@@ -251,7 +302,7 @@ Claim Graph:
 
 ### v3 continuous intelligence
 
-- add Slack/docs/meeting/ticket/metric connectors;
+- expand beyond the current Slack message shortcut to docs, meetings, tickets, metrics, and broader connector coverage;
 - add currentness checks;
 - add source ACLs;
 - harden contradiction workflows;
@@ -265,3 +316,4 @@ Claim Graph:
 - Never let model output write directly to tables without validation.
 - Never treat semantic metadata as proof.
 - Prefer explicit gaps over plausible unsupported answers.
+- Keep connector sources separate by author and source identity; do not concatenate multi-author context into false single-source evidence.
