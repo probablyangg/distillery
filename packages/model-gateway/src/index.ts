@@ -11,6 +11,10 @@ import type {
   MemoryItem,
   MemoryWithEvidence,
   MemorySectionPlan,
+  SlackChannelProfile,
+  SlackConversationClassification,
+  SlackContextRole,
+  SlackNearbyContextSelection,
 } from "@distillery/contracts";
 import {
   CLAIM_TYPES,
@@ -24,6 +28,8 @@ import {
   EPISTEMIC_STATUSES,
   MEMORY_SCHEMA_STATUSES,
   MemorySectionPlanSchema,
+  SlackConversationClassificationSchema,
+  SlackNearbyContextSelectionSchema,
 } from "@distillery/contracts";
 import {
   groundedAnswerSystemPrompt,
@@ -40,6 +46,10 @@ import {
   renderMemoryGenerationInputForModel,
   renderMemorySectionPlanningInputForModel,
   retrievalRerankSystemPrompt,
+  renderSlackClassificationInputForModel,
+  renderSlackNearbySelectionInputForModel,
+  slackClassificationSystemPrompt,
+  slackNearbySelectionSystemPrompt,
 } from "@distillery/prompts";
 import { jsonrepair } from "jsonrepair";
 
@@ -47,6 +57,49 @@ export type MemoryGenerationRequest = {
   ingestionId: string;
   sourceVersionId: string;
   evidenceSpans: EvidenceSpan[];
+  slackContext?: {
+    selectedMessageTimestamp: string;
+    channelProfile: SlackChannelProfile;
+    classification: SlackConversationClassification;
+    items: Array<{
+      role: SlackContextRole;
+      messageTimestamp?: string;
+      authorId?: string;
+      authorLabel?: string;
+      occurredAt: string;
+      permalink?: string;
+      evidenceSpanIds: string[];
+    }>;
+  };
+};
+
+export type SlackNearbySelectionRequest = {
+  selectedMessage: { messageId: string; text: string };
+  candidates: Array<{ messageId: string; text: string; authorLabel: string; occurredAt: string }>;
+};
+
+export type SlackNearbySelectionResponse = {
+  parsed: SlackNearbyContextSelection;
+  raw: unknown;
+  model: string;
+};
+
+export type SlackClassificationRequest = {
+  channelProfile: SlackChannelProfile;
+  selectedMessageTimestamp: string;
+  items: Array<{
+    role: SlackContextRole;
+    messageTimestamp?: string;
+    authorLabel?: string;
+    occurredAt: string;
+    text: string;
+  }>;
+};
+
+export type SlackClassificationResponse = {
+  parsed: SlackConversationClassification;
+  raw: unknown;
+  model: string;
 };
 
 export type MemoryGenerationResponse = {
@@ -201,6 +254,11 @@ export type RetrievalRerankResponse = {
 
 export interface RetrievalRerankerModel {
   rerankRetrieval(request: RetrievalRerankRequest): Promise<RetrievalRerankResponse>;
+}
+
+export interface SlackContextModel {
+  selectNearbyContext(request: SlackNearbySelectionRequest): Promise<SlackNearbySelectionResponse>;
+  classifySlackContext(request: SlackClassificationRequest): Promise<SlackClassificationResponse>;
 }
 
 export type OpenRouterModelConfig = {
@@ -466,6 +524,54 @@ const RETRIEVAL_RERANK_SCHEMA = {
     rankedClaimIds: {
       type: "array",
       items: { type: "string" },
+    },
+  },
+};
+
+const SLACK_NEARBY_SELECTION_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["selected"],
+  properties: {
+    selected: {
+      type: "array",
+      maxItems: 4,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["messageId", "reason"],
+        properties: {
+          messageId: { type: "string" },
+          reason: { type: "string" },
+        },
+      },
+    },
+  },
+};
+
+const SLACK_CLASSIFICATION_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["category", "rationale", "identities"],
+  properties: {
+    category: {
+      type: "string",
+      enum: ["bug", "suggestion", "incident", "status_update", "decision", "question", "resolution", "mixed", "unknown"],
+    },
+    rationale: { type: "string" },
+    identities: {
+      type: "object",
+      additionalProperties: false,
+      required: ["products", "featureComponents", "externalServices", "issueTicketIds", "releaseVersions", "environments", "namedOrganizations"],
+      properties: {
+        products: { type: "array", items: { type: "string" } },
+        featureComponents: { type: "array", items: { type: "string" } },
+        externalServices: { type: "array", items: { type: "string" } },
+        issueTicketIds: { type: "array", items: { type: "string" } },
+        releaseVersions: { type: "array", items: { type: "string" } },
+        environments: { type: "array", items: { type: "string" } },
+        namedOrganizations: { type: "array", items: { type: "string" } },
+      },
     },
   },
 };
@@ -1221,6 +1327,120 @@ export class OpenRouterRetrievalRerankerModel implements RetrievalRerankerModel 
     } finally {
       clearTimeout(timeout);
     }
+  }
+}
+
+export class OpenRouterSlackContextModel implements SlackContextModel {
+  constructor(private readonly config: OpenRouterModelConfig) {}
+
+  async selectNearbyContext(request: SlackNearbySelectionRequest): Promise<SlackNearbySelectionResponse> {
+    const response = await this.complete({
+      operation: "Slack nearby context selection",
+      systemPrompt: slackNearbySelectionSystemPrompt(),
+      userPrompt: renderSlackNearbySelectionInputForModel(request),
+      schemaName: "slack_nearby_context_selection",
+      schema: SLACK_NEARBY_SELECTION_SCHEMA,
+      maxTokens: 800,
+    });
+    const parsed = SlackNearbyContextSelectionSchema.parse(parseModelJson(response.content));
+    validateSlackNearbySelection(parsed, request);
+    return { parsed, raw: response.raw, model: response.model };
+  }
+
+  async classifySlackContext(request: SlackClassificationRequest): Promise<SlackClassificationResponse> {
+    const response = await this.complete({
+      operation: "Slack context classification",
+      systemPrompt: slackClassificationSystemPrompt(),
+      userPrompt: renderSlackClassificationInputForModel(request),
+      schemaName: "slack_context_classification",
+      schema: SLACK_CLASSIFICATION_SCHEMA,
+      maxTokens: 1_200,
+    });
+    const parsed = SlackConversationClassificationSchema.parse(parseModelJson(response.content));
+    return { parsed, raw: response.raw, model: response.model };
+  }
+
+  private async complete(input: {
+    operation: string;
+    systemPrompt: string;
+    userPrompt: string;
+    schemaName: string;
+    schema: Record<string, unknown>;
+    maxTokens: number;
+  }): Promise<{ content: string; raw: unknown; model: string }> {
+    const failures: string[] = [];
+    const models = unique([this.config.model, ...(this.config.fallbackModels ?? [])]);
+    for (const [index, model] of models.entries()) {
+      const timeoutMs = index === 0
+        ? this.config.timeoutMs ?? 20_000
+        : this.config.fallbackTimeoutMs ?? this.config.timeoutMs ?? 20_000;
+      const abortController = new AbortController();
+      let didTimeout = false;
+      const timeout = setTimeout(() => {
+        didTimeout = true;
+        abortController.abort();
+      }, timeoutMs);
+      try {
+        const fetchImpl = this.config.fetchImpl ?? ((request, init) => fetch(request, init));
+        const response = await fetchImpl(`${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+          method: "POST",
+          signal: abortController.signal,
+          headers: {
+            Authorization: `Bearer ${this.config.apiKey}`,
+            "Content-Type": "application/json",
+            "X-OpenRouter-Title": this.config.appTitle ?? "Distillery v0",
+          },
+          body: JSON.stringify({
+            model,
+            temperature: 0,
+            max_tokens: input.maxTokens,
+            messages: [
+              { role: "system", content: input.systemPrompt },
+              { role: "user", content: input.userPrompt },
+            ],
+            response_format: {
+              type: "json_schema",
+              json_schema: { name: input.schemaName, strict: true, schema: input.schema },
+            },
+          }),
+        });
+        const rawText = await readModelResponseText(
+          response,
+          abortController.signal,
+          didTimeout,
+          timeoutMs,
+          `OpenRouter ${input.operation}`,
+          model,
+        );
+        if (!response.ok) throw new Error(`${input.operation} failed with HTTP ${response.status}.`);
+        const raw = JSON.parse(rawText) as { choices?: Array<{ message?: { content?: string } }> };
+        const content = raw.choices?.[0]?.message?.content;
+        if (!content) throw new Error(`${input.operation} returned no message content.`);
+        return { content, raw, model };
+      } catch (error) {
+        failures.push(`${model}: ${didTimeout ? "timeout" : error instanceof Error ? error.message : "unknown failure"}`);
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    throw new Error(`${input.operation} failed for all configured models. ${failures.join(" | ")}`);
+  }
+}
+
+export function validateSlackNearbySelection(
+  selection: SlackNearbyContextSelection,
+  request: SlackNearbySelectionRequest,
+): void {
+  const allowed = new Set(request.candidates.map((candidate) => candidate.messageId));
+  const seen = new Set<string>();
+  for (const selected of selection.selected) {
+    if (!allowed.has(selected.messageId)) {
+      throw new Error(`Slack context selector returned unknown message ID: ${selected.messageId}`);
+    }
+    if (seen.has(selected.messageId)) {
+      throw new Error(`Slack context selector returned duplicate message ID: ${selected.messageId}`);
+    }
+    seen.add(selected.messageId);
   }
 }
 

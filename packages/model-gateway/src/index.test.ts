@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { SlackConversationClassificationSchema } from "@distillery/contracts";
 import {
   OpenRouterEmbeddingModel,
   OpenRouterGroundedAnswerModel,
@@ -8,7 +9,93 @@ import {
   OpenRouterMemoryGenerationModel,
   OpenRouterMemorySectionPlannerModel,
   OpenRouterRetrievalRerankerModel,
+  OpenRouterSlackContextModel,
+  validateSlackNearbySelection,
 } from "./index";
+
+describe("OpenRouterSlackContextModel", () => {
+  it.each(["bug", "suggestion", "incident", "status_update", "mixed"] as const)(
+    "runtime-validates the %s conversation category",
+    (category) => {
+      expect(SlackConversationClassificationSchema.parse({
+        category,
+        rationale: "Evidence-backed test classification.",
+        identities: {
+          products: [], featureComponents: [], externalServices: [], issueTicketIds: [],
+          releaseVersions: [], environments: [], namedOrganizations: [],
+        },
+      }).category).toBe(category);
+    },
+  );
+
+  it("accepts only nearby message IDs that were supplied to the selector", async () => {
+    const request = {
+      selectedMessage: { messageId: "1752624000.000001", text: "Checkout is failing." },
+      candidates: [{
+        messageId: "1752623999.000001",
+        text: "Release 2.7.0 completed.",
+        authorLabel: "Ada",
+        occurredAt: "2026-07-16T11:59:00.000Z",
+      }],
+    };
+    expect(() => validateSlackNearbySelection({
+      selected: [{ messageId: "1752623999.000001", reason: "This release immediately precedes the failure." }],
+    }, request)).not.toThrow();
+    expect(() => validateSlackNearbySelection({
+      selected: [{ messageId: "1752623998.000001", reason: "Invented message." }],
+    }, request)).toThrow("unknown message ID");
+    expect(() => validateSlackNearbySelection({
+      selected: [
+        { messageId: "1752623999.000001", reason: "First selection." },
+        { messageId: "1752623999.000001", reason: "Duplicate selection." },
+      ],
+    }, request)).toThrow("duplicate message ID");
+  });
+
+  it("validates structured classification and preserves exact product and release identities", async () => {
+    const model = new OpenRouterSlackContextModel({
+      apiKey: "test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "context-model",
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as {
+          response_format?: { json_schema?: { name?: string; schema?: unknown } };
+          messages?: Array<{ content: string }>;
+        };
+        expect(body.response_format?.json_schema?.name).toBe("slack_context_classification");
+        expectPortableStructuredOutputSchema(body.response_format?.json_schema?.schema);
+        expect(body.messages?.[1]?.content).toContain("StablePay");
+        return Response.json({ choices: [{ message: { content: JSON.stringify({
+          category: "incident",
+          rationale: "A production checkout failure follows release 2.7.0.",
+          identities: {
+            products: ["StablePay"], featureComponents: ["Checkout"], externalServices: [],
+            issueTicketIds: ["INC-271"], releaseVersions: ["2.7.0"], environments: ["production"],
+            namedOrganizations: [],
+          },
+        }) } }] });
+      },
+    });
+    const result = await model.classifySlackContext({
+      channelProfile: {
+        workspaceId: "T12345678", channelId: "C12345678", channelName: "incident-room",
+        topic: "StablePay production incidents", purpose: "Coordinate resolution", isPublic: true,
+        isPrivate: false, externallyShared: false, slackConnect: false, externalTeamIds: [],
+        capturedAt: "2026-07-16T12:00:00.000Z",
+      },
+      selectedMessageTimestamp: "1752624000.000001",
+      items: [{
+        role: "selected_message", messageTimestamp: "1752624000.000001", authorLabel: "Ada",
+        occurredAt: "2026-07-16T12:00:00.000Z",
+        text: "StablePay production checkout is failing after release 2.7.0. Track as INC-271.",
+      }],
+    });
+    expect(result.parsed).toMatchObject({
+      category: "incident",
+      identities: { products: ["StablePay"], releaseVersions: ["2.7.0"], issueTicketIds: ["INC-271"] },
+    });
+  });
+});
 
 describe("OpenRouterMemoryGenerationModel", () => {
   it("falls back to the next configured model when the primary fails", async () => {
