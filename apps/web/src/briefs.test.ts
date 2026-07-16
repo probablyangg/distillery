@@ -27,13 +27,50 @@ describe("authenticated read-only brief surface", () => {
     expect(detail.status).toBe(401);
   });
 
+  it("keeps Slack deployment status authenticated and reports identity, exact scopes, and external-channel opt-in", async () => {
+    const unauthenticated = await worker.fetch(new Request("https://distillery.example/api/slack/status"), env(), context());
+    expect(unauthenticated.status).toBe(401);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      ok: true, team_id: "T12345678", user_id: "U87654321", team: "Stable",
+    }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "x-oauth-scopes": "channels:history,channels:read,commands,files:read,groups:history,groups:read,reactions:write,users:read",
+      },
+    })));
+    const configured = {
+      ...env(),
+      SLACK_BOT_TOKEN: "xoxb-test",
+      SLACK_ALLOWED_TEAM_ID: "T12345678",
+      SLACK_ALLOWED_USER_IDS: "U12345678",
+      SLACK_ALLOWED_EXTERNAL_CHANNEL_IDS: "C0BG2JXTG77",
+    };
+    const login = await worker.fetch(new Request("https://distillery.example/login", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password: "pilot-password" }),
+    }), configured, context());
+    const cookie = login.headers.get("set-cookie")?.split(";", 1)[0];
+    if (!cookie) throw new Error("expected session cookie");
+    const response = await worker.fetch(new Request("https://distillery.example/api/slack/status", {
+      headers: { cookie },
+    }), configured, context());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      configured: true, teamId: "T12345678", botUserId: "U87654321",
+      allowedTeamMatches: true, approvedUserCount: 1,
+      allowedExternalChannelIds: ["C0BG2JXTG77"], exactScopes: true,
+      missingScopes: [], unexpectedScopes: [], savedReaction: "factory",
+      processingReaction: "hourglass_flowing_sand",
+    });
+  });
+
   it("keeps the Slack endpoint fail-closed when its required reaction name is misconfigured", async () => {
     const configured = {
       ...env(),
       SLACK_BOT_TOKEN: "xoxb-test",
       SLACK_SIGNING_SECRET: "test-signing-secret",
       SLACK_ALLOWED_TEAM_ID: "T12345678",
-      SLACK_ALLOWED_CHANNEL_IDS: "C12345678",
       SLACK_ALLOWED_USER_IDS: "U12345678",
       SLACK_SAVED_REACTION: "not-factory",
       MEMORY_GENERATION_QUEUE: { send: vi.fn() } as unknown as Queue<{ workItemId: string }>,

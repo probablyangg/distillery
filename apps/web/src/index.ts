@@ -33,6 +33,7 @@ import {
   OpenRouterMemoryGenerationModel,
   OpenRouterMemorySectionPlannerModel,
   OpenRouterRetrievalRerankerModel,
+  OpenRouterSlackContextModel,
   type OpenRouterModelConfig,
 } from "@distillery/model-gateway";
 import d3LocalSource from "./vendor/d3.min.txt";
@@ -61,6 +62,10 @@ const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const MAX_DRAFT_MEMORY_ITEMS = 20;
 const SLACK_SAVED_REACTION = "factory";
 const SLACK_PROCESSING_REACTION = "hourglass_flowing_sand";
+const REQUIRED_SLACK_SCOPES = [
+  "channels:history", "channels:read", "commands", "files:read",
+  "groups:history", "groups:read", "reactions:write", "users:read",
+] as const;
 
 export type Env = {
   DISTILLERY_APP_PASSWORD: string;
@@ -76,6 +81,7 @@ export type Env = {
   MEMORY_VERIFIER_MODEL?: string;
   MEMORY_CONNECTION_MODEL?: string;
   MEMORY_SECTION_PLANNER_MODEL?: string;
+  SLACK_CONTEXT_MODEL?: string;
   MEMORY_SECTIONING_ENABLED?: string;
   MEMORY_SECTION_TRIGGER_CHARS?: string;
   MEMORY_SECTION_TRIGGER_SPANS?: string;
@@ -90,8 +96,8 @@ export type Env = {
   SLACK_BOT_TOKEN?: string;
   SLACK_SIGNING_SECRET?: string;
   SLACK_ALLOWED_TEAM_ID?: string;
-  SLACK_ALLOWED_CHANNEL_IDS?: string;
   SLACK_ALLOWED_USER_IDS?: string;
+  SLACK_ALLOWED_EXTERNAL_CHANNEL_IDS?: string;
   SLACK_SAVED_REACTION?: string;
   SLACK_PROCESSING_REACTION?: string;
   MEMORY_GENERATION_QUEUE?: Queue<{ workItemId: string }>;
@@ -143,6 +149,10 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/api/session") {
       return json({ authenticated: true });
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/slack/status") {
+      return handleSlackStatus(env);
     }
 
     if (request.method === "GET" && url.pathname === "/api/loop-status") {
@@ -320,7 +330,6 @@ async function handleSlackInteractions(request: Request, env: Env, ctx: Executio
     !env.SLACK_BOT_TOKEN ||
     !env.SLACK_SIGNING_SECRET ||
     !env.SLACK_ALLOWED_TEAM_ID ||
-    !env.SLACK_ALLOWED_CHANNEL_IDS ||
     !env.SLACK_ALLOWED_USER_IDS ||
     !env.MEMORY_GENERATION_QUEUE ||
     (env.SLACK_SAVED_REACTION?.trim() ?? SLACK_SAVED_REACTION) !== SLACK_SAVED_REACTION ||
@@ -334,13 +343,18 @@ async function handleSlackInteractions(request: Request, env: Env, ctx: Executio
     config: {
       signingSecret: env.SLACK_SIGNING_SECRET,
       allowedTeamId: env.SLACK_ALLOWED_TEAM_ID,
-      allowedChannelIds: parseCsvAllowlist(env.SLACK_ALLOWED_CHANNEL_IDS),
       allowedUserIds: parseCsvAllowlist(env.SLACK_ALLOWED_USER_IDS),
     },
     persistence: createLoopPersistence(env),
     ...(env.MEMORY_GENERATION_QUEUE ? { queue: env.MEMORY_GENERATION_QUEUE } : {}),
     onRegistered: async (result) => {
-      await new SlackWebClient(env.SLACK_BOT_TOKEN!).addReaction({
+      const slack = new SlackWebClient(env.SLACK_BOT_TOKEN!);
+      await slack.removeReaction({
+        channelId: result.save.channelId,
+        messageTimestamp: result.save.messageTimestamp,
+        reaction: SLACK_SAVED_REACTION,
+      });
+      await slack.addReaction({
         channelId: result.save.channelId,
         messageTimestamp: result.save.messageTimestamp,
         reaction: SLACK_PROCESSING_REACTION,
@@ -349,6 +363,41 @@ async function handleSlackInteractions(request: Request, env: Env, ctx: Executio
     waitUntil: (promise) => ctx.waitUntil(promise),
     logger: (fields) => console.log(JSON.stringify(fields)),
   });
+}
+
+async function handleSlackStatus(env: Env): Promise<Response> {
+  if (!env.SLACK_BOT_TOKEN || !env.SLACK_ALLOWED_TEAM_ID || !env.SLACK_ALLOWED_USER_IDS) {
+    return json({ configured: false }, 503);
+  }
+  try {
+    const slack = new SlackWebClient(env.SLACK_BOT_TOKEN);
+    const [identity, grantedScopes] = await Promise.all([
+      slack.getAuthIdentity(),
+      slack.getGrantedScopes(),
+    ]);
+    const missingScopes = REQUIRED_SLACK_SCOPES.filter((scope) => !grantedScopes.includes(scope));
+    const unexpectedScopes = grantedScopes.filter((scope) => !(REQUIRED_SLACK_SCOPES as readonly string[]).includes(scope));
+    return json({
+      configured: true,
+      teamId: identity.teamId,
+      teamName: identity.teamName ?? null,
+      botUserId: identity.userId,
+      allowedTeamMatches: identity.teamId === env.SLACK_ALLOWED_TEAM_ID,
+      approvedUserCount: parseCsvAllowlist(env.SLACK_ALLOWED_USER_IDS).size,
+      allowedExternalChannelIds: env.SLACK_ALLOWED_EXTERNAL_CHANNEL_IDS
+        ? [...parseCsvAllowlist(env.SLACK_ALLOWED_EXTERNAL_CHANNEL_IDS)].sort()
+        : [],
+      grantedScopes,
+      missingScopes,
+      unexpectedScopes,
+      exactScopes: missingScopes.length === 0 && unexpectedScopes.length === 0,
+      savedReaction: env.SLACK_SAVED_REACTION?.trim() || SLACK_SAVED_REACTION,
+      processingReaction: env.SLACK_PROCESSING_REACTION?.trim() || SLACK_PROCESSING_REACTION,
+    });
+  } catch (error) {
+    console.error(JSON.stringify({ event: "slack_status_failed", errorKind: error instanceof Error ? error.name : "UnknownError" }));
+    return json({ configured: true, reachable: false, error: "Slack status check failed." }, 502);
+  }
 }
 
 async function handleLogin(request: Request, env: Env): Promise<Response> {
@@ -1028,6 +1077,13 @@ async function processWorkItem(workItemId: string, env: Env): Promise<void> {
             saveId,
             persistence,
             slack: slackClient,
+            contextModel: new OpenRouterSlackContextModel(openRouterConfig(env, {
+              modelOverride: env.SLACK_CONTEXT_MODEL ?? env.MEMORY_EXTRACTOR_MODEL,
+              maxPrimaryTimeoutMs: 30_000,
+              maxFallbackTimeoutMs: 20_000,
+              maxFallbackModels: 1,
+            })),
+            allowedExternalChannelIds: parseCsvAllowlist(env.SLACK_ALLOWED_EXTERNAL_CHANNEL_IDS ?? ""),
             reaction: SLACK_SAVED_REACTION,
             processingReaction: SLACK_PROCESSING_REACTION,
             ...(env.MEMORY_GENERATION_QUEUE ? { queue: env.MEMORY_GENERATION_QUEUE } : {}),
