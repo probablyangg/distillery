@@ -34,6 +34,8 @@ import {
   LeadershipBriefSchema,
   SlackConnectorSaveSchema,
   SlackSaveRegistrationResultSchema,
+  SlackContextBundleSchema,
+  SlackContextBundleCommitResultSchema,
   type EvidenceSpan,
   type IngestionReceipt,
   type IngestionResult,
@@ -67,6 +69,9 @@ import {
   type LeadershipBrief,
   type SlackConnectorSave,
   type SlackSaveRegistrationResult,
+  type SlackContextBundle,
+  type SlackContextBundleCommitResult,
+  type SlackContextCommitInput,
   type ConnectorSourceInput,
 } from "@distillery/contracts";
 import type { CorpusSynthesisState, LoopPersistence, LoopRecoveryResult } from "@distillery/loop";
@@ -524,6 +529,13 @@ export class SupabaseLoopPersistence implements LoopPersistence {
     return SlackConnectorSaveSchema.parse(result);
   }
 
+  async getSlackContextBundle(bundleId: string): Promise<SlackContextBundle> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_get_slack_context_bundle", {
+      p_bundle_id: bundleId,
+    });
+    return SlackContextBundleSchema.parse(result);
+  }
+
   async isSlackConnectorExtractionComplete(saveId: string): Promise<boolean> {
     return Boolean(await this.rpcClient.rpc<unknown>("distillery_is_slack_connector_extraction_complete", {
       p_save_id: saveId,
@@ -541,6 +553,14 @@ export class SupabaseLoopPersistence implements LoopPersistence {
     await this.rpcClient.rpc("distillery_mark_slack_connector_processing", { p_save_id: saveId });
   }
 
+  async commitSlackContextBundle(input: SlackContextCommitInput): Promise<SlackContextBundleCommitResult> {
+    const result = await this.rpcClient.rpc<unknown>("distillery_commit_slack_context_bundle", {
+      p_context: input,
+    });
+    return SlackContextBundleCommitResultSchema.parse(result);
+  }
+
+  /** Compatibility binding for migration 0018 tooling. New Slack saves use commitSlackContextBundle. */
   async commitSlackConnectorSources(input: { saveId: string; sources: ConnectorSourceInput[] }): Promise<SlackConnectorSave> {
     const result = await this.rpcClient.rpc<unknown>("distillery_commit_slack_connector_sources", {
       p_save_id: input.saveId,

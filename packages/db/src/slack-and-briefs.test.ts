@@ -18,7 +18,7 @@ describe("Slack connector and leadership brief RPC bindings", () => {
       threadTimestamp: "1752623999.000001",
       invokingUserId: "U12345678",
       responseUrl: "https://hooks.slack.com/actions/test",
-      externalSourceId: "slack:T12345678:C12345678:1752624000.000001",
+      externalSourceId: "slack_message:T12345678:C12345678:1752624000.000001",
     });
 
     expect(result.workItemId).toBe("work_1");
@@ -33,7 +33,7 @@ describe("Slack connector and leadership brief RPC bindings", () => {
         p_thread_timestamp: "1752623999.000001",
         p_invoking_user_id: "U12345678",
         p_response_url: "https://hooks.slack.com/actions/test",
-        p_external_source_id: "slack:T12345678:C12345678:1752624000.000001",
+        p_external_source_id: "slack_message:T12345678:C12345678:1752624000.000001",
       },
     }]);
   });
@@ -50,7 +50,7 @@ describe("Slack connector and leadership brief RPC bindings", () => {
       ingestionId: "ing_1",
       sourceType: "slack_message" as const,
       provider: "slack" as const,
-      externalId: "slack:T12345678:C12345678:1752624000.000001",
+      externalId: "slack_message:T12345678:C12345678:1752624000.000001",
       canonicalUrl: "https://example.slack.com/archives/C12345678/p1752624000000001",
       authorId: "U87654321",
       authorLabel: "Ada Lovelace",
@@ -130,7 +130,7 @@ function connectorSave(overrides: Record<string, unknown> = {}) {
     threadTimestamp: null,
     invokingUserId: "U12345678",
     responseUrl: "https://hooks.slack.com/actions/test",
-    externalSourceId: "slack:T12345678:C12345678:1752624000.000001",
+    externalSourceId: "slack_message:T12345678:C12345678:1752624000.000001",
     status: "pending",
     workItemId: "work_1",
     messageSourceId: null,
