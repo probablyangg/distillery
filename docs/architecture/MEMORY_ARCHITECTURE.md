@@ -10,7 +10,7 @@ The current implementation borrows the MemGraphRAG separation partially:
 - schema entries are candidates only;
 - migration `0010_claim_graph_memory_upgrade.sql` projects memory into observations, claims, claim evidence, promoted entities/predicates/schema patterns, claim connections, conflict groups, graph nodes, and graph edges;
 - graph recall, graph clusters, connection review, conflict resolution, claim pinning, and synthesis exclusion are implemented as a pilot;
-- OpenRouter embeddings can be stored during extraction when embedding env vars are configured;
+- OpenRouter embeddings are stored by the independently retryable `update_embeddings` policy when embedding env vars are configured;
 - there is no human-reviewed canonical entity/schema promotion workflow yet;
 - shared Ask/synthesis retrieval uses vector and sparse/exact seeds, bounded Personalized PageRank, and optional model reranking;
 - the old database lexical-answer function remains for legacy compatibility but is not on the Ask path;
@@ -428,18 +428,17 @@ The implemented retrieval path is:
 
 ```text
 question
-  -> tenant/ACL/time filters
-  -> lexical + vector retrieval over claims and evidence spans
-  -> deterministic entity and claim-type expansion
-  -> bounded one-hop relation expansion
-  -> group versions, support, decisions, and conflicts
-  -> rerank
-  -> freeze answer evidence bundle
-  -> generate atomic cited assertions
-  -> validate support IDs and authorization
+  -> tenant-scoped vector and sparse/exact candidates
+  -> bounded PostgreSQL graph snapshot
+  -> Personalized PageRank in TypeScript
+  -> optional OpenRouter reranking
+  -> hydrate active claims, exact evidence spans, and relevant conflicts
+  -> grounded OpenRouter answer with citation validation
+  -> deterministic cited answer from the same retrieved context if answer generation fails
+  -> explicit evidence gap if retrieval fails or returns no claims
 ```
 
-Reranking should expose components rather than one opaque score:
+The current retriever exposes strategy, profile, seed, graph, ranking, and reranker metadata. Future authority/currentness scoring should expose components rather than one opaque score:
 
 ```text
 semantic relevance
@@ -455,6 +454,22 @@ semantic relevance
 Personalized PageRank is now implemented in TypeScript over a bounded PostgreSQL graph snapshot. Keep it only if evaluation shows that multi-hop propagation improves recall without increasing unsupported synthesis. PostgreSQL plus `pgvector` and edge tables remain sufficient; do not infer a need for a separate graph database.
 
 ## 10. Memory Synthesis path
+
+The implemented background path is:
+
+```text
+memory or enrichment change
+  -> bounded neighborhood recomputation
+  -> versioned overlapping cluster projection
+  -> deterministic readiness and opportunity score
+  -> bounded evidence dossier
+  -> traceable suggested brief when ready
+  -> human edit, approve, or reject
+```
+
+The cursor-backed global sweep is a safety net. It makes every active memory eligible over time, but emits no cluster event when the affected versions are unchanged.
+
+The longer-term path below adds explicit initiative-candidate authority, frozen evidence bundles, assertion-level support, and approval hashes. Those parts are not implemented yet:
 
 ```text
 claim changes
@@ -526,7 +541,9 @@ Recommended typed edges:
 
 Avoid similarity edges in the authoritative graph. Calculate them in the retrieval index with model/version metadata and thresholds. Similarity is a retrieval hypothesis, not an organizational relationship.
 
-## 13. Implementation order
+## 13. Historical recommended implementation order
+
+This ordering was written before the claim-graph pilot and bounded PPR retriever shipped. It remains useful as a hardening sequence, not as a statement that earlier steps are all complete or that PPR is still unimplemented.
 
 1. Implement immutable source versions and exact evidence spans.
 2. Implement observations and extraction-run lineage.

@@ -22,7 +22,7 @@ The code is the final source of truth. When docs and implementation disagree, in
 
 The current status document is the prose source of truth for what is implemented today. Implementation PRDs record the contract at the time a feature was designed; their baseline, requirements, and future-work language is historical unless the current status and code confirm it. If another doc conflicts on event routing, queue ownership, policy behavior, validation gates, required tables, or endpoint behavior, follow code/tests first, migrations second, and the current status document third.
 
-As of 2026-07-15, `extract_memory`, `connect_memory`, `detect_contradiction`, and `synthesize_brief` are implemented policy workers. Candidate discovery, freshness, ranking, artifact gating, and revision remain placeholder policy runners.
+As of 2026-07-15, `extract_memory`, `connect_memory`, `detect_contradiction`, `update_embeddings`, `update_graph`, `recompute_cluster`, `evaluate_synthesis_readiness`, and `synthesize_brief` are implemented policy workers. Candidate discovery, freshness, ranking, artifact gating, and revision remain placeholder policy runners.
 
 ## Implementation
 

@@ -2,7 +2,7 @@ flowchart TB
 
 %% =====================================================
 %% DISTILLERY LOOP SYSTEM DIAGRAM
-%% Status: simplified current architecture plus intended downstream loop.
+%% Status: simplified current architecture through migration 0015 plus intended downstream loop.
 %%
 %% Idea: the system is a small fleet of homogeneous loops.
 %% Committed ledger events route to pending work. A context loader
@@ -37,6 +37,10 @@ subgraph POLICIES["Atomic policies"]
   P2["connect_memory"]
   P3["detect_contradiction"]
   P4["synthesize_brief"]
+  P11["update_embeddings"]
+  P12["update_graph"]
+  P13["recompute_cluster"]
+  P14["evaluate_synthesis_readiness"]
   P5["discover_candidate"]
   P6["check_freshness"]
   P7["rank_candidate"]
@@ -50,13 +54,22 @@ subgraph GATE["Validation and approval"]
   I["Validator<br/>schema, evidence, freshness, permissions"]
   J{"Human approval<br/>required?"}
   K["Human review"]
-  L["Commit event"]
+  L["Commit event<br/>auto-approved outputs batch in one RPC"]
   M["Reject / revise"]
 end
 
 subgraph QUEUE["Work queue"]
   direction TB
-  Q["Pending work<br/>source changed, memory changed,<br/>candidate stale, draft requested"]
+  Q["PostgreSQL pending_work<br/>canonical work state"]
+  CQ["Cloudflare Queue<br/>workItemId wakeup only"]
+end
+
+subgraph SYNTH["Derived corpus synthesis"]
+  direction TB
+  S1["Independent enrichment completion"]
+  S2["Versioned overlapping clusters"]
+  S3["Readiness + opportunity score"]
+  S4["Suggested brief versions"]
 end
 
 A -. "read context" .-> F
@@ -69,8 +82,9 @@ B --> R
 C --> R
 D --> R
 R --> Q
+Q --> CQ
 
-Q --> E
+CQ --> E
 E --> F
 F --> G
 
@@ -84,6 +98,10 @@ G --> P7
 G --> P8
 G --> P9
 G --> P10
+G --> P11
+G --> P12
+G --> P13
+G --> P14
 
 P1 --> H
 P2 --> H
@@ -95,6 +113,10 @@ P7 --> H
 P8 --> H
 P9 --> H
 P10 --> H
+P11 --> H
+P12 --> H
+P13 --> H
+P14 --> H
 
 H --> I
 I --> J
@@ -108,3 +130,14 @@ L --> A
 L --> B
 L --> C
 L --> D
+
+P2 --> S1
+P3 --> S1
+P11 --> S1
+P12 --> S1
+S1 --> P13
+P13 --> S2
+S2 --> P14
+P14 --> S3
+S3 --> P4
+P4 --> S4

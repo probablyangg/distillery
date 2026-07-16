@@ -2,7 +2,7 @@
 
 Status: implemented pilot contract plus remaining hardening notes, written 2026-07-09.
 
-Reading rule: this is a completed implementation plan, not the canonical current-state document. Sections phrased as “implement,” “target,” “deliverables,” or “definition of success” preserve the original acceptance criteria. The current code has since added migration `0011`, shared hybrid retrieval, bounded PPR, reranking, embedding backfill, extractor verification, and human review for uncertain memory proposals.
+Reading rule: this is a completed implementation plan, not the canonical current-state document. Sections phrased as “implement,” “target,” “deliverables,” “implementation status,” “contract update status,” or “definition of success” preserve the original acceptance criteria and point-in-time implementation state. The current code has since added migrations `0011` through `0015`, shared hybrid retrieval, bounded PPR, reranking, embedding backfill, extractor verification, human review for uncertain memory proposals, independent enrichment workers, corpus-wide cluster/readiness policies, and batched auto-approved proposal commits.
 
 This plan upgraded Distillery from v0 `memory_items` plus transient synthesis bundles to a pilot-grade claim graph inspired by MemGraphRAG. It is written for implementation agents. Use it for claim-graph design intent, but use the code, migrations, and [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md) as the source of truth for what is implemented today.
 
@@ -75,9 +75,11 @@ Current delta as of 2026-07-15:
 - Ask and background synthesis use `packages/memory-retrieval` with vector/sparse seeds, bounded PPR, and optional reranking.
 - Ask does not call the legacy `distillery_recall_memory_lexical` answer path. Deterministic degraded behavior uses the shared retrieved graph context.
 - `scripts/backfill-memory-embeddings.ts` and migration `0011_hybrid_retrieval_rpcs.sql` are implemented.
-- Manual `POST /api/initiative-brief-drafts` expands through the shared retriever only when `expandRelatedMemory: true`; the default remains selected-memory-only for compatibility.
+- Manual `POST /api/initiative-brief-drafts` expands through the shared retriever by default; `expandRelatedMemory: false` is the explicit selection-only mode.
 - `connect_memory` can use model-gateway scoring in addition to deterministic signals.
 - Extraction can use a verifier and can route uncertain `memory_proposed` events to human review.
+- Embedding generation moved out of `extract_memory` into the independently retryable `update_embeddings` policy.
+- Background synthesis no longer routes directly from `memory_committed`. Migrations `0013` through `0015` add independent enrichment completion, versioned clusters, readiness, suggested drafts, batched auto-commit, and no-op unchanged global sweeps.
 
 ## MemGraphRAG lessons to borrow
 
@@ -648,7 +650,7 @@ sequenceDiagram
   Synth->>Ledger: artifact_draft_proposed when ready
 ```
 
-Implementation status:
+Historical implementation status when this plan was completed (superseded by the current-status document and migrations `0013` through `0015`):
 
 1. `connect_memory` is implemented as a deterministic policy.
 2. `detect_contradiction` is implemented as deterministic shared-subject polarity conflict detection.
@@ -657,7 +659,7 @@ Implementation status:
 
 `rebuild_graph_projection` is not a policy name in the current code. It is exposed through persistence and Worker graph APIs.
 
-Contract update status:
+Historical contract update status at that point:
 
 - `connect_memory` is present in `POLICY_NAMES`, TypeScript policy registration, SQL `pending_work.policy` constraints, and event routing.
 - `memory_connected` is present in ledger event contracts and SQL event constraints.

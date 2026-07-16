@@ -40,10 +40,13 @@ Implemented in the current repository:
 - event-driven loop infrastructure with `ledger_events`, `event_outbox`, `pending_work`, `policy_runs`, and `proposed_events`;
 - one-minute scheduled outbox draining, explicit router/worker leases, stale-claim recovery, and fenced retries;
 - `source_committed -> extract_memory -> memory_proposed -> validation -> memory_committed` loop path;
-- `memory_committed -> connect_memory -> memory_connection_proposed -> validation -> memory_connected` loop path;
-- `memory_committed -> detect_contradiction -> contradiction_proposed -> validation -> contradiction_recorded` loop path;
-- `memory_committed -> synthesize_brief -> artifact_draft_proposed -> validation -> artifact_drafted` loop path;
-- automatic initiative-brief draft creation when connected active memory passes synthesis readiness checks;
+- `memory_committed -> connect_memory -> enrichment_update_proposed -> validation -> connections_updated` loop path;
+- `memory_committed -> detect_contradiction -> enrichment_update_proposed -> validation -> contradictions_updated` loop path;
+- independent post-memory enrichment for connections, contradictions, embeddings, graph projection, candidates, and freshness;
+- corpus-wide `recompute_cluster -> evaluate_synthesis_readiness -> synthesis_ready -> synthesize_brief` loop path;
+- versioned overlapping clusters, deterministic opportunity scoring, bounded evidence dossiers, and idempotent suggested drafts;
+- atomic batching for auto-approved policy proposals, keeping high-fan-out cluster work within the Cloudflare Worker subrequest budget;
+- cursor-backed global synthesis sweeps that no-op when cluster versions have not changed;
 - loop status endpoint and UI drawer for recent loop activity;
 - Cloudflare Worker deployment;
 - Supabase PostgreSQL/RPC persistence with `pgvector`.
@@ -69,7 +72,7 @@ pnpm
 
 Canonical state is PostgreSQL. Queues, indexes, embeddings, and graph projections are derived or transport mechanisms.
 
-Current loop limitation: `extract_memory`, `connect_memory`, `detect_contradiction`, and `synthesize_brief` have real domain logic. Candidate, freshness, ranking, artifact gating, and revision policies are wired as placeholder runners until their product behavior is implemented.
+Current loop limitation: extraction, connection, contradiction, embedding, graph projection, clustering, readiness, and synthesis have real domain logic. Candidate, freshness, ranking, artifact gating, and revision policies remain placeholder runners.
 
 ## Quick Start
 
@@ -77,6 +80,8 @@ Current loop limitation: `extract_memory`, `connect_memory`, `detect_contradicti
 pnpm install
 pnpm build
 ```
+
+Before running against a database, apply every SQL file in `packages/db/migrations/` in filename order. The current schema requires migrations `0001` through `0015`; see the [runbook](./docs/runbooks/RUNBOOK.md#database-migrations).
 
 Run locally:
 
@@ -118,7 +123,7 @@ pnpm build
 pnpm smoke:live
 ```
 
-`pnpm smoke:live` requires live Supabase, Cloudflare, OpenRouter, and app password configuration.
+`pnpm smoke:live` requires live Supabase, Cloudflare, OpenRouter, and app password configuration. It is a legacy direct database/model integration smoke, not a browser or deployed Worker end-to-end test. Its cleanup does not cover asynchronous corpus-synthesis rows, so run it only against an isolated disposable database—not production.
 
 ## Environment
 

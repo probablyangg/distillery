@@ -2,6 +2,8 @@
 
 Status: historical build plan. The described pilot is implemented in the repository; consult the current-status document for deployment and remaining-work claims.
 
+Post-plan delta, 2026-07-15: corpus-wide synthesis now adds independent enrichment workers, versioned overlapping clusters, deterministic readiness/opportunity scoring, suggested brief versions, a cursor-backed global sweep, and one-RPC auto-approved proposal batches. Manual synthesis accepts 1–20 seed memories and expands related memory by default. Ask uses the shared hybrid graph retriever and, if model generation fails, degrades from the same retrieved context rather than switching to the legacy lexical-answer function. These changes are intentionally not retrofitted into every historical slice below.
+
 For current status and roadmap, start with [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md). This file explains the initial build structure, what shipped, and what remains.
 
 ## Product outcome
@@ -18,8 +20,10 @@ Memory Generation
   -> cited recall
 
 Memory Synthesis
-  selected active memory
-  -> optional generated draft
+  active corpus and selected retrieval seeds
+  -> ranked overlapping opportunities
+  -> bounded evidence-backed dossier
+  -> suggested or on-demand draft
   -> human-edited initiative brief
   -> evidence binding
   -> approve/reject decision
@@ -54,9 +58,10 @@ This screen intentionally does not show initiative suggestions, readiness scorin
 Reviewer surface:
 
 - load active memory;
+- inspect ranked corpus-wide opportunities, readiness reasons, contradictions, and evidence;
 - inspect evidence and trace details;
-- select related memory;
-- optionally generate a brief draft;
+- select retrieval seeds, with related-memory expansion enabled by default;
+- optionally generate or regenerate a brief draft;
 - edit/save an initiative brief;
 - approve or reject the brief.
 

@@ -25,10 +25,9 @@ Queue consumer or inline fallback
   -> validate evidence and schema deterministically
   -> optionally verify/correct/classify candidates with a second model
   -> route uncertain candidates to human review
-  -> optionally store embeddings when embedding env vars are configured
   -> create memory_proposed
   -> auto-commit valid memory_committed
-  -> route graph connection, contradiction, and synthesis work
+  -> independently route connection, contradiction, embedding, graph, candidate, freshness, and clustering work
 
 Scheduled maintenance
   -> recover only expired router/worker leases
@@ -174,7 +173,7 @@ Original evidence, original extraction output, and history remain inspectable.
 
 ## Recall
 
-Recall first tries graph retrieval plus a grounded OpenRouter answer. The grounded answer client validates that every cited claim and evidence span came from the graph retrieval context. If graph retrieval returns no claims, model generation fails, or citation validation fails, recall falls back to deterministic lexical retrieval over active memory and evidence spans.
+Recall first runs shared hybrid vector/sparse-seeded graph retrieval, bounded Personalized PageRank, and optional model reranking. The grounded OpenRouter answer client validates that every cited claim and evidence span came from that retrieved context. If grounded answer generation or citation validation fails, recall creates a deterministic cited answer from the same retrieved claims. If retrieval itself fails or returns no claims, Distillery returns an explicit evidence gap. The legacy database lexical-answer function is not an Ask fallback.
 
 If memory supports an answer, Distillery returns:
 

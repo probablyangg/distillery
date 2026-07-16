@@ -30,13 +30,21 @@ Cloudflare Queue
   -> OpenRouter
   -> proposed event
   -> validation and approval
+  -> atomic batch commit for auto-approved proposals
   -> ledger event
+
+Cloudflare Cron (every minute)
+  -> recover expired claims
+  -> requeue recovered work
+  -> schedule bounded synthesis scans
+  -> route a bounded outbox batch
 ```
 
 ### Runtime
 
 - `apps/web` is a Cloudflare Worker serving HTML, API routes, and the queue consumer.
 - Supabase RPC functions perform multi-table atomic writes.
+- High-fan-out auto-approved policy output is persisted by one batch RPC; human-required and invalid proposals retain their explicit review/validation paths.
 - OpenRouter provides structured LLM calls.
 - PostgreSQL is authoritative.
 - Cloudflare Queue messages are wakeups only; PostgreSQL owns committed events, outbox state, pending work, policy runs, and proposals.
@@ -79,6 +87,19 @@ initiative_brief
   -> initiative_brief_memory
   -> initiative_brief_evidence
   -> initiative_brief_decisions
+
+synthesis_cluster
+  -> synthesis_cluster_versions
+  -> synthesis_cluster_memberships
+  -> synthesis_readiness_evaluations
+  -> suggested_briefs / suggested_brief_versions
+
+memory_item
+  -> synthesis_enrichment_states
+  -> synthesis_dirty_neighborhoods
+
+tenant
+  -> synthesis_global_scan_cursors
 
 ledger_events
   -> event_outbox
@@ -136,33 +157,51 @@ source_committed
 
 memory_committed
   -> connect_memory pending_work
-  -> memory_connection_proposed
+  -> enrichment_update_proposed
   -> validation
-  -> memory_connected
+  -> connections_updated
 
 memory_committed
   -> detect_contradiction pending_work
-  -> contradiction_proposed
+  -> enrichment_update_proposed
   -> validation
-  -> contradiction_recorded
+  -> contradictions_updated
 
 memory_committed
+  -> update_embeddings + update_graph + recompute_cluster (independent work)
+
+connections_updated / contradictions_updated / embeddings_updated / graph_updated
+  -> recompute_cluster
+  -> versioned overlapping cluster projections
+  -> evaluate_synthesis_readiness
+  -> pending_enrichment | not_ready | synthesis_ready
+
+synthesis_neighborhood_dirty (bounded global safety-net scan)
+  -> recompute_cluster
+  -> no event when the affected cluster versions are unchanged
+
+synthesis_ready
   -> synthesize_brief pending_work
+  -> bounded evidence-backed cluster dossier
   -> artifact_draft_proposed
   -> validation
   -> artifact_drafted
 ```
 
-The loop runner and persistence scaffolding are installed for the full policy set. Current production logic is real for `extract_memory`, `connect_memory`, `detect_contradiction`, and `synthesize_brief`. Candidate discovery, freshness, ranking, artifact gating, and revision policies are placeholders until their domain behavior is implemented.
+The loop runner and persistence scaffolding are installed for the full policy set. Current domain logic is real for extraction, connection, contradiction, embeddings, graph projection, clustering, readiness, and synthesis. Candidate discovery, freshness, ranking, artifact gating, and revision policies are placeholders.
+
+The deployed Worker routes at most 4 outbox rows per scheduled or request-triggered pass and can requeue up to 25 recovered work items. Those caps protect the Cloudflare invocation budget; they do not limit total eventual work because PostgreSQL retains pending rows canonically.
 
 ### `/synthesis`
 
 Memory Synthesis:
 
-- load active memory;
+- load ranked corpus-wide opportunities and active memory;
+- inspect readiness score, reasons, cluster scope, evidence, contradictions, and missing information;
+- inspect saved suggested versions and which draft fields changed since the prior version;
 - inspect trace details;
-- select memory;
-- generate optional draft;
+- use selected memory as retrieval seeds by default, or choose explicit selection-only mode;
+- generate, edit, save, approve, reject, or regenerate a suggested draft;
 - save initiative brief;
 - approve/reject.
 

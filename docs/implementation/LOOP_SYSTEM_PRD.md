@@ -7,10 +7,26 @@ Reading rule: “required” sections below preserve the original loop contract.
 Implementation note, 2026-07-09:
 
 - The canonical loop tables, queue wakeup shape, router, executor, proposal validation, memory auto-commit path, loop status API, and loop status UI are present in the repo.
-- `extract_memory` is implemented with OpenRouter-backed memory generation, deterministic fallback, and optional embedding storage.
+- `extract_memory` is implemented with OpenRouter-backed memory generation and deterministic fallback. Embeddings are now produced independently by `update_embeddings` after memory commit.
 - `connect_memory`, `detect_contradiction`, and `synthesize_brief` are implemented as real policy workers.
 - `discover_candidate`, `check_freshness`, `rank_candidate`, `draft_artifact`, `gate_output`, and `revise_artifact` are registered placeholder implementations. Treat them as incomplete product behavior until their domain logic is implemented.
 - For exact current-state facts and known gaps, read [STATUS_AND_ROADMAP.md](../current/STATUS_AND_ROADMAP.md) before coding.
+
+Implementation note, 2026-07-15 (migration `0013`):
+
+- `memory_committed` no longer routes directly to `synthesize_brief`.
+- Connections, contradictions, embeddings, and graph projection are independent work items with durable completion events.
+- `recompute_cluster` persists versioned overlapping cluster projections; `evaluate_synthesis_readiness` records explicit readiness states.
+- Only `synthesis_ready` routes to `synthesize_brief`, which receives a bounded cluster dossier.
+- The scheduled handler performs only bounded recovery, scan-event scheduling, and routing. Business logic remains in policies.
+- The original event and route lists later in this historical PRD are superseded by current contracts, code, migrations `0013` through `0015`, and the current-status document.
+
+Operational hardening note, 2026-07-15 (migrations `0014` and `0015`):
+
+- Auto-approved proposed events are created, marked valid, and committed by one atomic RPC. This preserves individual proposal/ledger records while avoiding per-event Worker subrequests.
+- The deployed scheduled and request-triggered routers process at most 4 outbox rows per pass; scheduled maintenance can requeue up to 25 recovered jobs.
+- Cursor-backed global synthesis scans no longer emit `cluster_changed` when the affected cluster versions are unchanged.
+- Migration `0015` resolves only redundant rollout-era global-sweep outbox rows; it does not delete domain state.
 
 Related docs:
 

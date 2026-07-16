@@ -15,10 +15,10 @@ Capture/Recall app
   remember or ask
 
 Synthesis app
-  select committed memory
-  generate optional brief draft
-  edit/save traceable brief
-  approve or reject
+  rank corpus-wide brief opportunities
+  inspect bounded cluster evidence and readiness
+  generate or review suggested drafts
+  edit, save, approve, or reject traceable briefs
 
 Graph review app
   inspect claim clusters
@@ -32,7 +32,7 @@ Live Worker:
 https://distillery-v0.angela-f4b.workers.dev
 ```
 
-Current seeded data:
+The default starter seed command produces:
 
 - 32 confirmed Stable memory items;
 - 3 starter initiative briefs;
@@ -93,18 +93,18 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 ### Memory Synthesis
 
 - Active-memory listing with evidence spans.
-- Optional LLM brief draft generation from 1-8 selected memory items.
-- Optional manual related-memory expansion for brief draft generation with `expandRelatedMemory: true`.
+- Corpus-aware LLM brief draft generation from 1-20 selected seed memories. Related-memory expansion is the default; `expandRelatedMemory: false` is the explicit selection-only mode.
 - Deterministic fallback draft when model drafting fails validation or times out.
 - Human-editable initiative brief creation.
 - Brief-to-memory and brief-to-evidence bindings.
 - Approve/reject decision writeback.
 - Traceability validation for created briefs and generated drafts.
-- First-class `synthesize_brief` policy worker after `memory_committed`.
-- Runtime synthesis bundle builder that derives related active memory from entities, relations, schemas, evidence/source context, lineage, decision references, and contradiction metadata without persisting canonical memory links.
-- Background synthesis readiness gates require at least 2 active memory items, at least 2 evidence spans, at least 1 strong connection beyond shared source/context, no inactive selected memory, and no unresolved blocking contradiction.
-- Valid background synthesis emits `artifact_draft_proposed` and auto-commits `artifact_drafted` without human approval.
-- Committed `artifact_drafted` events create traceable `initiative_briefs` drafts and memory/evidence bindings idempotently.
+- `memory_committed` independently routes connection, contradiction, embedding, graph, candidate, freshness, and dirty-neighborhood work. It no longer routes directly to generation.
+- Versioned, overlapping synthesis clusters exist at narrow-decision, initiative, and strategic-theme resolutions. Each membership stores a deterministic score and plain-language reasons. Incremental neighborhoods include durable connections, shared entities/schema, lexical topics, and bounded claim-embedding neighbors when embeddings exist.
+- Readiness is a separate policy with explicit `pending_enrichment`, `not_ready`, `ready`, `draft_generated`, `superseded`, and `failed` states.
+- Deterministic opportunity scoring exposes cohesion, evidence breadth/quality, source diversity, actionability, importance, momentum, urgency, novelty, completeness, and explicit penalties.
+- Ready cluster versions produce at most one suggested draft per tenant, cluster version, and generation intent. Suggested drafts remain ordinary reviewable `initiative_briefs` drafts until a human approves or rejects them.
+- `/synthesis` lists ranked opportunities, reasons, members, evidence, contradictions, missing information, saved suggested drafts, and fields changed from the previous suggested version. Capture does not show initiative suggestions.
 
 ### Claim Graph Pilot
 
@@ -141,7 +141,7 @@ North-star system diagram: [system.mermaid](../architecture/system.mermaid).
 - Deterministic retrieval fixture validation.
 - Standalone extraction-quality and connection-density evaluators. The extraction evaluator calls live OpenRouter; the connection evaluator is local and deterministic.
 - Stable seed script.
-- Live smoke script.
+- Legacy direct database/model smoke script. It is not a deployed Worker/browser smoke and must use an isolated disposable database because its cleanup does not cover asynchronous corpus-synthesis rows.
 
 ## Current architecture
 
@@ -163,37 +163,42 @@ Worker queue consumer or inline fallback
   -> OpenRouter
   -> proposed_events
   -> validation and approval
+  -> one atomic RPC for auto-approved proposal batches
   -> ledger_events
 
 Scheduled loop maintenance (every minute)
   -> resolve legacy non-actionable seed routing
   -> recover expired router and worker leases
   -> close abandoned policy runs with failure metadata
-  -> requeue recovered workItemId messages
-  -> route a bounded event_outbox batch
+  -> requeue up to 25 recovered workItemId messages
+  -> schedule up to 4 cursor-backed synthesis scans
+  -> route up to 4 event_outbox rows
 
 After memory commit
   -> connect_memory
   -> durable claim connection proposals
-  -> memory_connected
+  -> connections_updated (even when no connection crosses the threshold)
 
 After memory commit
   -> detect_contradiction
   -> conflict group proposals
-  -> contradiction_recorded
+  -> contradictions_updated (even when no contradiction is found)
 
-After memory commit
+After memory or enrichment change
+  -> recompute_cluster (incremental neighborhood or bounded global sweep)
+  -> cluster_changed
+  -> evaluate_synthesis_readiness
+  -> pending_enrichment / not_ready / synthesis_ready
   -> synthesize_brief
-  -> derive active related memory bundle
-  -> readiness checks
+  -> bounded cluster dossier
   -> OpenRouter brief draft
   -> artifact_draft_proposed
   -> artifact_drafted
   -> initiative_briefs draft rows
 
 Synthesis page
-  -> active memory
-  -> optional brief draft model call
+  -> ranked corpus-wide opportunities and active memory
+  -> corpus expansion by default; explicit selection-only option
   -> human save/approval
 
 Ask
@@ -205,6 +210,8 @@ Graph page
   -> graph clusters and claim details
   -> connection review, conflict resolution, claim pinning/exclusion
 ```
+
+Connection or contradiction completion invalidates the prior graph-completion facet and routes an independent graph rebuild. Readiness therefore cannot treat a graph projection from before those changes as current. A model timeout or invalid generated draft records `failed` readiness for that cluster version and commits no brief.
 
 Authoritative state is in PostgreSQL. Lexical indexes, embeddings, and graph projections are derived.
 
@@ -230,15 +237,18 @@ google/gemini-embedding-001
 1536 dimensions
 ```
 
-Embedding storage and inline extraction-time embedding generation exist when embedding env vars are configured. A hybrid graph retrieval implementation is now present in code for Ask and synthesis, with vector/sparse seeds, TypeScript PPR, OpenRouter reranking, and a batch embedding backfill script. Apply migration `0011_hybrid_retrieval_rpcs.sql` and run the backfill before expecting full vector coverage on historical memory.
+Embedding storage and an independent `update_embeddings` policy exist when embedding env vars are configured. A hybrid graph retrieval implementation is present for Ask and synthesis, with vector/sparse seeds, TypeScript PPR, OpenRouter reranking, and a batch embedding backfill script. Apply migrations through `0015`, then run the backfill before expecting full vector coverage on historical memory.
 
 ## Current loop-system limitations
 
-- `extract_memory`, `connect_memory`, `detect_contradiction`, and `synthesize_brief` have real domain logic.
+- `extract_memory`, `connect_memory`, `detect_contradiction`, `update_embeddings`, `update_graph`, `recompute_cluster`, `evaluate_synthesis_readiness`, and `synthesize_brief` have real domain logic.
 - `discover_candidate`, `check_freshness`, `rank_candidate`, `draft_artifact`, `gate_output`, and `revise_artifact` are registered policy runners but currently emit placeholder `not_enough_context` proposals.
 - A worker does not drain newly committed downstream outbox rows in the same invocation. The one-minute scheduled router drains them in bounded batches, so progress may pause until the next scheduled invocation but no longer requires another user action.
+- The deployed Worker limits each scheduled or request-triggered routing pass to 4 outbox rows and requeues up to 25 recovered jobs. Auto-approved proposals commit in one database RPC so high-fan-out cluster projections stay within the Worker subrequest budget.
+- Global sweep events are safety-net scans. An unchanged cluster version is a no-op; enrichment and memory-change events can still force readiness reevaluation without changing membership.
 - SQL/RPC loop behavior has minimal automated coverage. Most loop tests run against `InMemoryLoopPersistence`.
-- The OpenRouter embedding client and `memory_embeddings` table are wired into `extract_memory`; historical embedding backfill is available through `scripts/backfill-memory-embeddings.ts`.
+- The OpenRouter embedding client and `memory_embeddings` table are wired into independently retryable `update_embeddings`; historical embedding backfill is available through `scripts/backfill-memory-embeddings.ts`.
+- Each cluster recomputation loads at most 500 active memories, while the durable global cursor makes every active memory eligible over repeated sweeps. Very large corpora will eventually need partitioned candidate indexes rather than a larger Worker batch.
 - Ask and synthesis are wired to the shared hybrid graph retriever in code. Full runtime success requires migration `0011_hybrid_retrieval_rpcs.sql`, graph projection rebuild, and embedding backfill in the target database. If OpenRouter reranking fails, retrieval degrades to deterministic graph/vector/sparse ranking and reports the reranker failure in metadata.
 - The `/graph` page is Worker-rendered and operational, but it has not yet been checked with a browser automation screenshot pass.
 

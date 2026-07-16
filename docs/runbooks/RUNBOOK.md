@@ -11,6 +11,8 @@ Use this document for local setup, database migration, seed/reset, deployment, a
 - Cloudflare account with Workers and Queues
 - OpenRouter API key
 
+Corpus-wide synthesis adds no service, account, hosted dependency, API key, graph database, or paid package. It reuses PostgreSQL/Supabase, Cloudflare Worker/Queue/Cron, the existing OpenRouter-compatible gateway, pgvector, and the existing TypeScript packages.
+
 ## Environment files
 
 Create local env files:
@@ -101,20 +103,23 @@ for migration in packages/db/migrations/*.sql; do
 done
 ```
 
-If the database already has migrations through `0010`, apply `0011` and then `0012`:
+If the database already has migrations through `0010`, apply every later migration in order:
 
 ```bash
 psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0011_hybrid_retrieval_rpcs.sql
 psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0012_loop_leases_and_scheduled_recovery.sql
+psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0013_corpus_wide_brief_synthesis.sql
+psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0014_batch_auto_proposed_events.sql
+psql "$DATABASE_DIRECT_URL" --set ON_ERROR_STOP=1 --single-transaction -f packages/db/migrations/0015_suppress_redundant_global_synthesis_events.sql
 ```
 
-Equivalent helper:
+Helper for migration `0011` only:
 
 ```bash
 pnpm retrieval:migrate
 ```
 
-`pnpm retrieval:migrate` always applies only `0011_hybrid_retrieval_rpcs.sql`. It does not apply `0012` and is not a general migration runner. Apply every missing migration in filename order.
+`pnpm retrieval:migrate` always applies only `0011_hybrid_retrieval_rpcs.sql`. It does not apply later migrations and is not a general migration runner. Apply every missing migration in filename order.
 
 Do not run migrations from the Cloudflare Worker. Migrations require `DATABASE_DIRECT_URL` from local/CI.
 
@@ -132,6 +137,11 @@ Current migration set:
 - `0010_claim_graph_memory_upgrade.sql` — claim graph pilot tables, memory-to-claim graph triggers, graph projection/retrieval RPCs, connection review, conflict resolution, claim preferences, generic `memory_embeddings`, and graph policy/event constraints.
 - `0011_hybrid_retrieval_rpcs.sql` — hybrid retrieval candidate/snapshot/hydration RPCs, schema graph projection, and missing embedding target listing for backfill.
 - `0012_loop_leases_and_scheduled_recovery.sql` — atomic seed-source suppression, router/worker leases and fencing, abandoned-claim recovery, retry metadata, and lease-aware loop status.
+- `0013_corpus_wide_brief_synthesis.sql` — independent enrichment events, versioned overlapping clusters, readiness history, suggested-brief versions, dirty-neighborhood scheduling, durable global scan cursor, and the corrected atomic artifact persistence function.
+- `0014_batch_auto_proposed_events.sql` — one atomic RPC for creating, validating, and committing any number of auto-approved proposed events, avoiding Worker subrequest exhaustion during high-fan-out cluster projection.
+- `0015_suppress_redundant_global_synthesis_events.sql` — one-time cleanup of redundant rollout-era global-sweep outbox rows after unchanged sweep projections became no-ops.
+
+Deployment order is database migration first, then Worker deployment. Roll back the Worker if new synthesis work produces repeated failures, unexpected queue growth, or readiness/draft duplication. Do not drop synthesis tables during an operational rollback. Preserve them for diagnosis and deploy a corrective forward migration. Migration `0015` changes only transport/outbox state for redundant global-sweep events; it does not delete evidence, memory, clusters, readiness evaluations, or briefs.
 
 ## Seed Stable starter data
 
@@ -153,7 +163,7 @@ pnpm seed:stable -- --all
 
 ## Backfill retrieval embeddings
 
-Hybrid retrieval needs embeddings for existing claims, evidence spans, entities, and schema patterns. New memory can store embeddings during extraction when embedding env vars are configured, but historical rows need a backfill.
+Hybrid retrieval needs embeddings for existing claims, evidence spans, entities, and schema patterns. New or edited memory is handled by the independent `update_embeddings` policy when embedding env vars are configured, but historical rows still need a backfill.
 
 Preview missing targets without writing:
 
@@ -212,7 +222,7 @@ Manual check:
 6. Expand `Trace details` and verify entities, relations, schemas, and evidence.
 7. Ask a recall question and confirm `retrievalMetadata.strategy` is `hybrid-graph-ppr-rerank`.
 8. Select memory on `/synthesis`.
-9. Generate a brief draft. To test related-memory expansion through the API, call `POST /api/initiative-brief-drafts` with `expandRelatedMemory: true`.
+9. Generate a brief draft. Related-memory expansion is the default. To test strict selection-only behavior through the API, call `POST /api/initiative-brief-drafts` with `expandRelatedMemory: false`.
 10. Edit/save a brief.
 11. Approve or reject it.
 12. Open `/graph`.
@@ -234,7 +244,7 @@ The helper:
 - deploys the Worker;
 - health-checks the deployment.
 
-The Worker configuration includes a one-minute Cron Trigger and a bounded Queue consumer. After migration `0012` and deployment, scheduled maintenance safely drains pending outbox rows and recovers only expired claims. Do not manually change `running` rows while their lease is still valid.
+The Worker configuration includes a one-minute Cron Trigger and a bounded Queue consumer. After migrations through `0015`, each scheduled maintenance pass recovers expired claims, requeues up to 25 recovered work items, schedules up to 4 synthesis scan events, and routes up to 4 outbox rows. Request-triggered routing is also capped at 4 rows. These deployed caps keep external database calls within the Worker invocation budget; PostgreSQL retains the remaining canonical work for later passes. Clustering, readiness, and generation remain policy work, and unchanged global sweeps emit no cluster event. Do not manually change `running` rows while their lease is still valid.
 
 Manual deploy:
 
@@ -259,7 +269,9 @@ https://distillery-v0.angela-f4b.workers.dev
 pnpm smoke:live
 ```
 
-The smoke test creates temporary rows, runs capture -> model generation -> memory commit -> brief creation -> approval, and cleans up.
+This is a legacy direct Supabase/model integration smoke. It does not exercise the deployed HTTP login, Worker router, Queue consumer, Cron Trigger, or synthesis-opportunity UI. Its cleanup predates the corpus-synthesis tables and can race asynchronous loop work, so run it only against an isolated disposable database. Do not point it at production.
+
+For a production-safe readiness check, use read-only requests: verify `/health`, load `/`, `/synthesis`, and `/graph`, log in, then call `GET /api/session`, `GET /api/loop-status`, `GET /api/memory-items`, `GET /api/synthesis/opportunities`, `GET /api/initiative-briefs`, and `GET /api/graph/clusters`. Inspect Worker logs for a successful scheduled pass and Queue messages before starting manual testing.
 
 ## API reference
 
@@ -294,10 +306,14 @@ Memory review:
 
 Memory Synthesis:
 
-- `POST /api/initiative-brief-drafts` — generate editable brief draft from selected memory. Optional body field: `expandRelatedMemory` defaults to `false`; when `true`, the endpoint expands through the shared hybrid graph retriever and synthesis bundle builder.
+- `GET /api/synthesis/opportunities` — ranked cluster opportunities with readiness reasons and bounded dossiers.
+- The opportunities response also includes saved suggested versions, their current review status, and the fields changed since the prior version.
+- `POST /api/initiative-brief-drafts` — generate an editable brief draft from selected retrieval seeds. `expandRelatedMemory` defaults to `true`; set it to `false` for explicit selection-only generation.
 - `POST /api/initiative-briefs` — save human-reviewed brief.
 - `GET /api/initiative-briefs` — list briefs.
 - `GET /api/initiative-briefs/{id}` — inspect one brief.
+- `PATCH /api/initiative-briefs/{id}` — update the editable fields of a draft brief. Approved or rejected briefs are not editable.
+- `POST /api/synthesis/clusters/{id}/generate` — enqueue generation for a specific discovered cluster and optional intent; returns `202`.
 - `POST /api/initiative-briefs/{id}/decisions` — approve/reject.
 
 Claim Graph:

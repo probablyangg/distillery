@@ -1,6 +1,6 @@
 # Memory Synthesis
 
-Status: manual synthesis and first-pass background synthesis are implemented. Candidate discovery and human-facing evidence grouping review remain future work.
+Status: corpus-wide cluster discovery, explicit readiness, suggested background drafts, and corpus-aware manual synthesis are implemented through migration `0015`.
 
 Memory Synthesis turns committed memory into a human-reviewed initiative brief.
 
@@ -10,10 +10,11 @@ It must preserve traceability. A brief should never hide weak evidence or presen
 
 ```text
 GET /synthesis
-  -> load active memory
-  -> inspect evidence and trace details
-  -> select memory items
-  -> optionally generate draft
+  -> load ranked cluster opportunities and active memory
+  -> inspect readiness, membership reasons, evidence, contradictions, and gaps
+  -> select seed memory or choose a discovered cluster
+  -> expand through the corpus by default (or explicitly choose selection-only)
+  -> generate or regenerate a bounded draft
   -> human edits brief
   -> save brief
   -> approve or reject
@@ -22,21 +23,26 @@ GET /synthesis
 Implemented endpoints:
 
 - `GET /api/memory-items`;
+- `GET /api/synthesis/opportunities`;
 - `POST /api/initiative-brief-drafts`;
 - `POST /api/initiative-briefs`;
 - `GET /api/initiative-briefs`;
 - `GET /api/initiative-briefs/{id}`;
+- `PATCH /api/initiative-briefs/{id}`;
+- `POST /api/synthesis/clusters/{id}/generate`;
 - `POST /api/initiative-briefs/{id}/decisions`.
 
-`POST /api/initiative-brief-drafts` accepts `expandRelatedMemory?: boolean`. The default is `false`, which preserves the original manual selected-memory behavior. When `true`, the endpoint uses the same derived synthesis bundle builder as the background policy and may include related active memory in the generated draft context.
+`POST /api/initiative-brief-drafts` accepts `expandRelatedMemory?: boolean`. The default is `true`: selected memory is used as retrieval seeds against the active corpus. Set it to `false` only for deliberate selection-only generation. Responses expose the included memory, included evidence, bundle, and retrieval metadata.
 
 ## Current product behavior
 
-The reviewer chooses memory manually.
+The reviewer can choose memory manually or start from a ranked opportunity.
 
-The brief generator is optional. It drafts from selected memory and evidence only unless `expandRelatedMemory` is explicitly enabled. The human can edit before saving.
+The brief generator is optional. By default it expands selected seeds through hybrid vector, sparse, and graph retrieval before building a bounded context. The human can edit before saving.
 
-Background synthesis also runs after `memory_committed`. It loads synthesis context from persistence, derives a selected bundle at runtime, checks readiness, generates a traceable draft through the existing OpenRouter model gateway, emits `artifact_draft_proposed`, and auto-commits `artifact_drafted` only when validation passes.
+Background synthesis never runs directly from `memory_committed`. Independent connection, contradiction, embedding, and graph workers record durable completion events. Incremental dirty-neighborhood work and a bounded global sweep update overlapping cluster versions. A separate readiness policy evaluates deterministic opportunity scores. Only a `synthesis_ready` event can enqueue generation.
+
+Connection and contradiction completion invalidate the older graph-completion marker before an independently routed graph rebuild. This prevents out-of-order workers from making stale graph state appear ready. Discovery also receives bounded vector-neighbor signals from existing claim embeddings; lexical topics, entities, schemas, typed relations, and durable connections remain separate explainable signals.
 
 Saved briefs bind to:
 
@@ -53,11 +59,13 @@ Approval/rejection writes an append-only decision record with a self-attested re
 - Briefs remain readable if supporting memory is later edited or removed.
 - Approval is blocked if supporting memory has become inactive.
 - Generated drafts must include every selected memory ID and required evidence ID.
-- Draft generation falls back to a deterministic traceable draft if the model fails or violates validation.
-- Background synthesis must select at least 2 active memory items and 2 evidence spans.
-- Background synthesis must have at least 1 connection stronger than shared source/context.
-- Background synthesis skips without a proposed event when memory is isolated, inactive, superseded, removed, or blocked by an unresolved contradiction.
-- `artifact_drafted` creates one traceable initiative-brief draft and memory/evidence bindings idempotently during proposal commit.
+- On-demand manual draft generation falls back to a deterministic traceable draft if the model fails or violates validation. Background cluster generation instead records explicit `failed` readiness and commits no brief.
+- Missing enrichment records `pending_enrichment`; weak context records `not_ready`. Neither state pretends generation succeeded.
+- Removed and superseded memory is excluded from discovery, dossiers, and new suggested drafts.
+- A ready cluster version and generation intent can enqueue at most one background draft.
+- Suggested output must state scope, risks/dependencies, and contradictions/uncertainties, and must cite only evidence bound to selected active memory.
+- `artifact_drafted` creates one traceable initiative-brief draft, one suggested-brief version, memory/evidence bindings, ledger event, and outbox row idempotently.
+- Model timeouts and invalid generated drafts create an explicit `failed` readiness result and no initiative brief. The same cluster version remains failed until a distinct generation intent or a material cluster-version change is used.
 
 ## Brief fields
 
@@ -115,36 +123,41 @@ If evidence is weak or unresolved, the draft should make uncertainty visible.
 
 ## Background synthesis policy
 
-The `synthesize_brief` policy is routed from `memory_committed` events. It reads seed memory IDs from the ledger event payload, not from `pending_work.subjectId`, because a memory commit subject can represent a source version or batch.
+The durable flow is:
 
-The policy builds a transient `SynthesisBundle`. Connection reasons can include shared entity, compatible relation, matching schema candidate, complementary claim type, shared evidence or source context, edit/supersession lineage, decision reference, contradiction warning, or blocking contradiction.
+```text
+memory_committed
+  -> connect_memory | detect_contradiction | update_embeddings | update_graph
+  -> recompute_cluster
+  -> cluster_changed
+  -> evaluate_synthesis_readiness
+  -> pending_enrichment | not_ready | synthesis_ready
+  -> synthesize_brief
+  -> artifact_drafted suggested draft
+  -> human review
+```
 
-The `SynthesisBundle` itself is not persisted as canonical memory links. The claim graph pilot separately persists durable claim connections and conflict groups used by graph review and retrieval.
+Definitions:
+
+- **Cluster:** a rebuildable, overlapping group of active memories that may support a brief.
+- **Cluster version:** a stable token that changes only when cluster membership or meaning materially changes.
+- **Dirty neighborhood:** a changed memory area that needs bounded incremental recomputation.
+- **Readiness:** the deterministic state and opportunity score for one cluster version and generation intent.
+- **Failed readiness:** generation was attempted but timed out or failed deterministic traceability validation; no brief was committed.
+- **Synthesis bundle/dossier:** the capped, traceable model context selected from a cluster. Current caps are 16 memories, 24 evidence spans, 32 connections, 12 contradictions, 16 entities, 16 topics, and 30,000 characters.
+- **Suggested brief:** a generated draft that has not received human authority.
+- **Global sweep:** a cursor-backed periodic scan that makes all active memory eligible over time without loading the whole database in one Worker invocation.
+
+Auto-approved cluster projections and readiness events commit through one atomic batch RPC. This preserves one proposed-event and ledger-event record per output while avoiding one Worker-to-database request per record. Global sweep recomputation is a no-op when the affected cluster versions are unchanged; enrichment and memory-change events still force reevaluation when state outside membership changes.
 
 ## What is not implemented yet
 
-- full candidate-based initiative discovery;
-- candidate maturity scoring;
-- evidence bundle freezing/versioning;
+- model-assisted reranking of deterministic opportunity candidates;
+- immutable dossier snapshots separate from suggested-brief version payloads;
 - assertion-level trace tables;
-- richer contrary evidence display in the synthesis UI;
 - stale-brief detection;
 - PRD generation.
 
-## Future synthesis workflow
+## Known limits
 
-The intended next architecture is:
-
-```text
-memory_committed event
-  -> synthesize_brief
-  -> retrieve related active memory
-  -> derive transient synthesis bundle
-  -> check readiness
-  -> generate initiative brief draft
-  -> validate traceability
-  -> auto-commit artifact_drafted
-  -> human reviews saved brief later
-```
-
-Future candidate discovery and PRD generation should be implemented as durable workflow steps, not as one long HTTP request.
+Each incremental recomputation reads at most 500 active memories. Repeated cursor sweeps make all memory eligible, but this remains a pilot-scale candidate-generation strategy. Larger corpora should add PostgreSQL-partitioned neighborhood candidate indexes while preserving the same cluster/version/readiness contracts.
