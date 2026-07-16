@@ -30,6 +30,7 @@ import {
   OpenRouterMemoryCandidateVerifierModel,
   OpenRouterMemoryConnectionScorerModel,
   OpenRouterMemoryGenerationModel,
+  OpenRouterMemorySectionPlannerModel,
   OpenRouterRetrievalRerankerModel,
   type OpenRouterModelConfig,
 } from "@distillery/model-gateway";
@@ -64,6 +65,13 @@ export type Env = {
   MEMORY_EXTRACTOR_MODEL?: string;
   MEMORY_VERIFIER_MODEL?: string;
   MEMORY_CONNECTION_MODEL?: string;
+  MEMORY_SECTION_PLANNER_MODEL?: string;
+  MEMORY_SECTIONING_ENABLED?: string;
+  MEMORY_SECTION_TRIGGER_CHARS?: string;
+  MEMORY_SECTION_TRIGGER_SPANS?: string;
+  MEMORY_SECTION_TARGET_CHARS?: string;
+  MEMORY_SECTION_MAX_CHARS?: string;
+  MEMORY_SECTION_MAX_SECTIONS?: string;
   EMBEDDING_PROVIDER?: string;
   EMBEDDING_BASE_URL?: string;
   EMBEDDING_MODEL?: string;
@@ -184,6 +192,11 @@ export default {
       return handleGetIngestion(decodeRouteParam(ingestionMatch[1]), env);
     }
 
+    const ingestionRetryMatch = url.pathname.match(/^\/api\/ingestions\/([^/]+)\/retry$/);
+    if (request.method === "POST" && ingestionRetryMatch?.[1]) {
+      return handleRetryIngestion(decodeRouteParam(ingestionRetryMatch[1]), env, ctx);
+    }
+
     const memoryActionMatch = url.pathname.match(/^\/api\/memory-items\/([^/]+)\/actions$/);
     if (request.method === "POST" && memoryActionMatch?.[1]) {
       return handleMemoryItemAction(decodeRouteParam(memoryActionMatch[1]), request, env, ctx);
@@ -231,6 +244,10 @@ export default {
     await Promise.all(
       batch.messages.map(async (message) => {
         await processWorkItem(message.body.workItemId, env);
+        // Keep a sectioned document moving without waiting for the next
+        // one-minute Cron after every section completion. The router remains
+        // bounded and every new Queue message still contains only workItemId.
+        await routeAndMaybeExecuteLoop(env);
         message.ack();
       }),
     );
@@ -327,7 +344,7 @@ async function handleCreateIngestion(request: Request, env: Env, ctx: ExecutionC
     repository,
   });
 
-  ctx.waitUntil(routeAndMaybeExecuteLoop(env));
+  ctx.waitUntil(routeAndMaybeExecuteLoop(env, receipt.sourceVersionId));
 
   return json(receipt, 202);
 }
@@ -335,6 +352,22 @@ async function handleCreateIngestion(request: Request, env: Env, ctx: ExecutionC
 async function handleGetIngestion(ingestionId: string, env: Env): Promise<Response> {
   const result = await createRepository(env).getIngestionResult(ingestionId);
   return json(result);
+}
+
+async function handleRetryIngestion(ingestionId: string, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const persistence = createLoopPersistence(env);
+  const workItemIds = await persistence.retryMemorySectionIngestion(ingestionId);
+  console.log(JSON.stringify({
+    event: "memory_section_ingestion_retried",
+    ingestionId,
+    resumedWorkItemCount: workItemIds.length,
+  }));
+  if (env.MEMORY_GENERATION_QUEUE) {
+    ctx.waitUntil(Promise.all(workItemIds.map((workItemId) => env.MEMORY_GENERATION_QUEUE!.send({ workItemId }))));
+  } else {
+    ctx.waitUntil(Promise.all(workItemIds.map((workItemId) => processWorkItem(workItemId, env))));
+  }
+  return json({ ingestionId, resumedWorkItemCount: workItemIds.length }, 202);
 }
 
 async function handleRecallQuery(request: Request, env: Env): Promise<Response> {
@@ -843,11 +876,12 @@ async function handleMemoryItemHistory(memoryItemId: string, env: Env): Promise<
   return json(result);
 }
 
-async function routeAndMaybeExecuteLoop(env: Env): Promise<void> {
+async function routeAndMaybeExecuteLoop(env: Env, preferredSubjectId?: string): Promise<void> {
   const persistence = createLoopPersistence(env);
   const workItems = await routeCommittedEvents({
     persistence,
     maxRows: 4,
+    ...(preferredSubjectId ? { preferredSubjectId } : {}),
     ...(env.MEMORY_GENERATION_QUEUE ? { queue: env.MEMORY_GENERATION_QUEUE } : {}),
   });
 
@@ -869,6 +903,20 @@ async function processWorkItem(workItemId: string, env: Env): Promise<void> {
         maxFallbackTimeoutMs: 45_000,
         maxFallbackModels: 1,
       })),
+      memorySectionPlannerModel: new OpenRouterMemorySectionPlannerModel(openRouterConfig(env, {
+        modelOverride: env.MEMORY_SECTION_PLANNER_MODEL,
+        maxPrimaryTimeoutMs: 60_000,
+        maxFallbackTimeoutMs: 45_000,
+        maxFallbackModels: 1,
+      })),
+      memorySectioningConfig: {
+        enabled: parseBoolean(env.MEMORY_SECTIONING_ENABLED, true),
+        triggerChars: parsePositiveInteger(env.MEMORY_SECTION_TRIGGER_CHARS) ?? 6_000,
+        triggerSpans: parsePositiveInteger(env.MEMORY_SECTION_TRIGGER_SPANS) ?? 20,
+        targetChars: parsePositiveInteger(env.MEMORY_SECTION_TARGET_CHARS) ?? 5_000,
+        maxChars: parsePositiveInteger(env.MEMORY_SECTION_MAX_CHARS) ?? 8_000,
+        maxSections: parsePositiveInteger(env.MEMORY_SECTION_MAX_SECTIONS) ?? 50,
+      },
       memoryVerifierModel: new OpenRouterMemoryCandidateVerifierModel(openRouterConfig(env, {
         modelOverride: env.MEMORY_VERIFIER_MODEL,
         maxPrimaryTimeoutMs: 60_000,
@@ -1022,6 +1070,11 @@ function parsePositiveInteger(input: string | undefined): number | undefined {
   if (!input) return undefined;
   const value = Number.parseInt(input, 10);
   return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function parseBoolean(input: string | undefined, fallback: boolean): boolean {
+  if (input === undefined || input.trim() === "") return fallback;
+  return !["false", "0", "no", "off"].includes(input.trim().toLowerCase());
 }
 
 function openRouterConfig(
@@ -1411,13 +1464,14 @@ function renderAppShell(): string {
     });
 
     async function poll(id) {
-      for (let i = 0; i < 60; i++) {
+      for (let i = 0; i < 900; i++) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         const response = await fetch("/api/ingestions/" + encodeURIComponent(id));
         if (handleUnauthorized(response)) return;
         const result = await response.json();
         renderResult(result);
         const loopStatus = await loopController.refresh();
+        if (loopStatus?.summary) statusEl.textContent = loopStatus.summary;
         if (result.status === "ready") {
           statusEl.textContent = loopStatus?.isTerminal ? "ready" : "Finalizing loop...";
           if (loopStatus?.isTerminal) return;
@@ -1437,6 +1491,19 @@ function renderAppShell(): string {
         resultEl.after(controls);
       }
       controls.innerHTML = "";
+      if (result.status === "failed") {
+        controls.append(actionButton("Retry unfinished work", async () => {
+          statusEl.textContent = "Resuming unfinished sections...";
+          const response = await fetch("/api/ingestions/" + encodeURIComponent(result.ingestionId) + "/retry", { method: "POST" });
+          if (handleUnauthorized(response)) return;
+          if (!response.ok) {
+            statusEl.textContent = "Retry failed";
+            return;
+          }
+          loopController.setActiveIngestion(result.ingestionId, true);
+          poll(result.ingestionId);
+        }));
+      }
       if (!result.memoryItems || result.memoryItems.length === 0) return;
       for (const item of result.memoryItems) {
         const card = document.createElement("div");
@@ -3352,7 +3419,7 @@ function loopDrawerScript(): string {
             content.innerHTML = '<div class="loop-empty">No active capture in this browser session yet. Submit a note, then open this drawer again.</div>' + renderTimeline(latestStatus.activity || []);
             return;
           }
-          content.innerHTML = renderStages(latestStatus.stages || []) + renderTimeline(latestStatus.timeline || []);
+          content.innerHTML = renderSectionProgress(latestStatus.sectionProgress) + renderStages(latestStatus.stages || []) + renderTimeline(latestStatus.timeline || []);
           return;
         }
 
@@ -3364,6 +3431,15 @@ function loopDrawerScript(): string {
         return '<section><h3>Stages</h3><div class="loop-stage-grid">' + stages.map((stage) =>
           '<div class="loop-stage ' + escapeHtml(stage.status) + '"><span class="loop-dot"></span><div><strong>' + escapeHtml(stage.label) + '</strong><small>' + escapeHtml(stage.status.replace("_", " ")) + (stage.occurredAt ? " · " + escapeHtml(formatLoopTime(stage.occurredAt)) : "") + '</small><p>' + escapeHtml(stage.description || "") + '</p>' + (stage.detail ? '<small>' + escapeHtml(stage.detail) + '</small>' : '') + '</div></div>'
         ).join("") + '</div></section>';
+      }
+
+      function renderSectionProgress(progress) {
+        if (!progress) return "";
+        const current = progress.currentSectionOrdinal
+          ? '<p>Current: section ' + escapeHtml(String(progress.currentSectionOrdinal)) + ' of ' + escapeHtml(String(progress.plannedSections)) + (progress.currentSectionTitle ? ': ' + escapeHtml(progress.currentSectionTitle) : '') + '</p>'
+          : '';
+        return '<section><h3>Document sections</h3><div class="loop-empty"><strong>' + (progress.usedSectioning ? 'Automatic sectioning used' : 'Single extraction used') + '</strong><p>' +
+          escapeHtml(String(progress.completedSections)) + ' completed · ' + escapeHtml(String(progress.processingSections)) + ' processing · ' + escapeHtml(String(progress.pendingSections)) + ' pending · ' + escapeHtml(String(progress.failedSections)) + ' failed</p>' + current + '<small>Phase: ' + escapeHtml(progress.phase) + '</small></div></section>';
       }
 
       function renderTimeline(items) {
