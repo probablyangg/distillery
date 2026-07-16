@@ -18,6 +18,12 @@ import {
   type PolicyRun,
   type ProposedEvent,
   type ProposedEventType,
+  type SynthesisCluster,
+  type SynthesisClusterDossier,
+  type SynthesisEnrichmentState,
+  type SynthesisReadinessEvaluation,
+  type SynthesisSimilaritySignal,
+  type SuggestedBrief,
   type ValidationGateResult,
   type WorkSubjectType,
 } from "@distillery/contracts";
@@ -47,8 +53,13 @@ import {
 import { renderSynthesisIntent } from "@distillery/prompts";
 import {
   MEMORY_SYNTHESIS_VERSION,
+  CORPUS_SYNTHESIS_VERSION,
+  buildClusterDossier,
   buildSynthesisBundle,
+  discoverCorpusSynthesisClusters,
+  evaluateClusterReadiness,
   validateInitiativeBriefDraftTraceability,
+  validateSuggestedBriefDraft,
   type SynthesisBundle,
 } from "@distillery/memory-synthesis";
 import {
@@ -125,7 +136,20 @@ export type SynthesizeBriefInput = PolicyInputEnvelope<{
   seedMemoryItemIds: string[];
   synthesisBundle: SynthesisBundle;
   selectedMemory: MemoryWithEvidence[];
+  cluster?: SynthesisCluster;
+  dossier?: SynthesisClusterDossier;
+  generationIntent?: string;
 }>;
+
+export type CorpusSynthesisState = {
+  memory: MemoryWithEvidence[];
+  connections: ClaimConnection[];
+  similarities: SynthesisSimilaritySignal[];
+  conflicts: ConflictGroup[];
+  clusters: SynthesisCluster[];
+  enrichment: SynthesisEnrichmentState[];
+  suggestedBriefs: SuggestedBrief[];
+};
 
 export type ConnectMemoryInput = PolicyInputEnvelope<{
   tenantId: string;
@@ -140,6 +164,11 @@ export type DetectContradictionInput = PolicyInputEnvelope<{
   seedMemoryItemIds: string[];
   memory: MemoryWithEvidence[];
 }>;
+
+type ProposedEventCreateInput = Omit<
+  ProposedEvent,
+  "createdAt" | "updatedAt" | "validationStatus" | "validationIssues" | "reviewStatus" | "committedLedgerEventId"
+>;
 
 export type LoopPersistence = MemoryRetrievalPersistence & {
   commitLedgerEventWithOutbox(input: Omit<LedgerEvent, "createdAt"> & { createdAt?: string }): Promise<LedgerEvent>;
@@ -193,7 +222,8 @@ export type LoopPersistence = MemoryRetrievalPersistence & {
     leaseToken?: string,
   ): Promise<void>;
   failPolicyRun(id: string, error: string, issues?: ValidationGateResult["issues"], leaseToken?: string): Promise<void>;
-  createProposedEvent(input: Omit<ProposedEvent, "createdAt" | "updatedAt" | "validationStatus" | "validationIssues" | "reviewStatus" | "committedLedgerEventId">): Promise<ProposedEvent>;
+  createProposedEvent(input: ProposedEventCreateInput): Promise<ProposedEvent>;
+  commitAutoApprovedProposedEvents(inputs: ProposedEventCreateInput[]): Promise<ProposedEvent[]>;
   markProposedEventValid(id: string): Promise<void>;
   markProposedEventInvalid(id: string, issues: ValidationGateResult["issues"]): Promise<void>;
   approveProposedEvent(id: string, decision: { reviewerLabel: string; rationale?: string }): Promise<ProposedEvent>;
@@ -235,6 +265,9 @@ export type LoopPersistence = MemoryRetrievalPersistence & {
     seedMemoryItemIds: string[];
     limit: number;
   }): Promise<MemoryWithEvidence[]>;
+  getCorpusSynthesisState(input: { tenantId: string; limit: number; seedMemoryItemIds?: string[] }): Promise<CorpusSynthesisState>;
+  rebuildGraphProjection(input: { tenantId: string }): Promise<unknown>;
+  scheduleSynthesisScanEvents(input: { tenantId: string; limit: number }): Promise<number>;
 };
 
 export type QueueLike = {
@@ -253,6 +286,7 @@ export type LoopRecoveryResult = {
 
 export type LoopMaintenanceResult = LoopRecoveryResult & {
   routedWorkItems: PendingWorkItem[];
+  scheduledScanCount: number;
 };
 
 export const DEFAULT_OUTBOX_LEASE_SECONDS = 120;
@@ -263,9 +297,38 @@ export const eventRoutes: EventRoute[] = [
   route("source_committed", "extract_memory", "source"),
   route("memory_committed", "connect_memory", "memory"),
   route("memory_committed", "detect_contradiction", "memory"),
+  route("memory_committed", "update_embeddings", "memory"),
+  route("memory_committed", "update_graph", "memory"),
   route("memory_committed", "discover_candidate", "memory"),
   route("memory_committed", "check_freshness", "memory"),
-  route("memory_committed", "synthesize_brief", "memory"),
+  route("memory_committed", "recompute_cluster", "memory"),
+  route("memory_connected", "recompute_cluster", "memory"),
+  route("connections_updated", "update_graph", "memory"),
+  route("connections_updated", "recompute_cluster", "memory"),
+  route("contradiction_recorded", "recompute_cluster", "memory"),
+  route("contradictions_updated", "update_graph", "memory"),
+  route("contradictions_updated", "recompute_cluster", "memory"),
+  route("embeddings_updated", "recompute_cluster", "memory"),
+  route("graph_updated", "recompute_cluster", "memory"),
+  route("memory_confirmed", "recompute_cluster", "memory"),
+  route("memory_confirmed", "update_graph", "memory"),
+  route("memory_edited", "connect_memory", "memory"),
+  route("memory_edited", "detect_contradiction", "memory"),
+  route("memory_edited", "update_embeddings", "memory"),
+  route("memory_edited", "update_graph", "memory"),
+  route("memory_edited", "discover_candidate", "memory"),
+  route("memory_edited", "check_freshness", "memory"),
+  route("memory_edited", "recompute_cluster", "memory"),
+  route("memory_removed", "update_graph", "memory"),
+  route("memory_removed", "recompute_cluster", "memory"),
+  route("memory_review_changed", "update_graph", "memory"),
+  route("memory_review_changed", "recompute_cluster", "memory"),
+  route("synthesis_neighborhood_dirty", "recompute_cluster", "memory"),
+  route("cluster_changed", "evaluate_synthesis_readiness", "cluster"),
+  {
+    ...route("synthesis_ready", "synthesize_brief", "cluster"),
+    getInputVersion: (event) => `${String(event.payload.clusterVersion ?? event.inputVersion ?? event.id)}:${String(event.payload.generationIntent ?? "initiative_brief")}`,
+  },
   route("candidate_created", "rank_candidate", "candidate"),
   route("candidate_approved", "draft_artifact", "candidate"),
   route("artifact_drafted", "gate_output", "artifact"),
@@ -327,6 +390,7 @@ export async function maintainLoop(args: {
   queue: QueueLike;
   tenantId: string;
   maxRows?: number;
+  recoveredWorkLimit?: number;
   now?: string;
   maxOutboxAttempts?: number;
   maxWorkAttempts?: number;
@@ -340,11 +404,16 @@ export async function maintainLoop(args: {
 
   const recoveredPendingWork = await args.persistence.listRecoveredPendingWork({
     tenantId: args.tenantId,
-    limit: args.maxRows ?? DEFAULT_ROUTER_BATCH_SIZE,
+    limit: args.recoveredWorkLimit ?? args.maxRows ?? DEFAULT_ROUTER_BATCH_SIZE,
   });
   for (const workItem of recoveredPendingWork) {
     await args.queue.send({ workItemId: workItem.id });
   }
+
+  const scheduledScanCount = await args.persistence.scheduleSynthesisScanEvents({
+    tenantId: args.tenantId,
+    limit: Math.max(1, Math.min(10, args.maxRows ?? DEFAULT_ROUTER_BATCH_SIZE)),
+  });
 
   const routedWorkItems = await routeCommittedEvents({
     persistence: args.persistence,
@@ -352,7 +421,7 @@ export async function maintainLoop(args: {
     maxRows: args.maxRows ?? DEFAULT_ROUTER_BATCH_SIZE,
   });
 
-  return { ...recovery, routedWorkItems };
+  return { ...recovery, routedWorkItems, scheduledScanCount };
 }
 
 export function createPolicies(args: {
@@ -365,9 +434,18 @@ export function createPolicies(args: {
   initiativeBriefDraftModel?: InitiativeBriefDraftModel;
   newId?: (prefix: string) => string;
 }): Record<PolicyName, Policy<unknown, PolicyOutput>> {
-  const extractMemory = createExtractMemoryPolicy(args);
+  const extractMemory = createExtractMemoryPolicy({
+    persistence: args.persistence,
+    memoryModel: args.memoryModel,
+    ...(args.memoryVerifierModel ? { memoryVerifierModel: args.memoryVerifierModel } : {}),
+    ...(args.newId ? { newId: args.newId } : {}),
+  });
   const connectMemory = createConnectMemoryPolicy(args);
   const detectContradiction = createDetectContradictionPolicy(args);
+  const updateEmbeddings = createUpdateEmbeddingsPolicy(args);
+  const updateGraph = createUpdateGraphPolicy(args);
+  const recomputeCluster = createRecomputeClusterPolicy(args);
+  const evaluateReadiness = createEvaluateSynthesisReadinessPolicy(args);
   const synthesizeBrief = createSynthesizeBriefPolicy(args);
   return {
     extract_memory: extractMemory as Policy<unknown, PolicyOutput>,
@@ -375,6 +453,10 @@ export function createPolicies(args: {
     discover_candidate: deterministicNoopPolicy("discover_candidate", "candidate_proposed", "candidate_created"),
     check_freshness: deterministicNoopPolicy("check_freshness", "freshness_warning_proposed", "freshness_warning_committed"),
     detect_contradiction: detectContradiction as Policy<unknown, PolicyOutput>,
+    update_embeddings: updateEmbeddings as Policy<unknown, PolicyOutput>,
+    update_graph: updateGraph as Policy<unknown, PolicyOutput>,
+    recompute_cluster: recomputeCluster as Policy<unknown, PolicyOutput>,
+    evaluate_synthesis_readiness: evaluateReadiness as Policy<unknown, PolicyOutput>,
     synthesize_brief: synthesizeBrief as Policy<unknown, PolicyOutput>,
     rank_candidate: deterministicNoopPolicy("rank_candidate", "candidate_proposed", "candidate_created"),
     draft_artifact: deterministicNoopPolicy("draft_artifact", "artifact_draft_proposed", "artifact_drafted"),
@@ -468,14 +550,11 @@ export async function executeWorkItem(args: {
         }))
       ),
     ]);
-    const proposedEvents: ProposedEvent[] = [];
-
-    for (const draft of output.proposedEvents) {
-      const proposedEvent = await args.persistence.createProposedEvent({
+    const proposedEventInputs = output.proposedEvents.map((draft) => ({
         id: newId("pevt"),
         tenantId: workItem.tenantId,
         workItemId: workItem.id,
-        policyRunId: policyRun.id,
+        policyRunId: policyRun!.id,
         proposedEventType: draft.proposedEventType,
         targetEventType: draft.targetEventType,
         subjectType: draft.subjectType,
@@ -487,16 +566,32 @@ export async function executeWorkItem(args: {
         requiresHumanApproval: draft.requiresHumanApproval,
         reviewerLabel: null,
         reviewRationale: null,
-      });
-      proposedEvents.push(proposedEvent);
+      } satisfies ProposedEventCreateInput));
+    const proposedEvents: ProposedEvent[] = [];
 
-      if (!validation.ok) {
+    if (!validation.ok) {
+      for (const input of proposedEventInputs) {
+        const proposedEvent = await args.persistence.createProposedEvent(input);
+        proposedEvents.push(proposedEvent);
         await args.persistence.markProposedEventInvalid(proposedEvent.id, validation.issues);
-      } else {
+      }
+    } else {
+      const byId = new Map<string, ProposedEvent>();
+      const autoApproved = await args.persistence.commitAutoApprovedProposedEvents(
+        proposedEventInputs.filter((input) => !input.requiresHumanApproval),
+      );
+      for (const proposedEvent of autoApproved) byId.set(proposedEvent.id, proposedEvent);
+
+      for (const input of proposedEventInputs.filter((candidate) => candidate.requiresHumanApproval)) {
+        const proposedEvent = await args.persistence.createProposedEvent(input);
         await args.persistence.markProposedEventValid(proposedEvent.id);
-        if (!proposedEvent.requiresHumanApproval) {
-          await args.persistence.commitValidatedProposedEvent(proposedEvent.id);
-        }
+        byId.set(proposedEvent.id, proposedEvent);
+      }
+
+      for (const input of proposedEventInputs) {
+        const proposedEvent = byId.get(input.id);
+        if (!proposedEvent) throw new Error(`persisted proposed event missing: ${input.id}`);
+        proposedEvents.push(proposedEvent);
       }
     }
 
@@ -543,6 +638,10 @@ export class InMemoryLoopPersistence implements LoopPersistence {
   readonly retrievalGraphNodes = new Map<string, GraphNode>();
   readonly retrievalGraphEdges = new Map<string, GraphEdge>();
   readonly initiativeBriefs = new Map<string, InitiativeBrief>();
+  readonly synthesisClusters = new Map<string, SynthesisCluster>();
+  readonly synthesisEnrichment = new Map<string, SynthesisEnrichmentState>();
+  readonly synthesisReadiness = new Map<string, SynthesisReadinessEvaluation>();
+  readonly suggestedBriefKeys = new Map<string, string>();
   readonly committedMemory: CommittableMemoryItem[] = [];
   readonly extractionRuns: unknown[] = [];
   readonly memoryEmbeddings: Array<{
@@ -554,6 +653,8 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     embedding: number[];
     contentHash: string;
   }> = [];
+  private synthesisSweepCursor: string | null = null;
+  private synthesisSweepCycle = 0;
   private id = 0;
 
   async commitLedgerEventWithOutbox(input: Omit<LedgerEvent, "createdAt"> & { createdAt?: string }): Promise<LedgerEvent> {
@@ -877,7 +978,7 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     run.latencyMs = Date.now() - Date.parse(run.startedAt);
   }
 
-  async createProposedEvent(input: Omit<ProposedEvent, "createdAt" | "updatedAt" | "validationStatus" | "validationIssues" | "reviewStatus" | "committedLedgerEventId">): Promise<ProposedEvent> {
+  async createProposedEvent(input: ProposedEventCreateInput): Promise<ProposedEvent> {
     const proposal: ProposedEvent = {
       ...input,
       workItemId: input.workItemId ?? null,
@@ -893,6 +994,18 @@ export class InMemoryLoopPersistence implements LoopPersistence {
     if (!shape.ok) throw new Error(renderIssues(shape.issues));
     this.proposedEvents.set(proposal.id, proposal);
     return proposal;
+  }
+
+  async commitAutoApprovedProposedEvents(inputs: ProposedEventCreateInput[]): Promise<ProposedEvent[]> {
+    const proposals: ProposedEvent[] = [];
+    for (const input of inputs) {
+      if (input.requiresHumanApproval) throw new Error(`auto-commit batch cannot include approval-required event: ${input.id}`);
+      const proposal = await this.createProposedEvent(input);
+      await this.markProposedEventValid(proposal.id);
+      await this.commitValidatedProposedEvent(proposal.id);
+      proposals.push(proposal);
+    }
+    return proposals;
   }
 
   async markProposedEventValid(id: string): Promise<void> {
@@ -951,29 +1064,52 @@ export class InMemoryLoopPersistence implements LoopPersistence {
       });
     }
 
+    const suggestedDraftKey = proposal.targetEventType === "artifact_drafted" &&
+      typeof proposal.payload.clusterId === "string" &&
+      typeof proposal.payload.clusterVersion === "string"
+      ? `${proposal.tenantId}|${proposal.payload.clusterId}|${proposal.payload.clusterVersion}|${String(proposal.payload.generationIntent ?? "initiative_brief")}`
+      : null;
+
     if (proposal.targetEventType === "artifact_drafted") {
       this.createInitiativeBriefDraftFromProposal(proposal);
     }
 
-    if (proposal.targetEventType === "memory_connected") {
+    if (proposal.targetEventType === "memory_connected" || proposal.targetEventType === "connections_updated") {
       this.createMemoryConnectionsFromProposal(proposal);
     }
 
-    if (proposal.targetEventType === "contradiction_recorded") {
+    if (proposal.targetEventType === "contradiction_recorded" || proposal.targetEventType === "contradictions_updated") {
       this.createConflictGroupsFromProposal(proposal);
     }
 
+    if (["connections_updated", "contradictions_updated", "embeddings_updated", "graph_updated"].includes(proposal.targetEventType)) {
+      this.recordEnrichmentCompletion(proposal);
+    }
+
+    if (proposal.targetEventType === "cluster_changed") {
+      this.upsertSynthesisClusterFromProposal(proposal);
+    }
+
+    if (proposal.targetEventType === "cluster_readiness_changed" || proposal.targetEventType === "synthesis_ready") {
+      this.upsertSynthesisReadinessFromProposal(proposal);
+    }
+
+    const canonicalBriefId = suggestedDraftKey
+      ? this.suggestedBriefKeys.get(suggestedDraftKey) ?? proposal.subjectId
+      : proposal.subjectId;
     const event = await this.commitLedgerEventWithOutbox({
       id: this.nextId("levt"),
       tenantId: proposal.tenantId,
       eventType: proposal.targetEventType,
       subjectType: proposal.subjectType,
-      subjectId: proposal.subjectId,
+      subjectId: canonicalBriefId,
       actorType: "policy",
       actorLabel: proposal.policyRunId ?? proposal.workItemId ?? null,
       causedByWorkItemId: proposal.workItemId ?? null,
       inputVersion: proposal.policyRunId ?? proposal.id,
-      idempotencyKey: `proposal:${proposal.id}`,
+      idempotencyKey: suggestedDraftKey
+        ? `suggested-brief:${String(proposal.payload.clusterId)}:${String(proposal.payload.clusterVersion)}:${String(proposal.payload.generationIntent ?? "initiative_brief")}`
+        : `proposal:${proposal.id}`,
       payload: proposal.payload,
     });
     proposal.committedLedgerEventId = event.id;
@@ -1054,6 +1190,62 @@ export class InMemoryLoopPersistence implements LoopPersistence {
         return leftSeed - rightSeed || left.memoryItem.id.localeCompare(right.memoryItem.id);
       })
       .slice(0, input.limit);
+  }
+
+  async getCorpusSynthesisState(input: { tenantId: string; limit: number; seedMemoryItemIds?: string[] }): Promise<CorpusSynthesisState> {
+    const seeds = new Set(input.seedMemoryItemIds ?? []);
+    return {
+      memory: [...this.memorySynthesisContext.values()]
+        .filter((record) => record.memoryItem.reviewState !== "removed" && record.memoryItem.reviewState !== "superseded")
+        .sort((left, right) => Number(seeds.has(right.memoryItem.id)) - Number(seeds.has(left.memoryItem.id)) || left.memoryItem.id.localeCompare(right.memoryItem.id))
+        .slice(0, input.limit),
+      connections: [...this.claimConnections.values()].filter((connection) => connection.tenantId === input.tenantId),
+      similarities: [],
+      conflicts: [...this.conflictGroups.values()].filter((conflict) => conflict.tenantId === input.tenantId),
+      clusters: [...this.synthesisClusters.values()].filter((cluster) => cluster.tenantId === input.tenantId),
+      enrichment: [...this.synthesisEnrichment.values()],
+      suggestedBriefs: [],
+    };
+  }
+
+  async rebuildGraphProjection(input: { tenantId: string }): Promise<unknown> {
+    this.ensureDefaultRetrievalGraph(input.tenantId);
+    return {
+      nodeCount: this.retrievalGraphNodes.size,
+      edgeCount: this.retrievalGraphEdges.size,
+    };
+  }
+
+  async scheduleSynthesisScanEvents(input: { tenantId: string; limit: number }): Promise<number> {
+    const activeIds = [...this.memorySynthesisContext.values()]
+      .filter((record) => record.memoryItem.reviewState !== "removed" && record.memoryItem.reviewState !== "superseded")
+      .map((record) => record.memoryItem.id)
+      .sort();
+    if (activeIds.length === 0) return 0;
+    let start = this.synthesisSweepCursor
+      ? activeIds.findIndex((id) => id > this.synthesisSweepCursor!)
+      : 0;
+    if (start < 0) {
+      start = 0;
+      this.synthesisSweepCycle += 1;
+    }
+    const selected = activeIds.slice(start, start + Math.max(1, input.limit));
+    for (const memoryItemId of selected) {
+      await this.commitLedgerEventWithOutbox({
+        id: this.nextId("levt"),
+        tenantId: input.tenantId,
+        eventType: "synthesis_neighborhood_dirty",
+        subjectType: "memory",
+        subjectId: memoryItemId,
+        actorType: "system",
+        actorLabel: "global_synthesis_sweep",
+        inputVersion: `sweep:${this.synthesisSweepCycle}:${memoryItemId}`,
+        idempotencyKey: `synthesis-sweep:${this.synthesisSweepCycle}:${memoryItemId}`,
+        payload: { memoryItemIds: [memoryItemId], sweepCycle: this.synthesisSweepCycle },
+      });
+    }
+    if (selected.length > 0) this.synthesisSweepCursor = selected[selected.length - 1]!;
+    return selected.length;
   }
 
   async getRetrievalVectorCandidates(input: {
@@ -1303,6 +1495,15 @@ export class InMemoryLoopPersistence implements LoopPersistence {
 
   private createInitiativeBriefDraftFromProposal(proposal: ProposedEvent): void {
     const briefId = String(proposal.payload.briefId ?? proposal.subjectId);
+    const clusterId = typeof proposal.payload.clusterId === "string" ? proposal.payload.clusterId : null;
+    const clusterVersion = typeof proposal.payload.clusterVersion === "string" ? proposal.payload.clusterVersion : null;
+    const generationIntent = typeof proposal.payload.generationIntent === "string"
+      ? proposal.payload.generationIntent
+      : "initiative_brief";
+    const suggestedKey = clusterId && clusterVersion
+      ? `${proposal.tenantId}|${clusterId}|${clusterVersion}|${generationIntent}`
+      : null;
+    if (suggestedKey && this.suggestedBriefKeys.has(suggestedKey)) return;
     if (this.initiativeBriefs.has(briefId)) return;
 
     const memoryItemIds = stringArray(proposal.payload.memoryItemIds ?? proposal.payload.selectedMemoryItemIds);
@@ -1335,6 +1536,15 @@ export class InMemoryLoopPersistence implements LoopPersistence {
       updatedAt: now(),
       decisions: [],
     });
+    if (suggestedKey) {
+      this.suggestedBriefKeys.set(suggestedKey, briefId);
+      const readiness = this.synthesisReadiness.get(`${clusterId}|${clusterVersion}|${generationIntent}`);
+      if (readiness) readiness.state = "draft_generated";
+      const cluster = clusterId ? this.synthesisClusters.get(clusterId) : undefined;
+      if (cluster?.readiness && cluster.readiness.clusterVersion === clusterVersion) {
+        cluster.readiness.state = "draft_generated";
+      }
+    }
   }
 
   private createMemoryConnectionsFromProposal(proposal: ProposedEvent): void {
@@ -1389,13 +1599,54 @@ export class InMemoryLoopPersistence implements LoopPersistence {
       });
     }
   }
+
+  private recordEnrichmentCompletion(proposal: ProposedEvent): void {
+    const facetByEvent = {
+      connections_updated: "connections",
+      contradictions_updated: "contradictions",
+      embeddings_updated: "embeddings",
+      graph_updated: "graph",
+    } as const;
+    const facet = facetByEvent[proposal.targetEventType as keyof typeof facetByEvent];
+    if (!facet) return;
+    const ids = stringArray(proposal.payload.memoryItemIds ?? proposal.payload.seedMemoryItemIds);
+    for (const memoryItemId of ids) {
+      const existing = this.synthesisEnrichment.get(memoryItemId);
+      const priorCompletedFacets = (existing?.completedFacets ?? []).filter((candidate) =>
+        !(facet === "connections" || facet === "contradictions") || candidate !== "graph"
+      );
+      this.synthesisEnrichment.set(memoryItemId, {
+        memoryItemId,
+        inputVersion: String(proposal.payload.inputVersion ?? proposal.policyRunId ?? proposal.id),
+        completedFacets: [...new Set([...priorCompletedFacets, facet])],
+        failedFacets: (existing?.failedFacets ?? []).filter((candidate) => candidate !== facet),
+        updatedAt: now(),
+      });
+    }
+  }
+
+  private upsertSynthesisClusterFromProposal(proposal: ProposedEvent): void {
+    if (!isRecord(proposal.payload.cluster)) return;
+    const cluster = proposal.payload.cluster as SynthesisCluster;
+    const existing = this.synthesisClusters.get(cluster.id);
+    if (existing?.version === cluster.version) return;
+    this.synthesisClusters.set(cluster.id, cluster);
+  }
+
+  private upsertSynthesisReadinessFromProposal(proposal: ProposedEvent): void {
+    if (!isRecord(proposal.payload.evaluation)) return;
+    const evaluation = proposal.payload.evaluation as SynthesisReadinessEvaluation;
+    const key = `${evaluation.clusterId}|${evaluation.clusterVersion}|${evaluation.generationIntent}`;
+    this.synthesisReadiness.set(key, evaluation);
+    const cluster = this.synthesisClusters.get(evaluation.clusterId);
+    if (cluster?.version === evaluation.clusterVersion) cluster.readiness = evaluation;
+  }
 }
 
 function createExtractMemoryPolicy(args: {
   persistence: LoopPersistence;
   memoryModel: MemoryGenerationModel;
   memoryVerifierModel?: MemoryCandidateVerifierModel;
-  embeddingModel?: EmbeddingModel;
   newId?: (prefix: string) => string;
 }): Policy<ExtractMemoryInput, PolicyOutput> {
   const newId = args.newId ?? defaultNewId;
@@ -1449,27 +1700,6 @@ function createExtractMemoryPolicy(args: {
       });
       const autoItems = candidateRouting.autoItems.map((item) => toCommittableMemoryItem(item, newId));
       const reviewItems = candidateRouting.reviewItems.map((item) => toCommittableMemoryItem(item, newId));
-      const allProposedItems = [...autoItems, ...reviewItems];
-
-      let embeddingMetadata: Record<string, unknown> | undefined;
-      if (args.embeddingModel && allProposedItems.length > 0) {
-        try {
-          embeddingMetadata = await generateAndStoreEmbeddings({
-            persistence: args.persistence,
-            embeddingModel: args.embeddingModel,
-            tenantId: envelope.input.tenantId,
-            items: allProposedItems,
-            evidenceSpans: envelope.input.evidenceSpans,
-            newId,
-          });
-        } catch (error) {
-          embeddingMetadata = {
-            embeddingStatus: "failed",
-            embeddingError: error instanceof Error ? error.message : String(error),
-          };
-        }
-      }
-
       const rawResponse = {
         extractor: generated.raw,
         verifier: candidateRouting.rawVerifierResponse ?? null,
@@ -1502,7 +1732,6 @@ function createExtractMemoryPolicy(args: {
           ingestionId: envelope.input.ingestionId,
           extractionRunId,
           items: autoItems,
-          embeddingMetadata,
           requiresHumanApproval: false,
         }));
       }
@@ -1512,7 +1741,6 @@ function createExtractMemoryPolicy(args: {
           ingestionId: envelope.input.ingestionId,
           extractionRunId,
           items: reviewItems,
-          embeddingMetadata,
           requiresHumanApproval: true,
         }));
       }
@@ -1738,7 +1966,6 @@ function memoryProposedDraft(args: {
   ingestionId: string;
   extractionRunId: string;
   items: CommittableMemoryItem[];
-  embeddingMetadata?: Record<string, unknown> | undefined;
   requiresHumanApproval: boolean;
 }): ProposedEventDraft {
   return {
@@ -1752,7 +1979,6 @@ function memoryProposedDraft(args: {
       extractionRunId: args.extractionRunId,
       memoryGenerationVersion: MEMORY_GENERATION_VERSION,
       items: args.items,
-      ...(args.embeddingMetadata ? { embeddingMetadata: args.embeddingMetadata } : {}),
     },
     evidenceSpanIds: [...new Set(args.items.flatMap((item) => item.evidenceSpanIds))],
     memoryItemIds: args.items.map((item) => item.id),
@@ -1807,24 +2033,16 @@ function createConnectMemoryPolicy(args: {
           fallbackReason: undefined,
         };
       const connections = scoringResult.connections;
-      if (connections.length === 0) {
-        return {
-          proposedEvents: [],
-          provider: "deterministic",
-          model: scoringResult.model,
-          rawResponse: scoringResult.rawResponse,
-          fallbackReason: scoringResult.fallbackReason ?? "No graph-grounded connection candidates crossed the pilot threshold.",
-        };
-      }
       return {
         proposedEvents: [{
-          proposedEventType: "memory_connection_proposed",
-          targetEventType: "memory_connected",
+          proposedEventType: "enrichment_update_proposed",
+          targetEventType: "connections_updated",
           subjectType: "memory",
           subjectId: envelope.input.seedMemoryItemIds[0] ?? envelope.input.causedByEventId,
           payload: {
             causedByEventId: envelope.input.causedByEventId,
             seedMemoryItemIds: envelope.input.seedMemoryItemIds,
+            memoryItemIds: envelope.input.seedMemoryItemIds,
             connections,
           },
           evidenceSpanIds: uniqueStrings(connections.flatMap((connection) => connection.evidenceSpanIds)),
@@ -1836,6 +2054,9 @@ function createConnectMemoryPolicy(args: {
         fallbackUsed: Boolean(scoringResult.fallbackReason),
         fallbackReason: scoringResult.fallbackReason,
         rawResponse: scoringResult.rawResponse,
+        ...(connections.length === 0
+          ? { fallbackReason: scoringResult.fallbackReason ?? "No graph-grounded connection candidates crossed the threshold; completion was still recorded." }
+          : {}),
       };
     },
     async validate(output) {
@@ -1883,23 +2104,16 @@ function createDetectContradictionPolicy(args: {
     },
     async run(envelope) {
       const conflicts = buildDeterministicConflicts(envelope.input.memory, newId);
-      if (conflicts.length === 0) {
-        return {
-          proposedEvents: [],
-          provider: "deterministic",
-          model: "detect-contradiction-v0.1",
-          fallbackReason: "No deterministic conflict candidates found.",
-        };
-      }
       return {
         proposedEvents: [{
-          proposedEventType: "contradiction_proposed",
-          targetEventType: "contradiction_recorded",
+          proposedEventType: "enrichment_update_proposed",
+          targetEventType: "contradictions_updated",
           subjectType: "memory",
           subjectId: envelope.input.seedMemoryItemIds[0] ?? envelope.input.causedByEventId,
           payload: {
             causedByEventId: envelope.input.causedByEventId,
             seedMemoryItemIds: envelope.input.seedMemoryItemIds,
+            memoryItemIds: envelope.input.seedMemoryItemIds,
             conflicts,
           },
           evidenceSpanIds: uniqueStrings(conflicts.flatMap((conflict) =>
@@ -1912,6 +2126,7 @@ function createDetectContradictionPolicy(args: {
         }],
         provider: "deterministic",
         model: "detect-contradiction-v0.1",
+        ...(conflicts.length === 0 ? { fallbackReason: "No deterministic conflict candidates found; completion was still recorded." } : {}),
       };
     },
     async validate(output) {
@@ -1920,6 +2135,292 @@ function createDetectContradictionPolicy(args: {
         return conflicts.flatMap((conflict, index) => validateConflictPayload(conflict, index));
       });
       return { ok: issues.length === 0, issues };
+    },
+  };
+}
+
+function createUpdateEmbeddingsPolicy(args: {
+  persistence: LoopPersistence;
+  embeddingModel?: EmbeddingModel;
+  newId?: (prefix: string) => string;
+}): Policy<PolicyInputEnvelope<{
+  tenantId: string;
+  causedByEventId: string;
+  seedMemoryItemIds: string[];
+  memory: MemoryWithEvidence[];
+}>, PolicyOutput> {
+  const newId = args.newId ?? defaultNewId;
+  return {
+    name: "update_embeddings",
+    version: "update-embeddings-v1",
+    async buildInput(workItem) {
+      const event = await requiredLedgerEvent(args.persistence, workItem.causedByEventId);
+      const seedMemoryItemIds = extractSeedMemoryItemIds(event.payload);
+      const memory = await args.persistence.getMemorySynthesisContext({
+        tenantId: workItem.tenantId,
+        seedMemoryItemIds,
+        limit: Math.max(32, seedMemoryItemIds.length),
+      });
+      const selected = memory.filter((record) => seedMemoryItemIds.includes(record.memoryItem.id));
+      const input = { tenantId: workItem.tenantId, causedByEventId: event.id, seedMemoryItemIds, memory: selected };
+      return { input, inputHash: await sha256Hex(JSON.stringify(input)), inputSummary: { seedMemoryItemIds, memoryCount: selected.length } };
+    },
+    async run(envelope) {
+      if (!args.embeddingModel) throw new Error("update_embeddings requires the configured embedding model.");
+      const targets = [
+        {
+          targetType: "claim" as const,
+          values: envelope.input.memory.map((record) => ({ id: record.memoryItem.id, text: record.memoryItem.statement })),
+        },
+        {
+          targetType: "evidence_span" as const,
+          values: uniqueEvidenceSpans(envelope.input.memory.flatMap((record) => record.evidenceSpans)).map((span) => ({ id: span.id, text: span.text })),
+        },
+        {
+          targetType: "entity" as const,
+          values: dedupeTextTargets(envelope.input.memory.flatMap((record) => record.memoryItem.entities.map((entity) => ({ id: `${entity.entityType}:${entity.canonicalName ?? entity.name}`, text: `${entity.entityType}: ${entity.canonicalName ?? entity.name}` })))),
+        },
+        {
+          targetType: "schema_pattern" as const,
+          values: dedupeTextTargets(envelope.input.memory.flatMap((record) => record.memoryItem.schemas.map((schema) => ({ id: `${schema.subjectType}:${schema.predicate}:${schema.objectType}`, text: `${schema.subjectType} ${schema.predicate} ${schema.objectType}` })))),
+        },
+      ];
+      let model = "";
+      for (const target of targets) {
+        if (target.values.length === 0) continue;
+        const response = await args.embeddingModel.embed({ targetType: target.targetType, input: target.values.map((value) => value.text) });
+        model = response.model;
+        if (response.vectors.length !== target.values.length) throw new Error(`embedding count mismatch for ${target.targetType}`);
+        await args.persistence.upsertMemoryEmbeddings({
+          tenantId: envelope.input.tenantId,
+          embeddings: await Promise.all(target.values.map(async (value, index) => ({
+            id: newId("emb"),
+            targetType: target.targetType,
+            targetId: value.id,
+            embeddingModel: response.model,
+            embedding: response.vectors[index]!,
+            contentHash: await sha256Hex(value.text),
+          }))),
+        });
+      }
+      return enrichmentCompletionOutput({
+        targetEventType: "embeddings_updated",
+        tenantId: envelope.input.tenantId,
+        causedByEventId: envelope.input.causedByEventId,
+        memoryItemIds: envelope.input.seedMemoryItemIds,
+        provider: "openrouter",
+        model,
+      });
+    },
+    async validate(output) {
+      return validateSingleEnrichmentCompletion(output, "embeddings_updated");
+    },
+  };
+}
+
+function createUpdateGraphPolicy(args: {
+  persistence: LoopPersistence;
+}): Policy<PolicyInputEnvelope<{
+  tenantId: string;
+  causedByEventId: string;
+  seedMemoryItemIds: string[];
+}>, PolicyOutput> {
+  return {
+    name: "update_graph",
+    version: "update-graph-v1",
+    async buildInput(workItem) {
+      const event = await requiredLedgerEvent(args.persistence, workItem.causedByEventId);
+      const input = { tenantId: workItem.tenantId, causedByEventId: event.id, seedMemoryItemIds: extractSeedMemoryItemIds(event.payload) };
+      return { input, inputHash: await sha256Hex(JSON.stringify(input)), inputSummary: input };
+    },
+    async run(envelope) {
+      const projection = await args.persistence.rebuildGraphProjection({ tenantId: envelope.input.tenantId });
+      const output = enrichmentCompletionOutput({
+        targetEventType: "graph_updated",
+        tenantId: envelope.input.tenantId,
+        causedByEventId: envelope.input.causedByEventId,
+        memoryItemIds: envelope.input.seedMemoryItemIds,
+        provider: "deterministic",
+        model: "graph-projection-v1",
+      });
+      output.rawResponse = projection;
+      return output;
+    },
+    async validate(output) {
+      return validateSingleEnrichmentCompletion(output, "graph_updated");
+    },
+  };
+}
+
+function createRecomputeClusterPolicy(args: {
+  persistence: LoopPersistence;
+}): Policy<PolicyInputEnvelope<{
+  tenantId: string;
+  causedByEventId: string;
+  causedByEventType: EventType;
+  seedMemoryItemIds: string[];
+  corpus: CorpusSynthesisState;
+}>, PolicyOutput> {
+  return {
+    name: "recompute_cluster",
+    version: CORPUS_SYNTHESIS_VERSION,
+    async buildInput(workItem) {
+      const event = await requiredLedgerEvent(args.persistence, workItem.causedByEventId);
+      const seedMemoryItemIds = extractSeedMemoryItemIds(event.payload).length > 0
+        ? extractSeedMemoryItemIds(event.payload)
+        : [event.subjectId];
+      const corpus = await args.persistence.getCorpusSynthesisState({ tenantId: workItem.tenantId, limit: 500, seedMemoryItemIds });
+      const input = { tenantId: workItem.tenantId, causedByEventId: event.id, causedByEventType: event.eventType, seedMemoryItemIds, corpus };
+      return {
+        input,
+        inputHash: await sha256Hex(JSON.stringify({ seedMemoryItemIds, memory: corpus.memory.map((record) => record.memoryItem.id), connections: corpus.connections.map((connection) => connection.id), similarities: corpus.similarities.map((signal) => `${signal.fromMemoryItemId}:${signal.toMemoryItemId}:${signal.vectorScore}:${signal.sparseScore}`), conflicts: corpus.conflicts.map((conflict) => `${conflict.id}:${conflict.status}`) })),
+        inputSummary: { seedMemoryItemIds, corpusMemoryCount: corpus.memory.length, existingClusterCount: corpus.clusters.length },
+      };
+    },
+    async run(envelope) {
+      const discovered = discoverCorpusSynthesisClusters({
+        tenantId: envelope.input.tenantId,
+        memory: envelope.input.corpus.memory,
+        connections: envelope.input.corpus.connections,
+        similarities: envelope.input.corpus.similarities,
+        conflicts: envelope.input.corpus.conflicts,
+        existingClusters: envelope.input.corpus.clusters,
+      });
+      const seeds = new Set(envelope.input.seedMemoryItemIds);
+      const affected = discovered.filter((cluster) => cluster.memberships.some((membership) => seeds.has(membership.memoryItemId)));
+      const existingAffected = envelope.input.corpus.clusters.filter((cluster) => cluster.memberships.some((membership) => seeds.has(membership.memoryItemId)));
+      const currentIds = new Set(affected.map((cluster) => cluster.id));
+      const reevaluateWithoutMaterialChange = [
+        "connections_updated", "contradictions_updated", "embeddings_updated", "graph_updated",
+        "memory_confirmed", "memory_edited", "memory_removed", "memory_review_changed",
+      ].includes(envelope.input.causedByEventType);
+      const proposedEvents: ProposedEventDraft[] = affected
+        .filter((cluster) => reevaluateWithoutMaterialChange || envelope.input.corpus.clusters.find((existing) => existing.id === cluster.id)?.version !== cluster.version)
+        .map((cluster) => ({
+          proposedEventType: "cluster_projection_proposed",
+          targetEventType: "cluster_changed",
+          subjectType: "cluster",
+          subjectId: cluster.id,
+          payload: { cluster, clusterId: cluster.id, clusterVersion: cluster.version, seedMemoryItemIds: envelope.input.seedMemoryItemIds },
+          evidenceSpanIds: cluster.evidenceSpanIds,
+          memoryItemIds: cluster.memberships.map((membership) => membership.memoryItemId),
+          requiresHumanApproval: false,
+        }));
+      for (const cluster of existingAffected.filter((existing) => !currentIds.has(existing.id))) {
+        proposedEvents.push({
+          proposedEventType: "cluster_projection_proposed",
+          targetEventType: "cluster_changed",
+          subjectType: "cluster",
+          subjectId: cluster.id,
+          payload: { supersededClusterId: cluster.id, priorClusterVersion: cluster.version, seedMemoryItemIds: envelope.input.seedMemoryItemIds },
+          memoryItemIds: cluster.memberships.map((membership) => membership.memoryItemId),
+          requiresHumanApproval: false,
+        });
+      }
+      return { proposedEvents, provider: "deterministic", model: CORPUS_SYNTHESIS_VERSION };
+    },
+    async validate(output) {
+      const issues = output.proposedEvents.flatMap((event) =>
+        event.targetEventType === "cluster_changed" && (isRecord(event.payload.cluster) || typeof event.payload.supersededClusterId === "string")
+          ? []
+          : [{ code: "invalid_cluster_projection", message: "Cluster projection must include a cluster or superseded cluster ID.", path: ["payload"] }]
+      );
+      return { ok: issues.length === 0, issues };
+    },
+  };
+}
+
+function createEvaluateSynthesisReadinessPolicy(args: {
+  persistence: LoopPersistence;
+}): Policy<PolicyInputEnvelope<{
+  tenantId: string;
+  causedByEventId: string;
+  cluster: SynthesisCluster;
+  corpus: CorpusSynthesisState;
+}>, PolicyOutput> {
+  return {
+    name: "evaluate_synthesis_readiness",
+    version: CORPUS_SYNTHESIS_VERSION,
+    async buildInput(workItem) {
+      const event = await requiredLedgerEvent(args.persistence, workItem.causedByEventId);
+      const clusterId = typeof event.payload.clusterId === "string" ? event.payload.clusterId : event.subjectId;
+      let corpus = await args.persistence.getCorpusSynthesisState({ tenantId: workItem.tenantId, limit: 500 });
+      let cluster = corpus.clusters.find((candidate) => candidate.id === clusterId);
+      if (!cluster) throw new Error(`synthesis cluster not found: ${clusterId}`);
+      const loadedIds = new Set(corpus.memory.map((record) => record.memoryItem.id));
+      if (cluster.memberships.some((membership) => !loadedIds.has(membership.memoryItemId))) {
+        corpus = await args.persistence.getCorpusSynthesisState({
+          tenantId: workItem.tenantId,
+          limit: 500,
+          seedMemoryItemIds: cluster.memberships.map((membership) => membership.memoryItemId),
+        });
+        cluster = corpus.clusters.find((candidate) => candidate.id === clusterId) ?? cluster;
+      }
+      const input = { tenantId: workItem.tenantId, causedByEventId: event.id, cluster, corpus };
+      return { input, inputHash: await sha256Hex(JSON.stringify({ clusterId, clusterVersion: cluster.version, enrichment: corpus.enrichment })), inputSummary: { clusterId, clusterVersion: cluster.version, memberCount: cluster.memberships.length } };
+    },
+    async run(envelope) {
+      const evaluation = evaluateClusterReadiness({
+        cluster: envelope.input.cluster,
+        memory: envelope.input.corpus.memory,
+        enrichment: envelope.input.corpus.enrichment,
+        connections: envelope.input.corpus.connections,
+        conflicts: envelope.input.corpus.conflicts,
+        equivalentBriefExists: envelope.input.corpus.suggestedBriefs.some((suggestion) =>
+          suggestion.clusterId === envelope.input.cluster.id && suggestion.status !== "rejected"
+        ),
+      });
+      const previous = envelope.input.cluster.readiness;
+      if (
+        previous?.clusterVersion === evaluation.clusterVersion &&
+        (previous.state === "draft_generated" || previous.state === "failed")
+      ) {
+        return {
+          proposedEvents: [],
+          provider: "deterministic",
+          model: CORPUS_SYNTHESIS_VERSION,
+          fallbackReason: previous.state === "draft_generated"
+            ? "This cluster version already has a suggested draft."
+            : "Generation failed for this cluster version; use a new intent or wait for a material cluster version change.",
+        };
+      }
+      if (
+        previous?.clusterVersion === evaluation.clusterVersion &&
+        previous.state === evaluation.state &&
+        Math.abs(previous.score - evaluation.score) < 0.001 &&
+        JSON.stringify(previous.reasons) === JSON.stringify(evaluation.reasons) &&
+        JSON.stringify(previous.warnings) === JSON.stringify(evaluation.warnings)
+      ) {
+        return {
+          proposedEvents: [],
+          provider: "deterministic",
+          model: CORPUS_SYNTHESIS_VERSION,
+          fallbackReason: "Readiness state is unchanged for this cluster version.",
+        };
+      }
+      return {
+        proposedEvents: [{
+          proposedEventType: "readiness_evaluation_proposed",
+          targetEventType: evaluation.state === "ready" ? "synthesis_ready" : "cluster_readiness_changed",
+          subjectType: "cluster",
+          subjectId: envelope.input.cluster.id,
+          payload: { evaluation, clusterId: envelope.input.cluster.id, clusterVersion: envelope.input.cluster.version, generationIntent: evaluation.generationIntent },
+          evidenceSpanIds: envelope.input.cluster.evidenceSpanIds,
+          memoryItemIds: envelope.input.cluster.memberships.map((membership) => membership.memoryItemId),
+          requiresHumanApproval: false,
+        }],
+        provider: "deterministic",
+        model: CORPUS_SYNTHESIS_VERSION,
+      };
+    },
+    async validate(output) {
+      if (output.proposedEvents.length === 0) {
+        return { ok: true, issues: [] };
+      }
+      const evaluation = output.proposedEvents[0]?.payload.evaluation;
+      return isRecord(evaluation) && typeof evaluation.state === "string"
+        ? { ok: true, issues: [] }
+        : { ok: false, issues: [{ code: "invalid_readiness_evaluation", message: "Readiness output is missing its explicit state.", path: ["payload", "evaluation"] }] };
     },
   };
 }
@@ -1934,10 +2435,66 @@ function createSynthesizeBriefPolicy(args: {
   const newId = args.newId ?? defaultNewId;
   return {
     name: "synthesize_brief",
-    version: "synthesize-brief-v0.1",
+    version: "synthesize-brief-v1",
     async buildInput(workItem) {
       const ledgerEvent = await args.persistence.loadLedgerEvent(workItem.causedByEventId);
       if (!ledgerEvent) throw new Error(`causing ledger event not found: ${workItem.causedByEventId}`);
+
+      const clusterId = typeof ledgerEvent.payload.clusterId === "string" ? ledgerEvent.payload.clusterId : null;
+      if (clusterId) {
+        let corpus = await args.persistence.getCorpusSynthesisState({ tenantId: ledgerEvent.tenantId, limit: 500 });
+        let cluster = corpus.clusters.find((candidate) => candidate.id === clusterId);
+        if (!cluster) throw new Error(`synthesis cluster not found: ${clusterId}`);
+        const loadedIds = new Set(corpus.memory.map((record) => record.memoryItem.id));
+        if (cluster.memberships.some((membership) => !loadedIds.has(membership.memoryItemId))) {
+          corpus = await args.persistence.getCorpusSynthesisState({
+            tenantId: ledgerEvent.tenantId,
+            limit: 500,
+            seedMemoryItemIds: cluster.memberships.map((membership) => membership.memoryItemId),
+          });
+          cluster = corpus.clusters.find((candidate) => candidate.id === clusterId) ?? cluster;
+        }
+        const requestedVersion = typeof ledgerEvent.payload.clusterVersion === "string"
+          ? ledgerEvent.payload.clusterVersion
+          : cluster.version;
+        if (cluster.version !== requestedVersion) throw new Error(`synthesis cluster version changed: expected ${requestedVersion}, found ${cluster.version}`);
+        const dossier = buildClusterDossier({
+          cluster,
+          memory: corpus.memory,
+          connections: corpus.connections,
+          conflicts: corpus.conflicts,
+          retrievalMetadata: { causedByEventId: ledgerEvent.id, trigger: "synthesis_ready" },
+        });
+        const { bundle, selectedMemory } = buildSynthesisBundle({
+          seedMemoryItemIds: cluster.memberships.map((membership) => membership.memoryItemId),
+          memory: dossier.selectedMemory,
+          maxMemoryItems: dossier.selectedMemory.length,
+        });
+        const input = {
+          tenantId: ledgerEvent.tenantId,
+          causedByEventId: ledgerEvent.id,
+          seedMemoryItemIds: cluster.memberships.map((membership) => membership.memoryItemId),
+          synthesisBundle: bundle,
+          selectedMemory,
+          cluster,
+          dossier,
+          generationIntent: typeof ledgerEvent.payload.generationIntent === "string"
+            ? ledgerEvent.payload.generationIntent
+            : "initiative_brief",
+        };
+        return {
+          input,
+          inputHash: await sha256Hex(JSON.stringify({ clusterId, clusterVersion: cluster.version, memoryItemIds: dossier.selectedMemory.map((record) => record.memoryItem.id), evidenceSpanIds: dossier.selectedEvidenceSpans.map((span) => span.id) })),
+          inputSummary: {
+            clusterId,
+            clusterVersion: cluster.version,
+            selectedMemoryItemIds: dossier.selectedMemory.map((record) => record.memoryItem.id),
+            selectedEvidenceSpanIds: dossier.selectedEvidenceSpans.map((span) => span.id),
+            contradictions: dossier.contradictions.map((conflict) => conflict.id),
+            retrievalMetadata: dossier.retrievalMetadata,
+          },
+        };
+      }
 
       const seedMemoryItemIds = extractSeedMemoryItemIds(ledgerEvent.payload);
       const retrievalContext = await retrieveMemoryContext({
@@ -1989,9 +2546,10 @@ function createSynthesizeBriefPolicy(args: {
     },
     async run(envelope) {
       const selectedMemoryItems = envelope.input.selectedMemory.map((record) => record.memoryItem);
-      const selectedEvidenceSpans = uniqueEvidenceSpans(envelope.input.selectedMemory.flatMap((record) => record.evidenceSpans));
+      const selectedEvidenceSpans = envelope.input.dossier?.selectedEvidenceSpans
+        ?? uniqueEvidenceSpans(envelope.input.selectedMemory.flatMap((record) => record.evidenceSpans));
 
-      if (!envelope.input.synthesisBundle.readiness.ready) {
+      if (!envelope.input.cluster && !envelope.input.synthesisBundle.readiness.ready) {
         return {
           proposedEvents: [],
           fallbackReason: envelope.input.synthesisBundle.readiness.skipReasons.join("; "),
@@ -2005,18 +2563,45 @@ function createSynthesizeBriefPolicy(args: {
         throw new Error("synthesize_brief requires an initiative brief draft model.");
       }
 
-      const generated = await args.initiativeBriefDraftModel.generateInitiativeBriefDraft({
-        memoryItems: selectedMemoryItems,
-        evidenceSpans: selectedEvidenceSpans,
-        intent: renderSynthesisIntent(envelope.input.synthesisBundle),
-      });
-      const validation = validateInitiativeBriefDraftTraceability({
-        draft: generated.parsed,
-        selectedMemoryItems,
-        selectedEvidenceSpans,
-      });
+      let generated: Awaited<ReturnType<InitiativeBriefDraftModel["generateInitiativeBriefDraft"]>>;
+      try {
+        generated = await args.initiativeBriefDraftModel.generateInitiativeBriefDraft({
+          memoryItems: selectedMemoryItems,
+          evidenceSpans: selectedEvidenceSpans,
+          intent: envelope.input.dossier
+            ? JSON.stringify({
+              instruction: "Draft one evidence-backed initiative brief from this bounded cluster dossier. Disclose contradictions and missing information.",
+              generationIntent: envelope.input.generationIntent,
+              clusterId: envelope.input.dossier.clusterId,
+              clusterVersion: envelope.input.dossier.clusterVersion,
+              resolution: envelope.input.dossier.resolution,
+              label: envelope.input.dossier.label,
+              dependencies: envelope.input.dossier.dependencies,
+              risks: envelope.input.dossier.risks,
+              contradictions: envelope.input.dossier.contradictions.map((conflict) => ({ id: conflict.id, severity: conflict.severity, summary: conflict.summary })),
+              missingInformation: envelope.input.dossier.missingInformation,
+              membershipReasons: envelope.input.dossier.membershipReasons,
+            })
+            : renderSynthesisIntent(envelope.input.synthesisBundle),
+        });
+      } catch (error) {
+        if (envelope.input.cluster) {
+          return failedSynthesisOutput(envelope, error instanceof Error ? error.message : String(error));
+        }
+        throw error;
+      }
+      const validation = envelope.input.dossier
+        ? validateSuggestedBriefDraft({ draft: generated.parsed, dossier: envelope.input.dossier })
+        : validateInitiativeBriefDraftTraceability({ draft: generated.parsed, selectedMemoryItems, selectedEvidenceSpans });
 
       if (!validation.ok) {
+        if (envelope.input.cluster) {
+          return failedSynthesisOutput(
+            envelope,
+            validation.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "),
+            { model: generated.model, rawResponse: generated.raw },
+          );
+        }
         return {
           proposedEvents: [],
           provider: "openrouter",
@@ -2039,9 +2624,16 @@ function createSynthesizeBriefPolicy(args: {
           payload: {
             briefId,
             ...generated.parsed,
+            ...(envelope.input.cluster ? {
+              clusterId: envelope.input.cluster.id,
+              clusterVersion: envelope.input.cluster.version,
+              generationIntent: envelope.input.generationIntent ?? "initiative_brief",
+              suggestedBrief: true,
+            } : {}),
             selectedMemoryItemIds: selectedMemoryItems.map((item) => item.id),
             selectedEvidenceSpanIds: selectedEvidenceSpans.map((span) => span.id),
             synthesisBundle: envelope.input.synthesisBundle,
+            ...(envelope.input.dossier ? { clusterDossier: envelope.input.dossier } : {}),
             modelMetadata: {
               provider: "openrouter",
               model: generated.model,
@@ -2068,6 +2660,14 @@ function createSynthesizeBriefPolicy(args: {
     async validate(output) {
       if (output.proposedEvents.length === 0) return { ok: true, issues: [] };
       const draft = output.proposedEvents[0];
+      if (
+        draft?.proposedEventType === "readiness_evaluation_proposed" &&
+        draft.targetEventType === "cluster_readiness_changed" &&
+        isRecord(draft.payload.evaluation) &&
+        draft.payload.evaluation.state === "failed"
+      ) {
+        return { ok: true, issues: [] };
+      }
       if (!draft || draft.proposedEventType !== "artifact_draft_proposed" || draft.targetEventType !== "artifact_drafted") {
         return {
           ok: false,
@@ -2076,6 +2676,65 @@ function createSynthesizeBriefPolicy(args: {
       }
       return { ok: true, issues: [] };
     },
+  };
+}
+
+function failedSynthesisOutput(
+  envelope: SynthesizeBriefInput,
+  reason: string,
+  metadata: { model?: string; rawResponse?: unknown } = {},
+): PolicyOutput {
+  const cluster = envelope.input.cluster;
+  if (!cluster) throw new Error(reason);
+  const previous = cluster.readiness;
+  const zeroBreakdown = {
+    cohesion: 0,
+    evidenceBreadth: 0,
+    evidenceQuality: 0,
+    sourceDiversity: 0,
+    actionability: 0,
+    strategicImportance: 0,
+    recentMomentum: 0,
+    urgency: 0,
+    novelty: 0,
+    completeness: 0,
+    contradictionPenalty: 0,
+    duplicationPenalty: 0,
+    stalenessPenalty: 0,
+    existingBriefPenalty: 0,
+  };
+  const generationIntent = envelope.input.generationIntent ?? "initiative_brief";
+  const evaluation: SynthesisReadinessEvaluation = {
+    id: previous?.id ?? `sready_failed_${cluster.id}_${cluster.version}_${generationIntent}`,
+    clusterId: cluster.id,
+    clusterVersion: cluster.version,
+    generationIntent,
+    state: "failed",
+    score: previous?.score ?? 0,
+    breakdown: previous?.breakdown ?? zeroBreakdown,
+    reasons: [`Suggested brief generation failed: ${reason}`],
+    warnings: previous?.warnings ?? [],
+    missingInformation: previous?.missingInformation ?? [],
+    evaluatedAt: now(),
+  };
+  return {
+    proposedEvents: [{
+      proposedEventType: "readiness_evaluation_proposed",
+      targetEventType: "cluster_readiness_changed",
+      subjectType: "cluster",
+      subjectId: cluster.id,
+      payload: { evaluation, clusterId: cluster.id, clusterVersion: cluster.version, generationIntent },
+      evidenceSpanIds: envelope.input.dossier?.selectedEvidenceSpans.map((span) => span.id) ?? [],
+      memoryItemIds: envelope.input.dossier?.selectedMemory.map((record) => record.memoryItem.id) ?? [],
+      requiresHumanApproval: false,
+    }],
+    provider: "openrouter",
+    ...(metadata.model ? { model: metadata.model } : {}),
+    fallbackReason: reason,
+    promptVersion: MEMORY_SYNTHESIS_VERSION,
+    schemaVersion: MEMORY_SYNTHESIS_VERSION,
+    outputSchemaVersion: MEMORY_SYNTHESIS_VERSION,
+    ...(metadata.rawResponse !== undefined ? { rawResponse: metadata.rawResponse } : {}),
   };
 }
 
@@ -2369,86 +3028,6 @@ function connectionFromScoringDecision(args: {
   };
 }
 
-async function generateAndStoreEmbeddings(args: {
-  persistence: LoopPersistence;
-  embeddingModel: EmbeddingModel;
-  tenantId: string;
-  items: CommittableMemoryItem[];
-  evidenceSpans: EvidenceSpan[];
-  newId: (prefix: string) => string;
-}): Promise<Record<string, unknown>> {
-  const targets = uniqueEmbeddingTargets([
-    ...args.items.map((item) => ({
-      targetType: "claim" as const,
-      targetId: item.id,
-      content: item.statement,
-    })),
-    ...args.evidenceSpans.map((span) => ({
-      targetType: "evidence_span" as const,
-      targetId: span.id,
-      content: span.text,
-    })),
-	    ...args.items.flatMap((item) =>
-	      item.entities.map((entity) => {
-	        const canonicalName = entity.canonicalName ?? entity.name;
-	        return {
-	          targetType: "entity" as const,
-	          targetId: canonicalName,
-	          content: `${canonicalName} (${entity.entityType})`,
-	        };
-	      })
-	    ),
-	    ...args.items.flatMap((item) =>
-	      item.schemas.map((schema) => ({
-	        targetType: "schema_pattern" as const,
-	        targetId: `${schema.subjectType}:${schema.predicate}:${schema.objectType}`,
-	        content: `${schema.subjectType} ${schema.predicate} ${schema.objectType}`,
-	      }))
-	    ),
-  ]);
-
-  const embeddings: Array<{
-    id: string;
-    targetType: "claim" | "evidence_span" | "entity" | "schema_pattern";
-    targetId: string;
-    embeddingModel: string;
-    embedding: number[];
-    contentHash: string;
-  }> = [];
-
-  for (const targetType of ["claim", "evidence_span", "entity", "schema_pattern"] as const) {
-    const typedTargets = targets.filter((target) => target.targetType === targetType);
-    if (typedTargets.length === 0) continue;
-    const response = await args.embeddingModel.embed({
-      targetType,
-      input: typedTargets.map((target) => target.content),
-    });
-    for (const [index, vector] of response.vectors.entries()) {
-      const target = typedTargets[index];
-      if (!target) continue;
-      embeddings.push({
-        id: args.newId("emb"),
-        targetType,
-        targetId: target.targetId,
-        embeddingModel: response.model,
-        embedding: vector,
-        contentHash: await sha256Hex(target.content),
-      });
-    }
-  }
-
-  await args.persistence.upsertMemoryEmbeddings({
-    tenantId: args.tenantId,
-    embeddings,
-  });
-
-  return {
-    embeddingCount: embeddings.length,
-    targetTypes: uniqueStrings(embeddings.map((embedding) => embedding.targetType)),
-    models: uniqueStrings(embeddings.map((embedding) => embedding.embeddingModel)),
-  };
-}
-
 function deterministicMemoryGenerationFallback(args: {
   evidenceSpans: EvidenceSpan[];
   error: string;
@@ -2577,20 +3156,6 @@ function isGenericEntityLabel(label: string): boolean {
   }
 
   return false;
-}
-
-function uniqueEmbeddingTargets<T extends {
-  targetType: "claim" | "evidence_span" | "entity" | "schema_pattern";
-  targetId: string;
-  content: string;
-}>(targets: T[]): T[] {
-  const seen = new Set<string>();
-  return targets.filter((target) => {
-    const key = `${target.targetType}:${target.targetId}:${target.content}`;
-    if (seen.has(key) || target.content.trim().length === 0) return false;
-    seen.add(key);
-    return true;
-  });
 }
 
 function scoreConnection(
@@ -2860,6 +3425,65 @@ function uniqueEvidenceSpans(spans: EvidenceSpan[]): EvidenceSpan[] {
     seen.add(span.id);
     return true;
   });
+}
+
+function dedupeTextTargets(values: Array<{ id: string; text: string }>): Array<{ id: string; text: string }> {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    if (seen.has(value.id)) return false;
+    seen.add(value.id);
+    return true;
+  });
+}
+
+async function requiredLedgerEvent(persistence: LoopPersistence, id: string): Promise<LedgerEvent> {
+  const event = await persistence.loadLedgerEvent(id);
+  if (!event) throw new Error(`causing ledger event not found: ${id}`);
+  return event;
+}
+
+function enrichmentCompletionOutput(args: {
+  targetEventType: "embeddings_updated" | "graph_updated";
+  tenantId: string;
+  causedByEventId: string;
+  memoryItemIds: string[];
+  provider: string;
+  model: string;
+}): PolicyOutput {
+  return {
+    proposedEvents: [{
+      proposedEventType: "enrichment_update_proposed",
+      targetEventType: args.targetEventType,
+      subjectType: "memory",
+      subjectId: args.memoryItemIds[0] ?? args.causedByEventId,
+      payload: {
+        causedByEventId: args.causedByEventId,
+        seedMemoryItemIds: args.memoryItemIds,
+        memoryItemIds: args.memoryItemIds,
+      },
+      memoryItemIds: args.memoryItemIds,
+      requiresHumanApproval: false,
+    }],
+    provider: args.provider,
+    model: args.model,
+    promptVersion: CORPUS_SYNTHESIS_VERSION,
+    schemaVersion: CORPUS_SYNTHESIS_VERSION,
+    outputSchemaVersion: CORPUS_SYNTHESIS_VERSION,
+  };
+}
+
+function validateSingleEnrichmentCompletion(
+  output: PolicyOutput,
+  targetEventType: "embeddings_updated" | "graph_updated",
+): ValidationGateResult {
+  const event = output.proposedEvents[0];
+  if (output.proposedEvents.length !== 1 || event?.targetEventType !== targetEventType || event.memoryItemIds?.length === 0) {
+    return {
+      ok: false,
+      issues: [{ code: "invalid_enrichment_completion", message: `${targetEventType} must identify at least one memory item.`, path: ["proposedEvents"] }],
+    };
+  }
+  return { ok: true, issues: [] };
 }
 
 function defaultNewId(prefix: string): string {

@@ -14,6 +14,7 @@ import type {
   MemoryConnectionScorerModel,
 } from "@distillery/model-gateway";
 import { StaticMemoryGenerationModel } from "@distillery/memory-generation";
+import { discoverCorpusSynthesisClusters } from "@distillery/memory-synthesis";
 import type { PendingWorkItem, PolicyRun } from "@distillery/contracts";
 
 const evidenceSpan = {
@@ -307,9 +308,58 @@ describe("loop system", () => {
       "connect_memory",
       "detect_contradiction",
       "discover_candidate",
-      "synthesize_brief",
+      "recompute_cluster",
+      "update_embeddings",
+      "update_graph",
     ]);
-    expect([...store.pendingWorkItems.values()]).toHaveLength(5);
+    expect([...store.pendingWorkItems.values()]).toHaveLength(7);
+  });
+
+  it("connection and contradiction changes invalidate then rebuild the graph facet", async () => {
+    const store = seededStore();
+    store.synthesisEnrichment.set("mem_1", {
+      memoryItemId: "mem_1",
+      inputVersion: "before",
+      completedFacets: ["connections", "contradictions", "embeddings", "graph"],
+      failedFacets: [],
+      updatedAt: "2026-07-15T12:00:00.000Z",
+    });
+    await store.commitLedgerEventWithOutbox({
+      id: "levt_connections_changed",
+      tenantId: "stable",
+      eventType: "connections_updated",
+      subjectType: "memory",
+      subjectId: "mem_1",
+      actorType: "policy",
+      inputVersion: "connections:v2",
+      idempotencyKey: "connections:v2",
+      payload: { memoryItemIds: ["mem_1"], connections: [] },
+    });
+
+    const work = await routeCommittedEvents({ persistence: store });
+
+    expect(work.map((item) => item.policy).sort()).toEqual(["recompute_cluster", "update_graph"]);
+    const proposal = await store.createProposedEvent({
+      id: "pevt_connections_changed",
+      tenantId: "stable",
+      workItemId: null,
+      policyRunId: null,
+      proposedEventType: "enrichment_update_proposed",
+      targetEventType: "connections_updated",
+      subjectType: "memory",
+      subjectId: "mem_1",
+      payload: { memoryItemIds: ["mem_1"], connections: [] },
+      evidenceSpanIds: [],
+      memoryItemIds: ["mem_1"],
+      decisionIds: [],
+      requiresHumanApproval: false,
+      reviewerLabel: null,
+      reviewRationale: null,
+    });
+    await store.markProposedEventValid(proposal.id);
+    await store.commitValidatedProposedEvent(proposal.id);
+
+    expect(store.synthesisEnrichment.get("mem_1")?.completedFacets).not.toContain("graph");
   });
 
   it("connect_memory persists grounded connection proposals and rejects claim-type-only lookalikes", async () => {
@@ -460,7 +510,7 @@ describe("loop system", () => {
     expect(conflict?.members.flatMap((member) => member.evidenceSpanIds).sort()).toEqual(["ev_1", "ev_2"]);
   });
 
-  it("synthesize_brief reads seed memory IDs from the causing ledger payload", async () => {
+  it("memory changes recompute clusters instead of running synthesis early", async () => {
     const store = seededStore();
     store.seedMemorySynthesisContext(connectedMemoryContext());
     await store.commitLedgerEventWithOutbox({
@@ -475,29 +525,25 @@ describe("loop system", () => {
       payload: { items: [{ id: "mem_1" }] },
     });
     const work = await routeCommittedEvents({ persistence: store });
-    const synthesizeWork = work.find((item) => item.policy === "synthesize_brief");
-    if (!synthesizeWork) throw new Error("expected synthesize_brief work");
+    const recomputeWork = work.find((item) => item.policy === "recompute_cluster");
+    if (!recomputeWork) throw new Error("expected recompute_cluster work");
 
-    await executeWorkItem({
+    const result = await executeWorkItem({
       persistence: store,
       policies: createPolicies({
         persistence: store,
         memoryModel: modelWithValidMemory(),
-        initiativeBriefDraftModel: modelWithValidBriefDraft(),
         newId: deterministicId(),
       }),
-      workItemId: synthesizeWork.id,
+      workItemId: recomputeWork.id,
       newId: deterministicId(),
     });
 
-    const proposal = [...store.proposedEvents.values()][0];
-    expect(proposal?.memoryItemIds).toEqual(["mem_1", "mem_2"]);
-    expect(proposal?.payload).toMatchObject({
-      selectedMemoryItemIds: ["mem_1", "mem_2"],
-    });
+    expect(work.some((item) => item.policy === "synthesize_brief")).toBe(false);
+    expect(result?.proposedEvents.some((proposal) => proposal.targetEventType === "cluster_changed")).toBe(true);
   });
 
-  it("synthesize_brief skips isolated memory without proposing a draft", async () => {
+  it("isolated memory completes cluster recomputation without pretending a brief was generated", async () => {
     const store = seededStore();
     store.seedMemorySynthesisContext([connectedMemoryContext()[0]!]);
     await store.commitLedgerEventWithOutbox({
@@ -512,8 +558,8 @@ describe("loop system", () => {
       payload: { memoryItemIds: ["mem_1"] },
     });
     const work = await routeCommittedEvents({ persistence: store });
-    const synthesizeWork = work.find((item) => item.policy === "synthesize_brief");
-    if (!synthesizeWork) throw new Error("expected synthesize_brief work");
+    const recomputeWork = work.find((item) => item.policy === "recompute_cluster");
+    if (!recomputeWork) throw new Error("expected recompute_cluster work");
 
     await executeWorkItem({
       persistence: store,
@@ -522,27 +568,49 @@ describe("loop system", () => {
         memoryModel: modelWithValidMemory(),
         initiativeBriefDraftModel: modelWithValidBriefDraft(),
       }),
-      workItemId: synthesizeWork.id,
+      workItemId: recomputeWork.id,
     });
 
     expect([...store.proposedEvents.values()]).toHaveLength(0);
-    expect(store.pendingWorkItems.get(synthesizeWork.id)?.status).toBe("completed");
-    expect([...store.policyRuns.values()][0]?.fallbackReason).toContain("At least 2 active memory items");
+    expect(store.pendingWorkItems.get(recomputeWork.id)?.status).toBe("completed");
+    expect([...store.ledgerEvents.values()].some((event) => event.eventType === "artifact_drafted")).toBe(false);
   });
 
-  it("synthesize_brief proposes and auto-commits a traceable artifact draft", async () => {
+  it("accepts a no-op readiness result when the cluster state is unchanged", async () => {
     const store = seededStore();
-    store.seedMemorySynthesisContext(connectedMemoryContext());
+    const policy = createPolicies({
+      persistence: store,
+      memoryModel: modelWithValidMemory(),
+    }).evaluate_synthesis_readiness;
+
+    const validation = await policy.validate({
+      proposedEvents: [],
+      provider: "deterministic",
+      model: "corpus-synthesis-v1",
+      fallbackReason: "Readiness state is unchanged for this cluster version.",
+    });
+
+    expect(validation).toEqual({ ok: true, issues: [] });
+  });
+
+  it("synthesis_ready generates and persists one traceable suggested draft", async () => {
+    const store = seededStore();
+    const memory = connectedMemoryContext();
+    store.seedMemorySynthesisContext(memory);
+    const cluster = discoverCorpusSynthesisClusters({ tenantId: "stable", memory })
+      .find((candidate) => candidate.meaningKey === "entity:api launch");
+    if (!cluster) throw new Error("expected corpus cluster");
+    store.synthesisClusters.set(cluster.id, cluster);
     await store.commitLedgerEventWithOutbox({
-      id: "levt_memory",
+      id: "levt_ready",
       tenantId: "stable",
-      eventType: "memory_committed",
-      subjectType: "memory",
-      subjectId: "batch_1",
+      eventType: "synthesis_ready",
+      subjectType: "cluster",
+      subjectId: cluster.id,
       actorType: "policy",
-      inputVersion: "batch:v1",
-      idempotencyKey: "memory:connected",
-      payload: { memoryItemIds: ["mem_1"] },
+      inputVersion: cluster.version,
+      idempotencyKey: `ready:${cluster.id}:${cluster.version}`,
+      payload: { clusterId: cluster.id, clusterVersion: cluster.version, generationIntent: "initiative_brief" },
     });
     const work = await routeCommittedEvents({ persistence: store });
     const synthesizeWork = work.find((item) => item.policy === "synthesize_brief");
@@ -568,6 +636,58 @@ describe("loop system", () => {
     expect([...store.ledgerEvents.values()].some((event) => event.eventType === "artifact_drafted")).toBe(true);
     expect([...store.initiativeBriefs.values()][0]?.memoryItemIds).toEqual(["mem_1", "mem_2"]);
     expect([...store.initiativeBriefs.values()][0]?.evidenceSpanIds).toEqual(["ev_1", "ev_2"]);
+    expect(store.suggestedBriefKeys.size).toBe(1);
+  });
+
+  it("invalid suggested-brief model output commits no domain state", async () => {
+    const store = seededStore();
+    const synthesizeWork = await routeSynthesisReadyWork(store, "invalid");
+    await executeWorkItem({
+      persistence: store,
+      policies: createPolicies({
+        persistence: store,
+        memoryModel: modelWithValidMemory(),
+        initiativeBriefDraftModel: {
+          async generateInitiativeBriefDraft() {
+            const valid = await modelWithValidBriefDraft().generateInitiativeBriefDraft({ memoryItems: [], evidenceSpans: [] });
+            return { ...valid, parsed: { ...valid.parsed, evidenceSpanIds: ["ev_not_in_dossier"] } };
+          },
+        },
+      }),
+      workItemId: synthesizeWork.id,
+    });
+
+    expect(store.pendingWorkItems.get(synthesizeWork.id)?.status).toBe("completed");
+    expect([...store.ledgerEvents.values()].some((event) => event.eventType === "artifact_drafted")).toBe(false);
+    expect([...store.ledgerEvents.values()].some((event) =>
+      event.eventType === "cluster_readiness_changed" && event.payload.evaluation &&
+      (event.payload.evaluation as { state?: string }).state === "failed"
+    )).toBe(true);
+    expect(store.initiativeBriefs.size).toBe(0);
+  });
+
+  it("records a model timeout as an explicit failed work item", async () => {
+    const store = seededStore();
+    const synthesizeWork = await routeSynthesisReadyWork(store, "timeout");
+    await executeWorkItem({
+      persistence: store,
+      policies: createPolicies({
+        persistence: store,
+        memoryModel: modelWithValidMemory(),
+        initiativeBriefDraftModel: {
+          async generateInitiativeBriefDraft() {
+            throw new Error("initiative brief generation timed out");
+          },
+        },
+      }),
+      workItemId: synthesizeWork.id,
+    });
+
+    expect(store.pendingWorkItems.get(synthesizeWork.id)?.status).toBe("completed");
+    expect([...store.synthesisReadiness.values()]).toEqual([
+      expect.objectContaining({ state: "failed", reasons: [expect.stringContaining("timed out")] }),
+    ]);
+    expect(store.initiativeBriefs.size).toBe(0);
   });
 
   it("artifact_drafted proposal creates an initiative brief idempotently", async () => {
@@ -606,6 +726,91 @@ describe("loop system", () => {
 
     expect(second.id).toBe(first.id);
     expect([...store.initiativeBriefs.values()]).toHaveLength(1);
+  });
+
+  it("bounded global sweeps resume from a durable cursor", async () => {
+    const store = seededStore();
+    store.seedMemorySynthesisContext([
+      ...connectedMemoryContext(),
+      memoryRecord({
+        id: "mem_3",
+        claimType: "dependency",
+        statement: "A third launch dependency needs review.",
+        evidenceSpanIds: ["ev_3"],
+        entities: [{ name: "API launch", entityType: "initiative" }],
+        sourceVersionId: "srcv_3",
+      }),
+    ]);
+
+    expect(await store.scheduleSynthesisScanEvents({ tenantId: "stable", limit: 2 })).toBe(2);
+    expect(await store.scheduleSynthesisScanEvents({ tenantId: "stable", limit: 2 })).toBe(1);
+    const sweepEvents = [...store.ledgerEvents.values()].filter((event) => event.eventType === "synthesis_neighborhood_dirty");
+    expect(sweepEvents.map((event) => event.subjectId).sort()).toEqual(["mem_1", "mem_2", "mem_3"]);
+  });
+
+  it("global sweeps do not re-emit unchanged cluster versions", async () => {
+    const store = seededStore();
+    const memory = connectedMemoryContext();
+    store.seedMemorySynthesisContext(memory);
+    for (const cluster of discoverCorpusSynthesisClusters({ tenantId: "stable", memory })) {
+      store.synthesisClusters.set(cluster.id, cluster);
+    }
+    await store.scheduleSynthesisScanEvents({ tenantId: "stable", limit: 1 });
+    const work = await routeCommittedEvents({ persistence: store });
+    const recomputeWork = work.find((item) => item.policy === "recompute_cluster");
+    if (!recomputeWork) throw new Error("expected recompute_cluster work");
+
+    const result = await executeWorkItem({
+      persistence: store,
+      policies: createPolicies({ persistence: store, memoryModel: modelWithValidMemory() }),
+      workItemId: recomputeWork.id,
+    });
+
+    expect(result?.proposedEvents).toHaveLength(0);
+    expect(store.pendingWorkItems.get(recomputeWork.id)?.status).toBe("completed");
+  });
+
+  it("one cluster version and intent creates one suggested draft across persistence retries", async () => {
+    const store = seededStore();
+    store.seedMemorySynthesisContext(connectedMemoryContext());
+    for (const [index, briefId] of ["brief_a", "brief_b"].entries()) {
+      const proposal = await store.createProposedEvent({
+        id: `pevt_suggested_${index}`,
+        tenantId: "stable",
+        workItemId: null,
+        policyRunId: null,
+        proposedEventType: "artifact_draft_proposed",
+        targetEventType: "artifact_drafted",
+        subjectType: "artifact",
+        subjectId: briefId,
+        payload: {
+          briefId,
+          clusterId: "cluster_1",
+          clusterVersion: "v1",
+          generationIntent: "initiative_brief",
+          title: "Docs launch readiness",
+          problem: "API launch needs docs clarity.",
+          proposal: "Treat docs ownership as a launch gate.",
+          successMetric: "Docs owner and readiness date are agreed.",
+          memoryItemIds: ["mem_1", "mem_2"],
+          evidenceSpanIds: ["ev_1", "ev_2"],
+        },
+        evidenceSpanIds: ["ev_1", "ev_2"],
+        memoryItemIds: ["mem_1", "mem_2"],
+        decisionIds: [],
+        requiresHumanApproval: false,
+        reviewerLabel: null,
+        reviewRationale: null,
+      });
+      await store.markProposedEventValid(proposal.id);
+      await store.commitValidatedProposedEvent(proposal.id);
+    }
+    expect(store.suggestedBriefKeys.size).toBe(1);
+    expect(store.initiativeBriefs.size).toBe(1);
+    expect([...store.ledgerEvents.values()].filter((event) => event.eventType === "artifact_drafted")).toHaveLength(1);
+    expect([...store.eventOutboxRows.values()].filter((row) =>
+      store.ledgerEvents.get(row.ledgerEventId)?.eventType === "artifact_drafted"
+    )).toHaveLength(1);
   });
 
   it("duplicated Cloudflare Queue wakeup cannot duplicate execution", async () => {
@@ -732,33 +937,28 @@ describe("loop system", () => {
     ]);
   });
 
-  it("extract_memory stores embeddings for claims, evidence, entities, and schemas when configured", async () => {
+  it("update_embeddings stores claims, evidence, entities, and schemas independently", async () => {
     const store = seededStore();
-    const workItem = await routeSourceToWork(store);
+    store.seedMemorySynthesisContext([connectedMemoryContext()[0]!]);
+    await store.commitLedgerEventWithOutbox({
+      id: "levt_embed",
+      tenantId: "stable",
+      eventType: "memory_committed",
+      subjectType: "memory",
+      subjectId: "mem_1",
+      actorType: "policy",
+      inputVersion: "mem_1:v1",
+      idempotencyKey: "memory:embed",
+      payload: { memoryItemIds: ["mem_1"] },
+    });
+    const workItem = (await routeCommittedEvents({ persistence: store })).find((item) => item.policy === "update_embeddings");
+    if (!workItem) throw new Error("expected update_embeddings work");
 
     await executeWorkItem({
       persistence: store,
       policies: createPolicies({
         persistence: store,
-        memoryModel: new StaticMemoryGenerationModel({
-          items: [{
-            temporaryId: "m1",
-            claimType: "dependency",
-            statement: "Dev docs need to be updated before the API launch.",
-            evidenceSpanIds: ["ev_1"],
-            epistemicStatus: "reported",
-            qualifiers: {},
-            stableDomainTags: ["docs"],
-            entities: [{ name: "API launch", entityType: "initiative" }],
-            relations: [],
-            schemas: [{
-              subjectType: "artifact",
-              predicate: "blocks",
-              objectType: "initiative",
-              status: "candidate",
-            }],
-          }],
-        }),
+        memoryModel: modelWithValidMemory(),
         embeddingModel: {
           async embed(request) {
             return {
@@ -779,15 +979,38 @@ describe("loop system", () => {
       "evidence_span",
       "schema_pattern",
     ]);
-    expect([...store.proposedEvents.values()][0]?.payload.embeddingMetadata).toMatchObject({
-      embeddingCount: 4,
-      models: ["google/gemini-embedding-001"],
-    });
+    expect([...store.ledgerEvents.values()].some((event) => event.eventType === "embeddings_updated")).toBe(true);
+    expect(store.synthesisEnrichment.get("mem_1")?.completedFacets).toContain("embeddings");
   });
 
-  it("extract_memory still commits memory when embedding generation fails", async () => {
+  it("embedding failure is retryable without rolling back committed memory", async () => {
     const store = seededStore();
-    const workItem = await routeSourceToWork(store);
+    store.seedMemorySynthesisContext([connectedMemoryContext()[0]!]);
+    store.committedMemory.push({
+      id: "mem_1",
+      claimType: "dependency",
+      statement: "Dev docs need to be updated before the API launch.",
+      evidenceSpanIds: ["ev_1"],
+      epistemicStatus: "reported",
+      qualifiers: {},
+      stableDomainTags: ["docs"],
+      entities: [],
+      relations: [],
+      schemas: [],
+    });
+    await store.commitLedgerEventWithOutbox({
+      id: "levt_embed_fail",
+      tenantId: "stable",
+      eventType: "memory_committed",
+      subjectType: "memory",
+      subjectId: "mem_1",
+      actorType: "policy",
+      inputVersion: "mem_1:v1",
+      idempotencyKey: "memory:embed:fail",
+      payload: { memoryItemIds: ["mem_1"] },
+    });
+    const workItem = (await routeCommittedEvents({ persistence: store })).find((item) => item.policy === "update_embeddings");
+    if (!workItem) throw new Error("expected update_embeddings work");
 
     await executeWorkItem({
       persistence: store,
@@ -805,13 +1028,10 @@ describe("loop system", () => {
       newId: deterministicId(),
     });
 
-    expect(store.pendingWorkItems.get(workItem.id)?.status).toBe("completed");
+    expect(store.pendingWorkItems.get(workItem.id)?.status).toBe("failed");
     expect(store.committedMemory).toHaveLength(1);
     expect(store.memoryEmbeddings).toHaveLength(0);
-    expect([...store.proposedEvents.values()][0]?.payload.embeddingMetadata).toMatchObject({
-      embeddingStatus: "failed",
-      embeddingError: "embedding provider timed out",
-    });
+    expect([...store.ledgerEvents.values()].some((event) => event.eventType === "embeddings_updated")).toBe(false);
   });
 
   it("extract_memory commits a conservative fallback memory when model generation fails", async () => {
@@ -1252,6 +1472,30 @@ async function routeSourceToWork(store: InMemoryLoopPersistence) {
   return workItem;
 }
 
+async function routeSynthesisReadyWork(store: InMemoryLoopPersistence, suffix: string) {
+  const memory = connectedMemoryContext();
+  store.seedMemorySynthesisContext(memory);
+  const cluster = discoverCorpusSynthesisClusters({ tenantId: "stable", memory })
+    .find((candidate) => candidate.meaningKey === "entity:api launch");
+  if (!cluster) throw new Error("expected corpus cluster");
+  store.synthesisClusters.set(cluster.id, cluster);
+  await store.commitLedgerEventWithOutbox({
+    id: `levt_ready_${suffix}`,
+    tenantId: "stable",
+    eventType: "synthesis_ready",
+    subjectType: "cluster",
+    subjectId: cluster.id,
+    actorType: "policy",
+    inputVersion: cluster.version,
+    idempotencyKey: `ready:${cluster.id}:${cluster.version}:${suffix}`,
+    payload: { clusterId: cluster.id, clusterVersion: cluster.version, generationIntent: `initiative_brief_${suffix}` },
+  });
+  const work = await routeCommittedEvents({ persistence: store });
+  const synthesizeWork = work.find((item) => item.policy === "synthesize_brief");
+  if (!synthesizeWork) throw new Error("expected synthesize_brief work");
+  return synthesizeWork;
+}
+
 async function enqueueManualWork(
   store: InMemoryLoopPersistence,
   policy: "draft_artifact" | "gate_output",
@@ -1312,8 +1556,10 @@ function modelWithValidBriefDraft(): InitiativeBriefDraftModel {
           title: "Docs launch readiness",
           problem: "API launch needs docs clarity.",
           proposal: "Treat docs ownership and unresolved launch risk as a reviewable initiative.",
+          scope: "Developer documentation readiness for the API launch.",
           successMetric: "Docs owner and launch readiness criteria are agreed before API launch.",
           risksAndDependencies: "Depends on product and docs owners.",
+          contradictionsOrUncertainties: [],
           memoryItemIds: ["mem_1", "mem_2"],
           evidenceSpanIds: ["ev_1", "ev_2"],
         },
