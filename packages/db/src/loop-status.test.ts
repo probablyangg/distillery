@@ -191,6 +191,59 @@ describe("hybrid retrieval migration", () => {
   });
 });
 
+describe("corpus-wide synthesis migration", () => {
+  const migration = readFileSync(
+    resolve(testDir, "../migrations/0013_corpus_wide_brief_synthesis.sql"),
+    "utf8",
+  );
+
+  it("adds versioned clusters, readiness, suggested drafts, dirty work, and a durable sweep cursor", () => {
+    expect(migration).toContain("create table if not exists synthesis_clusters");
+    expect(migration).toContain("create table if not exists synthesis_cluster_versions");
+    expect(migration).toContain("create table if not exists synthesis_cluster_memberships");
+    expect(migration).toContain("create table if not exists synthesis_readiness_evaluations");
+    expect(migration).toContain("create table if not exists suggested_brief_versions");
+    expect(migration).toContain("create table if not exists synthesis_dirty_neighborhoods");
+    expect(migration).toContain("create table if not exists synthesis_global_scan_cursors");
+  });
+
+  it("bounds global sweep dispatch and persists its cursor", () => {
+    expect(migration).toContain("v_limit integer := least(greatest(coalesce(p_limit, 10), 1), 10)");
+    expect(migration).toContain("for update");
+    expect(migration).toContain("set last_memory_item_id = v_cursor.last_memory_item_id, cycle = v_cursor.cycle");
+  });
+
+  it("fixes the memory_item_id ambiguity with qualified variables", () => {
+    expect(migration).toContain("v_memory_item_id text");
+    expect(migration).toContain("where mi.id = v_memory_item_id and mi.tenant_id = v_proposal.tenant_id");
+    expect(migration).not.toContain("where mi.id = memory_item_id");
+  });
+
+  it("validates evidence bindings and makes one draft version per cluster version and intent", () => {
+    expect(migration).toContain("mie.memory_item_id = any(v_memory_item_ids)");
+    expect(migration).toContain("unique (tenant_id, cluster_id, cluster_version, generation_intent)");
+    expect(migration).toContain("on conflict (tenant_id, cluster_id, cluster_version, generation_intent) where origin = 'generated' do nothing");
+    expect(migration).toContain("on conflict (ledger_event_id) do nothing");
+  });
+});
+
+describe("synthesis surfaces", () => {
+  const worker = readFileSync(resolve(testDir, "../../../apps/web/src/index.ts"), "utf8");
+
+  it("keeps initiative suggestions off capture and exposes them on synthesis", () => {
+    const captureShell = worker.slice(worker.indexOf("function renderAppShell"), worker.indexOf("function renderGraphShell"));
+    const synthesisShell = worker.slice(worker.indexOf("function renderSynthesisShell"));
+    expect(captureShell).not.toContain("Ranked brief opportunities");
+    expect(synthesisShell).toContain("Ranked brief opportunities");
+    expect(synthesisShell).toContain("/api/synthesis/opportunities");
+  });
+
+  it("makes corpus expansion the UI default while retaining selection-only mode", () => {
+    expect(worker).toContain('id="selection-only"');
+    expect(worker).toContain('expandRelatedMemory: !document.querySelector("#selection-only").checked');
+  });
+});
+
 describe("Ask retrieval wiring", () => {
   it("does not call the legacy DB lexical fallback from the Worker Ask path", () => {
     const worker = readFileSync(

@@ -7,11 +7,13 @@ import {
   MemoryItemActionInputSchema,
   ProposedEventSchema,
   RecallQueryInputSchema,
+  UpdateInitiativeBriefInputSchema,
   type CitedAnswer,
   type EvidenceSpan,
   type GraphRecallContext,
   type MemoryWithEvidence,
   type ProposedEvent,
+  type SuggestedBrief,
 } from "@distillery/contracts";
 import { SupabaseMemoryGenerationRepository, SupabaseRpcClient } from "@distillery/db";
 import { SupabaseLoopPersistence } from "@distillery/db";
@@ -40,13 +42,14 @@ import {
 } from "@distillery/memory-generation";
 import { retrieveMemoryContext } from "@distillery/memory-retrieval";
 import {
+  buildClusterDossier,
   buildSynthesisBundle,
   validateInitiativeBriefDraftTraceability,
 } from "@distillery/memory-synthesis";
 
 const SESSION_COOKIE_NAME = "distillery_session";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
-const MAX_DRAFT_MEMORY_ITEMS = 8;
+const MAX_DRAFT_MEMORY_ITEMS = 20;
 
 export type Env = {
   DISTILLERY_APP_PASSWORD: string;
@@ -141,6 +144,10 @@ export default {
       return handleListInitiativeBriefs(env);
     }
 
+    if (request.method === "GET" && url.pathname === "/api/synthesis/opportunities") {
+      return handleListSynthesisOpportunities(url, env);
+    }
+
     if (request.method === "POST" && url.pathname === "/api/initiative-brief-drafts") {
       return handleGenerateInitiativeBriefDraft(request, env);
     }
@@ -152,6 +159,14 @@ export default {
     const initiativeBriefMatch = url.pathname.match(/^\/api\/initiative-briefs\/([^/]+)$/);
     if (request.method === "GET" && initiativeBriefMatch?.[1]) {
       return handleGetInitiativeBrief(decodeRouteParam(initiativeBriefMatch[1]), env);
+    }
+    if (request.method === "PATCH" && initiativeBriefMatch?.[1]) {
+      return handleUpdateInitiativeBrief(decodeRouteParam(initiativeBriefMatch[1]), request, env);
+    }
+
+    const synthesisGenerateMatch = url.pathname.match(/^\/api\/synthesis\/clusters\/([^/]+)\/generate$/);
+    if (request.method === "POST" && synthesisGenerateMatch?.[1]) {
+      return handleGenerateClusterDraft(decodeRouteParam(synthesisGenerateMatch[1]), request, env, ctx);
     }
 
     const initiativeBriefDecisionMatch = url.pathname.match(/^\/api\/initiative-briefs\/([^/]+)\/decisions$/);
@@ -171,7 +186,7 @@ export default {
 
     const memoryActionMatch = url.pathname.match(/^\/api\/memory-items\/([^/]+)\/actions$/);
     if (request.method === "POST" && memoryActionMatch?.[1]) {
-      return handleMemoryItemAction(decodeRouteParam(memoryActionMatch[1]), request, env);
+      return handleMemoryItemAction(decodeRouteParam(memoryActionMatch[1]), request, env, ctx);
     }
 
     const memoryHistoryMatch = url.pathname.match(/^\/api\/memory-items\/([^/]+)\/history$/);
@@ -234,6 +249,8 @@ async function runScheduledLoopMaintenance(env: Env): Promise<void> {
     persistence: createLoopPersistence(env),
     queue: env.MEMORY_GENERATION_QUEUE,
     tenantId: DEFAULT_TENANT_ID,
+    maxRows: 4,
+    recoveredWorkLimit: 25,
   });
   console.log(JSON.stringify({
     event: "loop_maintenance_completed",
@@ -522,6 +539,55 @@ async function handleListInitiativeBriefs(env: Env): Promise<Response> {
   return json(briefs);
 }
 
+async function handleListSynthesisOpportunities(url: URL, env: Env): Promise<Response> {
+  const requestedLimit = Number.parseInt(url.searchParams.get("limit") ?? "50", 10);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50;
+  const corpus = await createLoopPersistence(env).getCorpusSynthesisState({
+    tenantId: DEFAULT_TENANT_ID,
+    limit: 500,
+  });
+  const opportunities = corpus.clusters
+    .filter((cluster) => cluster.readiness?.state !== "superseded")
+    .sort((left, right) => (right.readiness?.score ?? -1) - (left.readiness?.score ?? -1) || left.id.localeCompare(right.id))
+    .slice(0, limit)
+    .map((cluster) => ({
+      cluster,
+      suggestedDrafts: corpus.suggestedBriefs
+        .filter((suggestion) => suggestion.clusterId === cluster.id)
+        .map((suggestion) => ({
+          ...suggestion,
+          changesSincePreviousVersion: summarizeSuggestedBriefChanges(suggestion),
+        })),
+      dossier: buildClusterDossier({
+        cluster,
+        memory: corpus.memory,
+        connections: corpus.connections,
+        conflicts: corpus.conflicts,
+        retrievalMetadata: { surface: "/synthesis", corpusWide: true },
+      }),
+    }));
+  return json(opportunities);
+}
+
+function summarizeSuggestedBriefChanges(suggestion: SuggestedBrief): string[] {
+  if (!suggestion.previousVersion) return ["Initial suggested version."];
+  const draft = suggestion.draft as unknown as Record<string, unknown>;
+  const previousDraft = suggestion.previousVersion.draft as unknown as Record<string, unknown>;
+  const labels: Record<string, string> = {
+    title: "title",
+    problem: "problem",
+    proposal: "proposed action",
+    scope: "scope",
+    successMetric: "success metric",
+    risksAndDependencies: "risks and dependencies",
+    contradictionsOrUncertainties: "contradictions or uncertainties",
+  };
+  const changed = Object.entries(labels)
+    .filter(([field]) => JSON.stringify(draft[field]) !== JSON.stringify(previousDraft[field]))
+    .map(([, label]) => `Changed ${label}.`);
+  return changed.length > 0 ? changed : ["No factual draft fields changed."];
+}
+
 async function handleGenerateInitiativeBriefDraft(request: Request, env: Env): Promise<Response> {
   try {
     const parsedInput = InitiativeBriefDraftInputSchema.safeParse(await request.json());
@@ -601,6 +667,8 @@ async function handleGenerateInitiativeBriefDraft(request: Request, env: Env): P
         return json({
           ...generated.parsed,
           model: generated.model,
+          includedMemory: selectedMemoryWithEvidence.map((record) => record.memoryItem),
+          includedEvidenceSpans: evidenceSpans,
           ...(synthesisBundle ? { synthesisBundle } : {}),
           ...(retrievalMetadata ? { retrievalMetadata } : {}),
         });
@@ -614,6 +682,8 @@ async function handleGenerateInitiativeBriefDraft(request: Request, env: Env): P
       });
       return json({
         ...fallbackDraft,
+        includedMemory: selectedMemoryWithEvidence.map((record) => record.memoryItem),
+        includedEvidenceSpans: evidenceSpans,
         ...(synthesisBundle ? { synthesisBundle } : {}),
         ...(retrievalMetadata ? { retrievalMetadata } : {}),
       });
@@ -626,6 +696,8 @@ async function handleGenerateInitiativeBriefDraft(request: Request, env: Env): P
       });
       return json({
         ...fallbackDraft,
+        includedMemory: selectedMemoryWithEvidence.map((record) => record.memoryItem),
+        includedEvidenceSpans: evidenceSpans,
         ...(synthesisBundle ? { synthesisBundle } : {}),
         ...(retrievalMetadata ? { retrievalMetadata } : {}),
       });
@@ -654,6 +726,40 @@ async function handleCreateInitiativeBrief(request: Request, env: Env): Promise<
 async function handleGetInitiativeBrief(briefId: string, env: Env): Promise<Response> {
   const brief = await createRepository(env).getInitiativeBrief(briefId);
   return json(brief);
+}
+
+async function handleUpdateInitiativeBrief(briefId: string, request: Request, env: Env): Promise<Response> {
+  const input = UpdateInitiativeBriefInputSchema.parse(await request.json());
+  const brief = await createRepository(env).updateInitiativeBrief({ briefId, brief: input });
+  return json(brief);
+}
+
+async function handleGenerateClusterDraft(
+  clusterId: string,
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const body = await request.json() as { intent?: string };
+  const intent = body.intent?.trim() || "initiative_brief";
+  const persistence = createLoopPersistence(env);
+  const corpus = await persistence.getCorpusSynthesisState({ tenantId: DEFAULT_TENANT_ID, limit: 500 });
+  const cluster = corpus.clusters.find((candidate) => candidate.id === clusterId);
+  if (!cluster) return json({ error: `Synthesis cluster not found: ${clusterId}` }, 404);
+  const event = await persistence.commitLedgerEventWithOutbox({
+    id: newId("levt"),
+    tenantId: DEFAULT_TENANT_ID,
+    eventType: "synthesis_ready",
+    subjectType: "cluster",
+    subjectId: cluster.id,
+    actorType: "human",
+    actorLabel: "synthesis-reviewer",
+    inputVersion: cluster.version,
+    idempotencyKey: `manual-synthesis:${cluster.id}:${cluster.version}:${intent.toLowerCase()}`,
+    payload: { clusterId: cluster.id, clusterVersion: cluster.version, generationIntent: intent },
+  });
+  ctx.waitUntil(routeAndMaybeExecuteLoop(env));
+  return json({ accepted: true, event, clusterId: cluster.id, clusterVersion: cluster.version, generationIntent: intent }, 202);
 }
 
 async function handleInitiativeBriefDecision(briefId: string, request: Request, env: Env): Promise<Response> {
@@ -691,13 +797,43 @@ async function handleProposedEventDecision(
   return json({ proposal, ledgerEvent });
 }
 
-async function handleMemoryItemAction(memoryItemId: string, request: Request, env: Env): Promise<Response> {
+async function handleMemoryItemAction(
+  memoryItemId: string,
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
   const action = MemoryItemActionInputSchema.parse(await request.json());
+  const repository = createRepository(env);
   const result = await applyMemoryItemAction({
     memoryItemId,
     action,
-    repository: createRepository(env),
+    repository,
   });
+
+  const history = await repository.getMemoryItemHistory(memoryItemId);
+  const latestHistoryEvent = history.events[history.events.length - 1];
+  if (latestHistoryEvent) {
+    const replacementId = latestHistoryEvent.replacementMemoryItemId ?? undefined;
+    await createLoopPersistence(env).commitLedgerEventWithOutbox({
+      id: newId("levt"),
+      tenantId: DEFAULT_TENANT_ID,
+      eventType: action.action === "confirm" ? "memory_confirmed" : action.action === "edit" ? "memory_edited" : "memory_removed",
+      subjectType: "memory",
+      subjectId: memoryItemId,
+      actorType: "human",
+      actorLabel: action.reviewerLabel,
+      inputVersion: latestHistoryEvent.id,
+      idempotencyKey: `memory-review:${latestHistoryEvent.id}`,
+      payload: {
+        memoryItemIds: [memoryItemId, ...(replacementId ? [replacementId] : [])],
+        action: action.action,
+        historyEventId: latestHistoryEvent.id,
+        ...(replacementId ? { replacementMemoryItemId: replacementId } : {}),
+      },
+    });
+    ctx.waitUntil(routeAndMaybeExecuteLoop(env));
+  }
 
   return json(result);
 }
@@ -711,6 +847,7 @@ async function routeAndMaybeExecuteLoop(env: Env): Promise<void> {
   const persistence = createLoopPersistence(env);
   const workItems = await routeCommittedEvents({
     persistence,
+    maxRows: 4,
     ...(env.MEMORY_GENERATION_QUEUE ? { queue: env.MEMORY_GENERATION_QUEUE } : {}),
   });
 
@@ -1030,6 +1167,7 @@ function buildDeterministicInitiativeBriefDraft(args: {
       "Use the selected evidence as a review packet. Confirm whether this should become an initiative, identify the owner and scope, and refine the draft before approval.",
       4_000,
     ),
+    scope: truncate(`Review only the selected ${memoryItemIds.length} memory items and their cited evidence.`, 3_000),
     successMetric: truncate(
       "A reviewer can approve or reject this brief with every claim traced to the selected memory; a concrete product outcome metric still needs human definition.",
       2_000,
@@ -1043,6 +1181,7 @@ function buildDeterministicInitiativeBriefDraft(args: {
       ].filter(Boolean).join(" "),
       3_000,
     ),
+    contradictionsOrUncertainties: ["This deterministic fallback could not validate a model-generated synthesis; human review is required."],
     memoryItemIds,
     evidenceSpanIds,
     model: "deterministic-fallback",
@@ -2530,6 +2669,7 @@ function renderSynthesisShell(): string {
       <div class="row"><button id="logout" type="button" class="secondary">Log out</button></div>
       <div class="row">
         <button id="load-memory" type="button">Load active memory</button>
+        <button id="load-opportunities" type="button" class="secondary">Load opportunities</button>
         <button id="load-proposals" type="button" class="secondary">Load pending memory</button>
         <button id="load-briefs" type="button" class="secondary">Load briefs</button>
         <button id="loop-open" type="button" class="secondary loop-button">Loop</button>
@@ -2539,11 +2679,16 @@ function renderSynthesisShell(): string {
       <h2>Pending memory review</h2>
       <div id="pending-memory-list"></div>
 
+      <h2>Ranked brief opportunities</h2>
+      <p>These are corpus-wide clusters. Scores are deterministic; drafts still require human review.</p>
+      <div id="opportunity-list"></div>
+
       <h2>1. Select memory</h2>
       <div id="memory-list"></div>
 
       <h2>2. Generate a brief</h2>
       <p><textarea id="intent" placeholder="Optional: what should this brief focus on? Example: turn this into a launch-readiness brief for leadership."></textarea></p>
+      <p><label><input id="selection-only" type="checkbox" /> Use only the selected memory (disable corpus expansion)</label></p>
       <div class="row">
         <button id="generate-brief" type="button">Generate brief</button>
         <button id="manual-brief" type="button" class="secondary">Write manually instead</button>
@@ -2575,6 +2720,7 @@ function renderSynthesisShell(): string {
     const resultEl = document.querySelector("#result");
     const memoryList = document.querySelector("#memory-list");
     const pendingMemoryList = document.querySelector("#pending-memory-list");
+    const opportunityList = document.querySelector("#opportunity-list");
     const briefList = document.querySelector("#brief-list");
     const logoutButton = document.querySelector("#logout");
     const loginStatusEl = document.querySelector("#login-status");
@@ -2582,6 +2728,7 @@ function renderSynthesisShell(): string {
     const draftStatusEl = document.querySelector("#draft-status");
     const draftEvidenceEl = document.querySelector("#draft-evidence");
     const loopController = initLoopDrawer();
+    let editingBriefId = null;
 
     checkSession();
 
@@ -2606,6 +2753,7 @@ function renderSynthesisShell(): string {
     });
 
     document.querySelector("#load-memory").addEventListener("click", loadMemory);
+    document.querySelector("#load-opportunities").addEventListener("click", loadOpportunities);
     document.querySelector("#load-proposals").addEventListener("click", loadMemoryProposals);
     document.querySelector("#load-briefs").addEventListener("click", loadBriefs);
     document.querySelector("#generate-brief").addEventListener("click", generateBriefDraft);
@@ -2617,7 +2765,7 @@ function renderSynthesisShell(): string {
     briefForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const memoryItemIds = [...document.querySelectorAll("input[name=memory]:checked")].map((input) => input.value);
-      if (memoryItemIds.length === 0) {
+      if (!editingBriefId && memoryItemIds.length === 0) {
         statusEl.textContent = "Select at least one memory item";
         return;
       }
@@ -2631,16 +2779,23 @@ function renderSynthesisShell(): string {
         memoryItemIds,
         createdByLabel: reviewerLabel()
       };
-      const response = await fetch("/api/initiative-briefs", {
-        method: "POST",
+      if (editingBriefId) {
+        delete payload.memoryItemIds;
+        delete payload.createdByLabel;
+      }
+      const response = await fetch(editingBriefId ? "/api/initiative-briefs/" + encodeURIComponent(editingBriefId) : "/api/initiative-briefs", {
+        method: editingBriefId ? "PATCH" : "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload)
       });
       if (handleUnauthorized(response)) return;
       const brief = await response.json();
       resultEl.textContent = JSON.stringify(brief, null, 2);
-      statusEl.textContent = response.ok ? "Brief created" : "Failed";
-      if (response.ok) loadBriefs();
+      statusEl.textContent = response.ok ? (editingBriefId ? "Draft changes saved" : "Brief created") : "Failed";
+      if (response.ok) {
+        editingBriefId = null;
+        loadBriefs();
+      }
     });
 
     async function generateBriefDraft() {
@@ -2663,7 +2818,11 @@ function renderSynthesisShell(): string {
         const response = await fetchWithTimeout("/api/initiative-brief-drafts", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ memoryItemIds, intent: intent || undefined })
+          body: JSON.stringify({
+            memoryItemIds,
+            intent: intent || undefined,
+            expandRelatedMemory: !document.querySelector("#selection-only").checked
+          })
         }, 45000);
         if (handleUnauthorized(response)) return;
         const draft = await readJsonResponse(response);
@@ -2679,7 +2838,7 @@ function renderSynthesisShell(): string {
         document.querySelector("#proposal").value = draft.proposal || "";
         document.querySelector("#successMetric").value = draft.successMetric || "";
         document.querySelector("#risksAndDependencies").value = draft.risksAndDependencies || "";
-        draftEvidenceEl.textContent = "Traceable to evidence: " + (draft.evidenceSpanIds || []).join(", ");
+        draftEvidenceEl.textContent = "Included " + (draft.includedMemory || []).length + " memories. Traceable to evidence: " + (draft.evidenceSpanIds || []).join(", ");
         showBriefForm();
         draftStatusEl.textContent = "Draft ready to review";
       } catch (error) {
@@ -2720,6 +2879,70 @@ function renderSynthesisShell(): string {
         memoryList.append(div);
       }
       statusEl.textContent = "Memory loaded (" + items.length + ")";
+    }
+
+    async function loadOpportunities() {
+      statusEl.textContent = "Loading corpus-wide opportunities...";
+      const response = await fetch("/api/synthesis/opportunities?limit=50");
+      if (handleUnauthorized(response)) return;
+      const opportunities = await readJsonResponse(response);
+      opportunityList.innerHTML = "";
+      if (!response.ok || !Array.isArray(opportunities)) {
+        opportunityList.innerHTML = "<p>Could not load opportunities.</p>";
+        statusEl.textContent = "Failed";
+        return;
+      }
+      if (opportunities.length === 0) {
+        opportunityList.innerHTML = "<p>No cluster has been discovered yet. Enrichment or the next bounded sweep may still be pending.</p>";
+        statusEl.textContent = "No opportunities yet";
+        return;
+      }
+      for (const opportunity of opportunities) {
+        const cluster = opportunity.cluster;
+        const dossier = opportunity.dossier || {};
+        const readiness = cluster.readiness || {};
+        const suggestedDrafts = opportunity.suggestedDrafts || [];
+        const suggestedDraftSummary = suggestedDrafts.length === 0
+          ? "none yet"
+          : suggestedDrafts.map((suggestion) =>
+              "v" + suggestion.version + " · " + suggestion.status + " · " +
+              (suggestion.draft?.title || suggestion.initiativeBriefId) + " · " +
+              (suggestion.changesSincePreviousVersion || []).join(" ")
+            ).join(" | ");
+        const div = document.createElement("div");
+        div.className = "brief";
+        const memberIds = (cluster.memberships || []).map((membership) => membership.memoryItemId);
+        div.innerHTML = "<strong>" + escapeHtml(cluster.label) + "</strong>" +
+          "<p>" + escapeHtml(cluster.resolution.replaceAll("_", " ")) + " · " + escapeHtml(readiness.state || "awaiting evaluation") + " · score " + escapeHtml(readiness.score == null ? "—" : Number(readiness.score).toFixed(1)) + "/100</p>" +
+          "<p><b>Why now:</b> " + escapeHtml((readiness.reasons || []).join(" ")) + "</p>" +
+          "<p><b>Members:</b> " + escapeHtml(memberIds.join(", ")) + "</p>" +
+          "<p><b>Evidence:</b> " + escapeHtml((dossier.selectedEvidenceSpans || []).map((span) => span.id).join(", ")) + "</p>" +
+          "<p><b>Contradictions:</b> " + escapeHtml((dossier.contradictions || []).map((conflict) => conflict.summary).join("; ") || "none") + "</p>" +
+          "<p><b>Missing:</b> " + escapeHtml((dossier.missingInformation || []).join("; ") || "none recorded") + "</p>" +
+          "<p><b>Suggested drafts:</b> " + escapeHtml(suggestedDraftSummary) + "</p>" +
+          '<div class="row"><button type="button" data-action="explore">Generate/edit now</button><button type="button" class="secondary" data-action="regenerate">Regenerate suggestion</button></div>';
+        div.querySelector('[data-action="explore"]').addEventListener("click", async () => {
+          const wanted = new Set(memberIds);
+          for (const checkbox of document.querySelectorAll("input[name=memory]")) checkbox.checked = wanted.has(checkbox.value);
+          document.querySelector("#selection-only").checked = false;
+          document.querySelector("#intent").value = "Regenerate the " + cluster.label + " opportunity as an evidence-backed initiative brief.";
+          await generateBriefDraft();
+        });
+        div.querySelector('[data-action="regenerate"]').addEventListener("click", async () => {
+          const intent = prompt("Regeneration intent", "initiative_brief") || "initiative_brief";
+          statusEl.textContent = "Queueing suggested draft...";
+          const response = await fetch("/api/synthesis/clusters/" + encodeURIComponent(cluster.id) + "/generate", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ intent })
+          });
+          const result = await readJsonResponse(response);
+          resultEl.textContent = JSON.stringify(result, null, 2);
+          statusEl.textContent = response.ok ? "Suggested draft queued" : (result.error || "Queue failed");
+        });
+        opportunityList.append(div);
+      }
+      statusEl.textContent = "Opportunities loaded (" + opportunities.length + ")";
     }
 
     async function loadMemoryProposals() {
@@ -2809,12 +3032,29 @@ function renderSynthesisShell(): string {
         const row = document.createElement("div");
         row.className = "row";
         row.append(
+          actionButton("Edit draft", () => editBrief(brief)),
           actionButton("Approve", () => decideBrief(brief.id, "approve")),
           actionButton("Reject", () => decideBrief(brief.id, "reject"), "danger")
         );
         div.append(row);
         briefList.append(div);
       }
+    }
+
+    function editBrief(brief) {
+      if (brief.status !== "draft") {
+        statusEl.textContent = "Only draft briefs can be edited";
+        return;
+      }
+      editingBriefId = brief.id;
+      document.querySelector("#title").value = brief.title || "";
+      document.querySelector("#problem").value = brief.problem || "";
+      document.querySelector("#proposal").value = brief.proposal || "";
+      document.querySelector("#successMetric").value = brief.successMetric || "";
+      document.querySelector("#risksAndDependencies").value = brief.risksAndDependencies || "";
+      draftEvidenceEl.textContent = "Editing " + brief.id + ". Existing memory and evidence bindings are preserved.";
+      showBriefForm();
+      briefForm.scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
     async function decideBrief(briefId, decision) {
@@ -2860,6 +3100,7 @@ function renderSynthesisShell(): string {
       showApp();
       loadMemoryProposals();
       loadMemory();
+      loadOpportunities();
       loadBriefs();
     }
 
